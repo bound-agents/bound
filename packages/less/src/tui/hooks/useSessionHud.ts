@@ -161,7 +161,7 @@ export function useSessionHud(
 			if (data.thread_id !== threadIdRef.current) return;
 			// A Yard run spends for minutes (aux loops, relayed inference) before
 			// its thread ever goes inactive — waiting for thread:status meant the
-			// session cost froze for the whole run (thread 2b372dca). Lifecycle
+			// session cost froze for the whole run. Lifecycle
 			// events arrive per effect; the min-interval debounce in refreshCost
 			// keeps this at one metrics fetch per window, not one per event.
 			refreshCost();
@@ -183,19 +183,4 @@ export function useSessionHud(
 	}, [client, costRefreshMinIntervalMs]);
 
 	return state;
-}
-
-/** Format a USD amount for the one-line HUD: $0.42, $12.30, $1.2k. */
-export function formatUsd(amount: number): string {
-	if (amount >= 1000) return `$${(amount / 1000).toFixed(1)}k`;
-	if (amount >= 100) return `$${Math.round(amount)}`;
-	return `$${amount.toFixed(2)}`;
-}
-
-/** Compact token count: 999, 1.2k, 87k, 1.1M. */
-export function formatTokens(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 10_000) return `${Math.round(n / 1000)}k`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-	return String(n);
 }

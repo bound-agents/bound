@@ -7,17 +7,23 @@ import { checkDbCommand } from "./db-guard";
 import { spawnLowbox } from "./lowbox-runtime";
 import { createTreeKiller } from "./process-tree";
 import { formatProvenance } from "./provenance";
+import { checkSandboxAvailable, spawnSandboxed } from "./sandbox";
 import {
 	DISABLED_SANDBOX,
 	type ResolvedSandboxConfig,
 	type SandboxSpawnResult,
-	checkSandboxAvailable,
 	decideSandboxSpawn,
 	nonInteractiveEnv,
-	spawnSandboxed,
-} from "./sandbox";
+} from "./sandbox-policy";
 import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
+
+/** Body layout of a shell tool result; {@link BASH_OUTPUT_PATTERN} parses it back. */
+export function formatBashOutput(exitCode: number, stdout: string, stderr: string): string {
+	return `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+}
+
+export const BASH_OUTPUT_PATTERN = /^Exit code: (\d+)\nstdout:\n([\s\S]*)\nstderr:\n([\s\S]*)$/;
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
 
@@ -222,6 +228,11 @@ const POSIX_DEFAULT_SHELL: ResolvedShell = {
 
 export interface BashToolWithStreamingOptions {
 	onStdoutChunk?: (chunk: string) => void;
+	hostname?: string;
+	shell?: ResolvedShell;
+	sandbox?: ResolvedSandboxConfig;
+	logger?: BashEventLogger;
+	testNamespace?: string;
 }
 
 export function createBashTool(
@@ -232,17 +243,13 @@ export function createBashTool(
 	testNamespace?: string,
 ): ToolHandler {
 	return (args, signal, cwd) => {
-		return bashToolWithStreaming(
-			args,
-			signal,
-			cwd,
-			undefined,
+		return bashToolWithStreaming(args, signal, cwd, {
 			hostname,
 			shell,
 			sandbox,
 			logger,
 			testNamespace,
-		);
+		});
 	};
 }
 
@@ -250,12 +257,14 @@ export async function bashToolWithStreaming(
 	args: Record<string, unknown>,
 	signal: AbortSignal,
 	cwd: string,
-	options?: BashToolWithStreamingOptions,
-	hostname = "unknown",
-	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
-	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
-	logger?: BashEventLogger,
-	testNamespace?: string,
+	{
+		onStdoutChunk,
+		hostname = "unknown",
+		shell = POSIX_DEFAULT_SHELL,
+		sandbox = DISABLED_SANDBOX,
+		logger,
+		testNamespace,
+	}: BashToolWithStreamingOptions = {},
 ): Promise<ToolResult> {
 	const {
 		command,
@@ -388,8 +397,8 @@ export async function bashToolWithStreaming(
 						stdout += chunk;
 
 						// Call streaming callback if provided
-						if (options?.onStdoutChunk) {
-							options.onStdoutChunk(chunk);
+						if (onStdoutChunk) {
+							onStdoutChunk(chunk);
 						}
 					}
 					// Flush any remaining bytes
@@ -436,7 +445,7 @@ export async function bashToolWithStreaming(
 			// Assemble the full result, then offload to a local file if it's too
 			// large for the context window (mirrors the agent VFS offload path).
 			const notes = [dbNote, sandboxNote].filter(Boolean).join("\n");
-			const formattedOutput = `${notes ? `${notes}\n` : ""}Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+			const formattedOutput = `${notes ? `${notes}\n` : ""}${formatBashOutput(exitCode, stdout, stderr)}`;
 			const offloaded = offloadIfOversized(formattedOutput, shell.toolName);
 
 			const result: ToolResult = {

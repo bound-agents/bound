@@ -1,5 +1,5 @@
 /**
- * Driver-level inline credit-redemption EXECUTOR (slice 5, R-RT18,
+ * Driver-level inline credit-redemption EXECUTOR (R-RT18,
  * 2026-11-21-model-routing.md §7.3 step 2).
  *
  * The pure planner (`planCreditRedemption`) decides whether a credited inline
@@ -33,7 +33,6 @@ import {
 	isTransientRedemptionError,
 	planCreditRedemption,
 } from "../fallback-credit";
-export type { CreditStep } from "../fallback-credit";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { ModelDeclinedOutcome } from "../model-declined";
 import type { StreamChunk } from "../types";

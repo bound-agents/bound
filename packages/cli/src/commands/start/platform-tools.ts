@@ -1,4 +1,22 @@
-import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
+import {
+	type ConnectorToolContext,
+	type PlatformMcpRegistry,
+	type PlatformRegisteredTool,
+	createConnectorTool,
+} from "@bound/platforms";
+
+/** Build the unified connector tool as a `kind: "platform"` registry entry. */
+export function createPlatformConnectorTool(ctx: ConnectorToolContext): PlatformRegisteredTool {
+	const tool = createConnectorTool(ctx);
+	return {
+		kind: "platform",
+		toolDefinition: tool.toolDefinition,
+		execute: tool.execute,
+		idempotent: tool.idempotent,
+		readOnly: tool.readOnly,
+		resolveAnnotations: tool.resolveAnnotations,
+	};
+}
 
 /**
  * Resolve platform tools for a thread.

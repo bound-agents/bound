@@ -3,6 +3,7 @@
 	import { onDestroy, onMount } from "svelte";
 	import Page from "../components/Page.svelte";
 	import SectionHeader from "../components/SectionHeader.svelte";
+	import { client } from "../lib/bound";
 
 	interface McpServerInfo {
 		name?: string;
@@ -76,17 +77,10 @@
 
 	async function loadChallenges(): Promise<void> {
 		try {
-			const res = await fetch("/api/mcp-challenges/by-server");
-			if (res.ok) {
-				const body = (await res.json()) as {
-					servers: Record<string, ServerChallenge>;
-					loopback: boolean;
-					canResolve: boolean;
-				};
-				challengesByServer = body.servers;
-				challengeLoopback = body.loopback;
-				challengeCanResolve = body.canResolve;
-			}
+			const body = await client.listMcpChallengesByServer();
+			challengesByServer = body.servers;
+			challengeLoopback = body.loopback;
+			challengeCanResolve = body.canResolve;
 		} catch {
 			// Transient fetch failure — keep the last good snapshot.
 		}
@@ -95,17 +89,8 @@
 	async function authorize(challengeId: string): Promise<void> {
 		claimState = { ...claimState, [challengeId]: "claiming" };
 		try {
-			const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(challengeId)}/claim`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-			});
-			const body = (await res.json().catch(() => ({}))) as {
-				authorizeUrl?: string;
-				error?: string;
-			};
-			if (!res.ok || !body.authorizeUrl) {
-				throw new Error(body.error ?? `claim failed (${res.status})`);
-			}
+			const body = await client.claimMcpChallenge(challengeId);
+			if (!body.authorizeUrl) throw new Error("claim returned no authorize URL");
 			window.open(body.authorizeUrl, "_blank", "noopener");
 			const { [challengeId]: _dropped, ...rest } = claimState;
 			claimState = rest;
@@ -119,11 +104,7 @@
 
 	async function loadServers(): Promise<void> {
 		try {
-			const res = await fetch("/api/mcp/servers");
-			if (res.ok) {
-				const body = (await res.json()) as { servers: McpServer[] };
-				servers = body.servers;
-			}
+			servers = (await client.listMcpServers<McpServer>()).servers;
 		} catch {
 			// Transient fetch failure — keep the last good snapshot.
 		}

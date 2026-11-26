@@ -7,9 +7,8 @@ import {
 	resetProcessingForThread,
 } from "./dispatch";
 
-/** Default timeout for a single runFn invocation (30 minutes).
- *  Must accommodate large cold-cache contexts (200k+ tokens) where
- *  the silence timeout retry loop alone can take 10+ minutes. */
+/** Large cold-cache contexts (200k+ tokens) can spend 10+ minutes in the
+ *  silence-timeout retry loop alone, so a single run gets 30 minutes. */
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface ExecutorRunResult {
@@ -20,7 +19,7 @@ export interface ExecutorRunResult {
 
 export interface ExecutorOptions {
 	/** Maximum time (ms) a single runFn invocation may take before the
-	 *  executor gives up and releases the lock. Default: 10 minutes. */
+	 *  executor gives up and releases the lock. Default: 30 minutes. */
 	runTimeoutMs?: number;
 }
 
@@ -36,29 +35,14 @@ export class ThreadExecutor {
 		this.runTimeoutMs = options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 	}
 
-	/**
-	 * Read-only view of currently active thread IDs.
-	 * Used by the web server to check loop status via `.has()`.
-	 */
 	get activeThreads(): ReadonlySet<string> {
 		return this.activeLocks;
 	}
 
-	/**
-	 * Check whether a thread currently has an active executor lock.
-	 */
 	isActive(threadId: string): boolean {
 		return this.activeLocks.has(threadId);
 	}
 
-	/**
-	 * Execute the drain loop for a thread. If the thread is already locked,
-	 * returns immediately (the active loop will pick up new messages).
-	 *
-	 * @param threadId - Thread to process
-	 * @param runFn - Inference callback; receives shouldYield and returns result
-	 * @param onComplete - Called after each successful (non-yielded) iteration
-	 */
 	/**
 	 * Execute the drain loop for a thread. If the thread is already locked,
 	 * returns immediately (the active loop will pick up new messages).

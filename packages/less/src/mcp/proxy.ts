@@ -1,186 +1,89 @@
-/**
- * MCP tool call proxy — maps MCP results to ContentBlock[].
- * Implements AC6.3: Tool call proxied via client.callTool(), MCP result mapped to ContentBlock[] with MCP provenance
- */
-
 import type { ContentBlock } from "@bound/llm";
 import { formatMcpProvenance } from "../tools/provenance";
-import type { ToolNameMapping } from "../tools/registry";
+import { type ToolResult, isImageMediaType } from "../tools/types";
 import type { McpServerManager } from "./manager";
 
-// Supported image media types per ContentBlock.image.source specification
-const SUPPORTED_IMAGE_TYPES = new Set<string>([
-	"image/jpeg",
-	"image/png",
-	"image/gif",
-	"image/webp",
-]);
+export interface ToolNameMapping {
+	serverName: string;
+	toolName: string;
+}
+
+function mapMcpContentItem(item: Record<string, unknown>): ContentBlock {
+	if (item.type === "text" && typeof item.text === "string") {
+		return { type: "text", text: item.text };
+	}
+	if (item.type === "image" && typeof item.mimeType === "string" && typeof item.data === "string") {
+		if (isImageMediaType(item.mimeType)) {
+			return {
+				type: "image",
+				source: { type: "base64", media_type: item.mimeType, data: item.data },
+			};
+		}
+		return { type: "text", text: `[unsupported image media type: ${item.mimeType}]` };
+	}
+	if (item.type === "resource" && item.resource && typeof item.resource === "object") {
+		// Several servers (e.g. github get_file_contents) return the actual payload
+		// as an embedded resource; surface its bytes instead of an "[unsupported]" stub.
+		const resource = item.resource as Record<string, unknown>;
+		const uri = typeof resource.uri === "string" ? resource.uri : "";
+		const mimeType = typeof resource.mimeType === "string" ? resource.mimeType : "";
+		const mimeSuffix = mimeType ? ` (${mimeType})` : "";
+		if (typeof resource.text === "string") {
+			const provenanceSuffix = uri ? ` [resource: ${uri}${mimeSuffix}]` : "";
+			return { type: "text", text: `${resource.text}${provenanceSuffix}` };
+		}
+		if (typeof resource.blob === "string" && isImageMediaType(mimeType)) {
+			return {
+				type: "image",
+				source: { type: "base64", media_type: mimeType, data: resource.blob },
+			};
+		}
+		return {
+			type: "text",
+			text: `[embedded resource: ${uri || "(no uri)"}${mimeSuffix}, ${typeof resource.blob === "string" ? "binary" : "no"} content]`,
+		};
+	}
+	return { type: "text", text: `[unsupported MCP content type: ${String(item.type)}]` };
+}
 
 /**
- * Proxy an MCP tool call through the server manager.
- *
- * @param manager - McpServerManager instance
- * @param prefixedName - Namespaced tool name (e.g., "boundless_mcp_server_tool")
- * @param args - Tool arguments
- * @param signal - AbortSignal for cancellation
- * @param hostname - Hostname for provenance metadata
- * @param toolNameMapping - Map from prefixed name to {serverName, toolName}
- * @returns ContentBlock[] with provenance and mapped MCP result
+ * Proxy an MCP tool call through the server manager, prefixing an MCP
+ * provenance block and carrying the server's `isError` flag through.
  */
 export async function proxyToolCall(
 	manager: McpServerManager,
-	prefixedName: string,
+	mapping: ToolNameMapping,
 	args: Record<string, unknown>,
-	_signal: AbortSignal,
 	hostname: string,
-	toolNameMapping: Map<string, ToolNameMapping>,
-): Promise<ContentBlock[]> {
-	// _signal is reserved for future cancellation support when MCP SDK supports AbortSignal
-	// Step 1: Lookup prefixed name in mapping
-	const mapping = toolNameMapping.get(prefixedName);
-	if (!mapping) {
-		return [
-			{
-				type: "text",
-				text: `Unknown tool: ${prefixedName}`,
-			},
-		];
-	}
-
+): Promise<ToolResult> {
 	const { serverName, toolName } = mapping;
-
-	// Step 2: Lookup server client
 	const client = manager.getClient(serverName);
 	if (!client) {
-		return [
-			{
-				type: "text",
-				text: `MCP server '${serverName}' is not running`,
-			},
-		];
+		return {
+			content: [{ type: "text", text: `MCP server '${serverName}' is not running` }],
+			isError: true,
+		};
 	}
 
+	const provenance = formatMcpProvenance(hostname, serverName, toolName);
 	try {
-		// Step 3: Call tool via MCP client
-		const result = await client.callTool({
-			name: toolName,
-			arguments: args,
-		});
-
-		// Step 4: Map MCP result to ContentBlock[]
-		const blocks: ContentBlock[] = [];
-
-		// Prepend provenance block
-		blocks.push(formatMcpProvenance(hostname, serverName, toolName));
-
-		// Map content blocks
-		if (result.content && Array.isArray(result.content)) {
+		const result = await client.callTool({ name: toolName, arguments: args });
+		const blocks: ContentBlock[] = [provenance];
+		if (Array.isArray(result.content)) {
 			for (const item of result.content) {
-				// Type assertion needed because MCP SDK types are loosely typed
-				const mcpItem = item as Record<string, unknown>;
-				if (item.type === "text" && typeof mcpItem.text === "string") {
-					blocks.push({
-						type: "text",
-						text: mcpItem.text,
-					});
-				} else if (
-					item.type === "image" &&
-					typeof mcpItem.mimeType === "string" &&
-					typeof mcpItem.data === "string"
-				) {
-					// Validate media type against supported set, fall through to unsupported if invalid
-					if (SUPPORTED_IMAGE_TYPES.has(mcpItem.mimeType)) {
-						const mediaType = mcpItem.mimeType as
-							"image/jpeg" | "image/png" | "image/gif" | "image/webp";
-						blocks.push({
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: mediaType,
-								data: mcpItem.data,
-							},
-						});
-					} else {
-						// Unsupported media type
-						blocks.push({
-							type: "text",
-							text: `[unsupported image media type: ${mcpItem.mimeType}]`,
-						});
-					}
-				} else if (
-					item.type === "resource" &&
-					mcpItem.resource &&
-					typeof mcpItem.resource === "object"
-				) {
-					// Embedded resource block: { type: "resource", resource: { uri,
-					// mimeType, text? | blob? } }. Several servers (e.g. github
-					// get_file_contents) return the actual payload this way. Surface
-					// the bytes instead of dropping them to an "[unsupported ...]" stub.
-					const resource = mcpItem.resource as Record<string, unknown>;
-					const uri = typeof resource.uri === "string" ? resource.uri : "";
-					const mimeType = typeof resource.mimeType === "string" ? resource.mimeType : "";
-					const provenanceSuffix = uri
-						? ` [resource: ${uri}${mimeType ? ` (${mimeType})` : ""}]`
-						: "";
-
-					if (typeof resource.text === "string") {
-						// Text resource — the common case (source files, docs, JSON).
-						blocks.push({
-							type: "text",
-							text: `${resource.text}${provenanceSuffix}`,
-						});
-					} else if (typeof resource.blob === "string" && SUPPORTED_IMAGE_TYPES.has(mimeType)) {
-						// Binary resource whose mime is a supported image — inline it.
-						blocks.push({
-							type: "image",
-							source: {
-								type: "base64",
-								media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-								data: resource.blob,
-							},
-						});
-					} else {
-						// Binary resource we can't inline — name it so provenance and
-						// mime survive rather than collapsing to a bare stub.
-						blocks.push({
-							type: "text",
-							text: `[embedded resource: ${uri || "(no uri)"}${mimeType ? ` (${mimeType})` : ""}, ${typeof resource.blob === "string" ? "binary" : "no"} content]`,
-						});
-					}
-				} else {
-					// Graceful degradation for unsupported types
-					blocks.push({
-						type: "text",
-						text: `[unsupported MCP content type: ${String(mcpItem.type)}]`,
-					});
-				}
+				blocks.push(mapMcpContentItem(item as Record<string, unknown>));
 			}
 		}
-
-		// Step 5: Handle isError flag
 		if (result.isError) {
-			// If no content blocks were added, create an error block
-			if (blocks.length === 1) {
-				// Only provenance block exists
-				blocks.push({
-					type: "text",
-					text: "MCP tool returned an error",
-				});
-			}
-			// Mark the result as error by convention (caller will handle)
-			// For now, just return the blocks with error content
+			if (blocks.length === 1) blocks.push({ type: "text", text: "MCP tool returned an error" });
+			return { content: blocks, isError: true };
 		}
-
-		return blocks;
+		return { content: blocks };
 	} catch (error) {
-		// Handle MCP client errors
 		const errorMessage = error instanceof Error ? error.message : String(error);
-		return [
-			formatMcpProvenance(hostname, serverName, toolName),
-			{
-				type: "text",
-				text: `Error calling MCP tool: ${errorMessage}`,
-			},
-		];
+		return {
+			content: [provenance, { type: "text", text: `Error calling MCP tool: ${errorMessage}` }],
+			isError: true,
+		};
 	}
 }

@@ -928,4 +928,59 @@ describe("BoundClient HTTP — model routing & provenance", () => {
 		expect(req?.method).toBe("GET");
 		expect(req?.path).toBe("/api/threads/thread%2F1/provenance");
 	});
+
+	it("listMcpChallenges and listMcpChallengesByServer GET the challenge routes", async () => {
+		fake.route("GET /api/mcp-challenges", () =>
+			json({ challenges: [], loopback: true, canResolve: false }),
+		);
+		fake.route("GET /api/mcp-challenges/by-server", () =>
+			json({ servers: {}, loopback: false, canResolve: true }),
+		);
+		expect(await client.listMcpChallenges()).toEqual({
+			challenges: [],
+			loopback: true,
+			canResolve: false,
+		});
+		expect(await client.listMcpChallengesByServer()).toEqual({
+			servers: {},
+			loopback: false,
+			canResolve: true,
+		});
+	});
+
+	it("claimMcpChallenge POSTs to the URL-encoded claim route", async () => {
+		fake.route("POST /api/mcp-challenges/c%2F1/claim", () =>
+			json({ authorizeUrl: "https://auth.example/x", challengeId: "c/1" }),
+		);
+		const claim = await client.claimMcpChallenge("c/1");
+		expect(claim.authorizeUrl).toBe("https://auth.example/x");
+		expect(fake.requests.at(-1)?.method).toBe("POST");
+	});
+
+	it("getPersona GETs and setPersona POSTs the persona route", async () => {
+		fake.route("GET /api/persona", () =>
+			json({ persona: "p", modified_at: "2026-01-01T00:00:00Z", max_bytes: 10 }),
+		);
+		fake.route("POST /api/persona", () =>
+			json({ ok: true, bytes: 2, modified_at: "2026-01-02T00:00:00Z" }),
+		);
+		expect((await client.getPersona()).persona).toBe("p");
+		await client.setPersona("hi", "2026-01-01T00:00:00Z");
+		expect(fake.requests.at(-1)?.body).toEqual({
+			persona: "hi",
+			expected_modified_at: "2026-01-01T00:00:00Z",
+		});
+		await client.setPersona("hi", null);
+		expect(fake.requests.at(-1)?.body).toEqual({ persona: "hi" });
+	});
+
+	it("setPersona surfaces a 409 conflict as a BoundApiError", async () => {
+		fake.route("POST /api/persona", () => json({ error: "stale" }, { status: 409 }));
+		await expect(client.setPersona("hi", "old")).rejects.toMatchObject({ status: 409 });
+	});
+
+	it("listMcpServers GETs the MCP server inventory", async () => {
+		fake.route("GET /api/mcp/servers", () => json({ servers: [{ name: "gh" }] }));
+		expect(await client.listMcpServers<{ name: string }>()).toEqual({ servers: [{ name: "gh" }] });
+	});
 });

@@ -3,7 +3,6 @@ import {
 	type CoreTelemetry,
 	recordChangeLogPostcommitEvent,
 	recordChangeLogTransaction,
-	recordRelayOutboxOperation,
 	setCoreTelemetry,
 	withCoreSpan,
 } from "../telemetry";
@@ -22,7 +21,6 @@ interface SpanCall {
 function makeRecorder(): {
 	telemetry: CoreTelemetry;
 	counters: Record<string, Array<{ value: number; attributes?: Record<string, string | number> }>>;
-	histograms: Array<{ value: number; attributes?: Record<string, string> }>;
 	spans: SpanCall[];
 } {
 	const counters: Record<
@@ -31,9 +29,7 @@ function makeRecorder(): {
 	> = {
 		changeLogTransactions: [],
 		changeLogPostcommitEvents: [],
-		relayOutboxOperations: [],
 	};
-	const histograms: Array<{ value: number; attributes?: Record<string, string> }> = [];
 	const spans: SpanCall[] = [];
 
 	const telemetry: CoreTelemetry = {
@@ -45,16 +41,6 @@ function makeRecorder(): {
 		changeLogPostcommitEvents: {
 			add(value, attributes) {
 				counters.changeLogPostcommitEvents.push({ value, attributes });
-			},
-		},
-		relayOutboxOperations: {
-			add(value, attributes) {
-				counters.relayOutboxOperations.push({ value, attributes });
-			},
-		},
-		relayOutboxOperationDuration: {
-			record(value, attributes) {
-				histograms.push({ value, attributes });
 			},
 		},
 		startSpan() {
@@ -74,7 +60,7 @@ function makeRecorder(): {
 		},
 	};
 
-	return { telemetry, counters, histograms, spans };
+	return { telemetry, counters, spans };
 }
 
 describe("core telemetry", () => {
@@ -106,7 +92,7 @@ describe("core telemetry", () => {
 			setCoreTelemetry(telemetry);
 
 			const result = withCoreSpan(
-				"relay_outbox.operation",
+				"durable_work.operation",
 				{ operation: "read", count: 3 },
 				() => "done",
 			);
@@ -179,35 +165,6 @@ describe("core telemetry", () => {
 				{ value: 1, attributes: { outcome: "succeeded" } },
 			]);
 		});
-
-		it("recordRelayOutboxOperation adds count and skips the histogram when no duration given", () => {
-			const { telemetry, counters, histograms } = makeRecorder();
-			setCoreTelemetry(telemetry);
-			recordRelayOutboxOperation("read", "hit", 5);
-			expect(counters.relayOutboxOperations).toEqual([
-				{ value: 5, attributes: { operation: "read", outcome: "hit" } },
-			]);
-			expect(histograms).toHaveLength(0);
-		});
-
-		it("recordRelayOutboxOperation records the histogram when a duration is given", () => {
-			const { telemetry, counters, histograms } = makeRecorder();
-			setCoreTelemetry(telemetry);
-			recordRelayOutboxOperation("write", "inserted", 1, 12.5);
-			expect(counters.relayOutboxOperations).toEqual([
-				{ value: 1, attributes: { operation: "write", outcome: "inserted" } },
-			]);
-			expect(histograms).toEqual([
-				{ value: 12.5, attributes: { operation: "write", outcome: "inserted" } },
-			]);
-		});
-
-		it("defaults count to 1 when omitted", () => {
-			const { telemetry, counters } = makeRecorder();
-			setCoreTelemetry(telemetry);
-			recordRelayOutboxOperation("ack", "delivered");
-			expect(counters.relayOutboxOperations[0].value).toBe(1);
-		});
 	});
 
 	describe("setCoreTelemetry() with no argument installs noops", () => {
@@ -215,7 +172,6 @@ describe("core telemetry", () => {
 			setCoreTelemetry();
 			// record helpers are safe no-ops
 			expect(() => recordChangeLogTransaction("committed")).not.toThrow();
-			expect(() => recordRelayOutboxOperation("read", "miss", 1, 3)).not.toThrow();
 			// withCoreSpan still returns the callback value via the noop span
 			expect(withCoreSpan("changelog.transaction", () => "ok")).toBe("ok");
 		});

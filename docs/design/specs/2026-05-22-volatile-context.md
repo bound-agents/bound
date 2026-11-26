@@ -164,7 +164,7 @@ When Tier 3 is active, the `Uncategorized` cluster surfaces a `[synthesis-backlo
 - **Stable prefix** (cacheable, sent on the `system` provider param): Working Knowledge bodies (pinned + summary entries, no markers), Discoverable Archive titles, and the active skill index.
 - **Varying tail** (uncached, sent as a `developer`-role message after history): Working Knowledge update markers (`[changed since last turn]`, `[stale child of <parent>]`), the entire Live State section (cross-thread digest, task digest, file modifications, applied advisories, synthesis backlog), the User/Thread ID line, relay/platform/model context, retired-skill notifications, advisory feedback notifications, inactive-skill references, and any operator-supplied `system_prompt_addition`.
 
-The split is structural: each renderer (`renderWorkingKnowledge`, `renderDiscoverableArchive`, `renderLiveState`) is responsible for emitting its content into the correct channel. `renderWorkingKnowledge` returns `{ stableLines, varyingLines }` where varying carries keyed update references (`- <key> [changed since last turn]`, `- <key>: <gloss> [stale child of <parent>]`); the stable side carries plain bodies. `renderDiscoverableArchive` is fully stable (titles only). `renderLiveState` is fully varying.
+The split is structural: each renderer emits its content into one channel. `renderWorkingKnowledge` (`packages/agent/src/stable-prefix/compose.ts`) emits plain stable bodies, `renderWorkingKnowledgeUpdates` (`packages/agent/src/summary-extraction.ts`) emits the varying keyed update references, `renderDiscoverableArchive` is fully stable (titles only), and `renderLiveState` is fully varying.
 
 The contract holds across all three composer call sites: the primary cold-path (`buildVolatileContext`), the no-history task path, and the budget-pressure rebuild path. Under budget pressure (R-VC14), the rebuild rewrites only the varying tail; the stable prefix is preserved verbatim because it is bounded (full-fidelity Working Knowledge is finite per the presence invariant; Discoverable Archive titles are bounded by R-VC15 tunables) and editing systemPrompt mid-assembly is structurally infeasible.
 
@@ -569,16 +569,16 @@ Thread `2d055bbe-...` violated the property silently. The `volatile-prefix` toke
 ### 9.3 Implementation
 
 - `packages/agent/src/stable-prefix/`: types, pure compose, hash helpers. Single seam for property tests and for production hashing.
-- `packages/agent/src/summary-extraction.ts`: `formatAbsoluteDate` replaces the prior `relativeTimeFragment` on the stable path. The relative-time helper survives for **varying-side** Live State rendering only.
+- `packages/agent/src/summary-extraction.ts`: `formatAbsoluteDate` replaces the prior `relativeTimeAt` on the stable path. The relative-time helper survives for **varying-side** Live State rendering only.
 - `packages/agent/src/stable-prefix/__tests__/compose.property.test.ts`: P1–P7 property tests via `fast-check` (determinism, time-purity, locality, order-invariance, same-day bump inertness, tier stability, separator injectivity).
-- `packages/agent/src/stable-prefix/__tests__/parity-with-production.test.ts`: regression that pins byte-equivalence between this module's output and the production renderers' stable channels for the same inputs.
+- `packages/agent/src/stable-prefix/__tests__/compose-order.test.ts`: pins the section composition order of `composeStableVolatileSubsection` across empty, seeded, and capped-summary inputs.
 - `ContextDebugInfo.stableSubsectionHash` + `stablePrefixInputFingerprint` + `stablePrefixRenderedAt` + `stablePrefixDriftVersion`: per-cold-rebuild provenance recorded on `turns.context_debug`. The hash covers the stable volatile subsection bytes actually sent; the fingerprint covers exactly the inputs that rendered them, and the render instant records when those inputs were collected (a stable-subsection cache hit records the fingerprint and render instant captured with the cached bytes, not the turn's own time); the version names the renderer/fingerprint generation. `stablePrefixHash` (whole `systemPrompt`) is recorded for cache diagnostics and is not compared by the drift detector, because static system parts outside the subsection move it without moving the fingerprint.
 - `packages/agent/src/validation/run-stable-prefix-drift-validation.ts`: hourly drift detector hooked into `heartbeat-context.ts`. Compares consecutive cold rebuilds on the same thread within the cache TTL whose `stablePrefixDriftVersion` equals `STABLE_PREFIX_DRIFT_VERSION`; emits `_validation:stable-prefix-drift:compose:*` when the same input fingerprint produces different output (renderer leak), `_validation:stable-prefix-drift:collect:*` when the input fingerprint shifted, between the two turns' render instants, without a covering `semantic_memory | skills | hosts` `change_log` row or a `threads` row recording a sibling thread's `summary` change (collector leak). Other `threads` writes, such as the `last_message_at` bump every loop turn makes, never cover. A collect finding requires the local `change_log` to retain a row at or before the earlier turn's render instant, proving no row in the window was pruned, and every sibling `threads` row in the window to have an earlier logged row of the same thread to compare its `summary` against; otherwise, and for any pair whose turns came from different producer hosts, the pair is reported as unknown rather than as a leak.
 
 ### 9.4 Reading List
 
 - `packages/agent/src/stable-prefix/types.ts` — `StableVolatileInputs` declaration with full per-field rationale.
-- `packages/agent/src/stable-prefix/compose.ts` — pure renderer, including the parity-with-production rationale for the deliberate duplication of ~15 lines of rendering logic.
+- `packages/agent/src/stable-prefix/compose.ts` — pure renderer for the entire volatile stable subsection (`renderWorkingKnowledge`, `renderDiscoverableArchive`, `renderSkillIndex`, `renderClusterModels`).
 - `packages/agent/src/stable-prefix/hash.ts` — canonicalization rules for the input fingerprint.
 
 ## 10. Varying-Tail Freshness Invariant (R-VC26)
@@ -617,20 +617,7 @@ The wins of R-VC25 (cache stability) do not apply here. The risks are different:
 
 - **No DB reads. No env / config reads.** The renderer is fed from a `collect`-equivalent layer; data acquisition does not happen inside compose. (`Date.now()` is allowed only via the explicit `nowMs` parameter — every other wall-clock call is forbidden inside the compose seam.)
 
-### 10.3 Implementation
-
-- `packages/agent/src/varying-tail/`: types, pure compose. Single seam for property tests and parity regression.
-- `composeVolatileVarying(inputs: VolatileVaryingInputs): string[]` is pure in `(inputs, inputs.nowMs)`. Renders WK update markers + Recent-memory block + Live State.
-- Production-renderer parameterization: `relativeTimeAt(iso, nowMs)` and `stalenessTagAt(iso, nowMs)` are exported parameterized variants of the prior `relativeTime` / `stalenessTag` helpers. The prior helpers continue to exist as thin `Date.now()`-bound wrappers so production callsites are unaffected. The varying-tail compose seam uses the parameterized variants exclusively.
-- `packages/agent/src/varying-tail/__tests__/compose.property.test.ts`: V1-V6 property tests via `fast-check`, `numRuns: 100`.
-- `packages/agent/src/varying-tail/__tests__/parity-with-production.test.ts`: regression that pins byte-equivalence between `composeVolatileVarying` and the production renderers (`renderWorkingKnowledge.varyingLines + Recent-memory + renderLiveState`) for the same inputs, with `Date.now()` mocked to a fixed value.
-
-### 10.4 Reading List
-
-- `packages/agent/src/varying-tail/types.ts` — `VolatileVaryingInputs` declaration with full per-field rationale and the V1-V6 contract.
-- `packages/agent/src/varying-tail/compose.ts` — pure renderer with the parity-with-production rationale.
-
-### 10.5 What R-VC26 Does NOT Cover
+### 10.3 What R-VC26 Does NOT Cover
 
 - **Per-turn injectables.** Model-switch notices, file-modification notifications, the `User/Thread ID` line, relay/platform/model context, `systemPromptAddition`, and inactive-skill references are added AROUND `composeVolatileVarying` (in `buildVolatileContext` / `assembleContext`), not inside it. They have their own handling and do not currently flow through this seam. A future iteration may extract a `composeVolatileTail` that wraps both `composeVolatileVarying` and these per-turn injectables; for now, the boundary lives at the R-VC24 three-renderer scope.
 
@@ -727,6 +714,6 @@ R-VC22's typographic-uniformity concern (no authority gradient between top-level
 
 ### R-VC33 — XML Relevant memory and identity element (amends R-VC27; extends R-VC32)
 
-**Relevant memory (amends R-VC27).** The `## Relevant memory — matched to this turn` markdown header becomes a `<relevant-memory note="Matched to this turn; bodies via memory search.">…</relevant-memory>` element; the R-VC32 note that R-VC27 "retains its markdown title-only shape" is superseded. Each shortlist entry renders as a self-closing `<memory key="…" tier="…" age="…"/>` element — `tier` is the entry's actual tier (`forgotten` when soft-deleted, same rule as before), `age` carries the relative-time fragment previously parenthesized. Selection semantics (upstream `selectRelevantMemory` dedup + `BOUND_VC27_K` cap, relevance order, varying-side placement) are unchanged; this is a rendering-layer conversion only, mirrored byte-for-byte in `varying-tail/compose.ts` and pinned by the parity test under a mocked clock.
+**Relevant memory (amends R-VC27).** The `## Relevant memory — matched to this turn` markdown header becomes a `<relevant-memory note="Matched to this turn; bodies via memory search.">…</relevant-memory>` element; the R-VC32 note that R-VC27 "retains its markdown title-only shape" is superseded. Each shortlist entry renders as a self-closing `<memory key="…" tier="…" age="…"/>` element — `tier` is the entry's actual tier (`forgotten` when soft-deleted, same rule as before), `age` carries the relative-time fragment previously parenthesized. Selection semantics (upstream `selectRelevantMemory` dedup + `BOUND_VC27_K` cap, relevance order, varying-side placement) are unchanged; this is a rendering-layer conversion only.
 
 **Identity element.** The `User ID: <userId>, Thread ID: <threadId>` line that opens the varying prefix becomes `<identity user-id="…" thread-id="…"/>` (`varying-prefix/build.ts`), with both attributes XML-escaped. The V2 property in `build.property.test.ts` pins the new first-line shape. The relay (`You are: …`) and `Current Model:` lines are unchanged — they are prose about the running model, not structured pointers.

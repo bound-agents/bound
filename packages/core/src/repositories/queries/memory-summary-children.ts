@@ -2,15 +2,13 @@ import type { Database } from "bun:sqlite";
 
 /**
  * Cross-table reads over `memory_edges` JOIN `semantic_memory` that compute the
- * `summarizes` parent/child relationships used by the Working Knowledge and
- * Discoverable Archive renderers in `packages/agent/src/summary-extraction.ts`.
- *
- * See ../index.ts for conventions. Reads only.
+ * `summarizes` parent/child relationships behind the Working Knowledge and
+ * Discoverable Archive renderers.
  */
 
 /**
  * Projection for a `summarizes` child resolved against its `semantic_memory`
- * row. Column names mirror exactly what `buildStaleChildrenMap` destructures.
+ * row.
  */
 export interface SummaryChildRow {
 	/** edge.source_key — the parent summary key. */
@@ -59,8 +57,7 @@ export interface SummaryChildKeyValueRow {
 
 /**
  * Children of a single parent summary key via outgoing `summarizes` edges,
- * resolved against live `semantic_memory` rows. Used by the R-VC9b compliance
- * check in `packages/agent/src/validation/r-vc9-compliance.ts`.
+ * resolved against live `semantic_memory` rows (R-VC9b compliance check).
  */
 export function listSummarizesChildrenKeyValue(
 	db: Database,

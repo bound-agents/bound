@@ -1,5 +1,5 @@
 /**
- * Logical-model grouping precedence + confidence predicate (slice 6, R-MC8/R-MC9,
+ * Logical-model grouping precedence + confidence predicate (R-MC8/R-MC9,
  * 2026-11-21-model-catalog.md §6).
  *
  * PURE resolution: given one backend's `(provider, providerModelId)`, its synced

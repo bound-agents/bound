@@ -790,7 +790,6 @@ export async function initInference(
 	commandContext: Record<string, unknown> | null,
 	options?: InitInferenceOptions,
 ): Promise<InferenceResult> {
-	// 11. LLM setup — use ModelRouter to support all configured backends
 	appContext.logger.info("Initializing LLM...");
 	const rawBackends = appContext.config.modelBackends;
 	// loadModelBackendsConfig() has already compiled and atomically published
@@ -916,7 +915,7 @@ export async function initInference(
 		wireBackendReadiness(appContext, modelRouter, { modelsDevCache });
 	}
 
-	// 11a. Post-restart summary extraction
+	// Post-restart summary extraction
 	if (modelRouter && modelRouter.listBackends().length > 0) {
 		const threadsNeedingSummary = appContext.db
 			.query(

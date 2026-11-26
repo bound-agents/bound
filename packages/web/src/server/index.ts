@@ -1,7 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { ModelRouter } from "@bound/llm";
-import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { McpConfig } from "@bound/shared";
+import type { KeyringConfig, Logger, TypedEventEmitter } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import type {
 	ChangelogAckPayload,
@@ -11,120 +9,41 @@ import type {
 } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import type { MountableFs } from "just-bash";
-import { EMBEDDED_ASSETS_ENCODING, decodeAssetContent } from "./embedded-assets-codec";
+import { decodeAssetContent } from "./embedded-assets-codec";
+import { hasLoopbackHostHeader } from "./lib/loopback";
 import {
 	type BackendPricing,
 	type ModelsConfig,
 	type RoutesConfig,
 	registerRoutes,
 } from "./routes/index";
-import type { OauthMcpResolverBridge } from "./routes/oauth-mcp";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
 async function loadEmbeddedAssets(): Promise<AssetMap> {
+	let mod: typeof import("./embedded-assets");
 	try {
-		const mod = await import("./embedded-assets");
-		const raw = mod.embeddedAssets;
-		if (!raw) return new Map();
-		// Assets are stored gzip+base64 (see embedded-assets-codec.ts). Decode back
-		// to their original text here so the serve path stays byte-identical. Older
-		// generated modules without the marker hold raw content and pass through.
-		if (mod.embeddedAssetsEncoding !== EMBEDDED_ASSETS_ENCODING) return raw;
-		const decoded: AssetMap = new Map();
-		for (const [path, asset] of raw) {
-			decoded.set(path, {
-				content: decodeAssetContent(asset.content),
-				contentType: asset.contentType,
-			});
-		}
-		return decoded;
+		mod = await import("./embedded-assets");
 	} catch {
+		// The generated module is gitignored and absent in dev/CI checkouts.
 		return new Map();
 	}
+	const decoded: AssetMap = new Map();
+	for (const [path, asset] of mod.embeddedAssets ?? []) {
+		decoded.set(path, {
+			content: decodeAssetContent(asset.content),
+			contentType: asset.contentType,
+		});
+	}
+	return decoded;
 }
 
 export type { ModelsConfig, BackendPricing };
 
-export interface WebAppConfig {
-	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined);
-	backendPricing?: BackendPricing[];
-	hostName?: string;
-	siteId?: string;
-	operatorUserId: string;
-	/**
-	 * The web server's bind host (WEB_BIND_HOST). Forwarded to the
-	 * pending-MCP-challenges route so the web-chat consent card gates its live
-	 * authorize flow on a loopback bind (R-MO27c).
-	 */
-	webBindHost?: string;
-	/**
-	 * The sync server's bind host and port (PORT/BIND_HOST env). Forwarded
-	 * to the webhooks route so it can enumerate the local webhook delivery
-	 * URL — webhook ingestion is on the sync port (3000), distinct from the
-	 * web port (3001). See #36.
-	 */
-	syncBindHost?: string;
-	syncPort?: number;
-	/**
-	 * `sync.hub` from config, if this node is a spoke. Forwarded to the
-	 * webhooks route so the hub's public webhook URL appears in the URL
-	 * enumeration alongside the local URLs.
-	 */
-	hubUrl?: string;
-	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeLoops?: Set<string>;
-	emitToolCancel?: (
-		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
-		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
-	) => void;
-	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
-	/**
-	 * Live sandbox cluster filesystem. When provided, exposes
-	 * `/api/sandbox/file` for arbitrary path read/write — used by the
-	 * `boundless_copy` tool to bridge host and sandbox filesystems
-	 * without round-tripping bytes through the LLM context window.
-	 */
-	clusterFs?: MountableFs | null;
-	/**
-	 * Agent-side MCP server config (`mcp.json`). The MCP-Apps route sources
-	 * app-bearing http servers from it (joined against the synced capability
-	 * inventory) and proxies the browser to them. Web-router only; never the
-	 * sync router.
-	 */
-	mcpConfig?: McpConfig | null;
-	/**
-	 * In-process model router. When provided, exposes `POST /v1/responses`
-	 * (OpenAI Responses-API-compatible inference over HTTP — no agent loop, no
-	 * context assembly).
-	 */
-	modelRouter?: ModelRouter | null;
-	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
-	topologyRole?: "hub" | "spoke";
-	/**
-	 * The resolving host's in-process MCP OAuth resolver bridge (slice 3.5,
-	 * R-MO17/R-MO27). Forwarded to the oauth-mcp callback route via RoutesConfig.
-	 */
-	oauthMcpBridge?: OauthMcpResolverBridge | null;
-	/**
-	 * Co-location token accessor (R-MO27b LEG A). Forwarded to RoutesConfig for the
-	 * MCP-Apps proxy's owner-token attach on a locally-owned app-bearing server.
-	 */
-	getMcpAppAccessToken?: import("./routes/mcp-apps").GetAccessTokenForServer;
-	/**
-	 * Cross-host relay dispatcher (R-MO27b LEG B). Forwarded to RoutesConfig for the
-	 * MCP-Apps proxy's relay to a peer-owned app-bearing server.
-	 */
-	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
-	/**
-	 * Peer route-health snapshot reader for Settings › Models and the model picker.
-	 * Asks a peer for its own RouteHealth over the authenticated `route_health`
-	 * durable-work kind. Absent → remote routes report `unknown`.
-	 */
-	relayRouteHealth?: import("./routes/routing").RelayRouteHealth;
-}
+export type WebAppConfig = RoutesConfig & {
+	/** Runs before every route, including routes registered here. */
+	onRequest?: (method: string, path: string) => void;
+};
 
 export interface SyncAppConfig {
 	siteId: string;
@@ -164,9 +83,6 @@ export interface SyncAppConfig {
 	} | null;
 }
 
-/**
- * Create the web/API Hono app: API routes, webhook routes, static assets, DNS-rebinding protection.
- */
 export async function createWebApp(
 	db: Database,
 	eventBus: TypedEventEmitter,
@@ -179,48 +95,24 @@ export async function createWebApp(
 		);
 	}
 
-	const routesConfig: RoutesConfig = {
-		modelsConfig: config.modelsConfig,
-		backendPricing: config.backendPricing,
-		hostName: config.hostName,
-		siteId: config.siteId,
-		operatorUserId: config.operatorUserId,
-		syncBindHost: config.syncBindHost,
-		syncPort: config.syncPort,
-		hubUrl: config.hubUrl,
-		statusForwardCache: config.statusForwardCache,
-		activeLoops: config.activeLoops,
-		emitToolCancel: config.emitToolCancel,
-		requestConsistency: config.requestConsistency,
-		clusterFs: config.clusterFs,
-		mcpConfig: config.mcpConfig,
-		modelRouter: config.modelRouter,
-		oauthMcpBridge: config.oauthMcpBridge ?? null,
-		webBindHost: config.webBindHost,
-		getMcpAppAccessToken: config.getMcpAppAccessToken,
-		relayMcpAppProxy: config.relayMcpAppProxy,
-		relayRouteHealth: config.relayRouteHealth,
-	};
-
 	const app = new Hono();
-	const routes = registerRoutes(db, eventBus, routesConfig);
+	const routes = registerRoutes(db, eventBus, config);
 
-	// Host header validation middleware — DNS-rebinding protection for unauthenticated routes.
+	const { onRequest } = config;
+	if (onRequest) {
+		app.use("*", async (c, next) => {
+			onRequest(c.req.method, new URL(c.req.url).pathname);
+			return next();
+		});
+	}
+
 	app.use("*", async (c, next) => {
-		const host = c.req.header("host");
-		if (host) {
-			const hostName = host.startsWith("[")
-				? host.slice(0, host.indexOf("]") + 1)
-				: host.split(":")[0];
-			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
-			if (!allowedHosts.includes(hostName)) {
-				return c.json({ error: "Invalid Host header" }, 400);
-			}
+		if (!hasLoopbackHostHeader(c.req.header("host"))) {
+			return c.json({ error: "Invalid Host header" }, 400);
 		}
 		return next();
 	});
 
-	// API routes
 	app.route("/api/threads", routes.threads);
 	app.route("/api/threads", routes.messages);
 	app.route("/api/files", routes.files);
@@ -248,7 +140,6 @@ export async function createWebApp(
 	app.route("/oauth/mcp", routes.oauthMcp);
 	app.route("/api/mcp-challenges", routes.mcpChallenges);
 
-	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();
 	if (assets.size > 0) {
 		for (const [path, asset] of assets) {

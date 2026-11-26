@@ -67,7 +67,7 @@ export interface ModularAgentLoopOptions {
 	loopGuards?: Partial<LoopGuardThresholds>;
 }
 
-const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
+export const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 3;
 const DEFAULT_DEGENERATE_RETRY_MAX = 2;
 

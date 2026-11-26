@@ -7,8 +7,7 @@
  * GitHub App client id, yielding a `ghu_` access token usable as a Bearer
  * against the Copilot API, plus a rotating `ghr_` refresh token.
  *
- * Verified wire facts (live probes against Free + Enterprise accounts,
- * 2026-11-20/21):
+ * Verified wire facts (live probes against Free + Enterprise accounts):
  *   - Device flow: POST github.com/login/device/code → {device_code, user_code,
  *     verification_uri, interval}; poll POST github.com/login/oauth/access_token
  *     with grant_type urn:ietf:params:oauth:grant-type:device_code. Handle

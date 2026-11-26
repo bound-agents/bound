@@ -200,13 +200,11 @@ export function pngDimensions(bytes: Uint8Array): { width: number; height: numbe
 	return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-// ---------------------------------------------------------------------------
 // Encoder + downscaler — the return trip. Pasted screenshots that exceed the
 // provider image budget (Anthropic caps the BASE64 payload at 5 MB) are
 // decoded, bilinear-downscaled, and re-encoded before they ever board a
 // message. Filter 0 rows + node:zlib deflate + real CRC32s: providers DO
 // validate CRCs, unlike our lenient decoder above.
-// ---------------------------------------------------------------------------
 
 const CRC_TABLE = (() => {
 	const t = new Uint32Array(256);

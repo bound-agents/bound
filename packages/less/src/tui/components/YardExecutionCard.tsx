@@ -3,8 +3,9 @@ import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
 import { tokens } from "../theme";
+import { formatDuration } from "../util/transcript";
 import { HighlightedCodeBlock } from "./HighlightedCode";
-import { StripeBox, formatDuration } from "./MessageBlock";
+import { StripeBox } from "./MessageBlock";
 
 export interface YardExecutionCardProps {
 	tree: YardTreeSnapshot;
@@ -23,7 +24,7 @@ export interface YardExecutionCardProps {
 	 * Row budget for the graph section of a LIVE card. A scatter-gather run
 	 * can carry dozens of aux nodes; rendered one-per-row the live card
 	 * exceeded the terminal height and Ink's dynamic region flickered on
-	 * every repaint (thread febfe45e, 2026-08-16). Rows past the budget
+	 * every repaint. Rows past the budget
 	 * collapse into one "… +N more effects" line. Committed cards ignore
 	 * this — <Static> scrollback has no height constraint.
 	 */
@@ -34,10 +35,10 @@ export interface YardExecutionCardProps {
  * Yard's lifecycle events carry previews up to 4,000 chars INCLUDING
  * newlines (yard.ts `preview()`). The LIVE card renders in Ink's dynamic
  * region, where content taller than the terminal corrupts the repaint
- * (thread adb65d85, 2026-08-16) — so while `running`, every preview and
+ * — so while `running`, every preview and
  * summary is clamped to one bounded line. The COMMITTED card renders once
  * into <Static> scrollback, where height is harmless, so it shows the full
- * previews (thread f1373e45: the flat 160-char elide hid the run's actual
+ * previews (the flat 160-char elide hid the run's actual
  * input and result). Leaf summaries stay clamped on both — the full values
  * live in the persisted yard tool_call/tool_result rows.
  */
@@ -213,7 +214,7 @@ function kindColor(node: NodeState): string | undefined {
  * (`label ×N` + a per-member glyph cluster in dispatch order). Scatter-
  * gather fan-outs dispatch the same aux specialist across every partition;
  * one row per member wasted the horizontal axis and grew the card vertically
- * without adding information (thread febfe45e).
+ * without adding information.
  */
 const GROUP_THRESHOLD = 3;
 

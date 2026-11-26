@@ -39,7 +39,6 @@ export async function initSandbox(
 	mcpCommands: CommandDefinition[],
 	mcpServerNames: Set<string>,
 ): Promise<SandboxResult> {
-	// 9. Sandbox setup
 	appContext.logger.info("Setting up sandbox...");
 	let sandbox: Awaited<ReturnType<typeof createSandbox>> | null = null;
 	let clusterFsObj: ClusterFsResult | null = null;

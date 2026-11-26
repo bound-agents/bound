@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import type { ChangeLogEntry } from "../changeset";
+import type { ChangeLogEntry } from "@bound/shared";
 import { applyAppendOnlyReducer, applyLWWReducer, clearColumnCache } from "../reducers";
 
 /**

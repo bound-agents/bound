@@ -15,7 +15,7 @@ import {
 	listLiveMessageProjectionByThreadSince,
 	listMemoryDeltaKeysSince,
 } from "@bound/core";
-import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
+import type { BackendCapabilities, LLMMessage } from "@bound/llm";
 import type {
 	CommandRegistryEntry,
 	ContextDebugInfo,
@@ -24,7 +24,12 @@ import type {
 	Message,
 	RelevantMemoryDebugEntry,
 } from "@bound/shared";
-import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
+import {
+	PERSONA_CLUSTER_CONFIG_KEY,
+	countContentTokens,
+	countTokens,
+	createLogger,
+} from "@bound/shared";
 import { type Span, SpanStatusCode, context, createContextKey, trace } from "@opentelemetry/api";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop-utils";
 import { annotateMessagesWithTokens } from "./annotation";
@@ -38,16 +43,15 @@ import {
 } from "./progressive-fidelity";
 import { substitutePurgedMessages } from "./purge-substitution";
 import {
+	type ClusterModelView,
 	STABLE_PREFIX_DRIFT_VERSION,
+	type StableSubsectionCache,
+	composeStableVolatileSubsection,
 	hashStableVolatileInputs,
 	hashSystemPromptString,
+	loadClusterModels,
 	projectStableVolatileInputs,
-	renderSkillIndex,
 } from "./stable-prefix";
-import type { StableSubsectionCache } from "./stable-prefix/cache";
-import { loadClusterModels } from "./stable-prefix/collect";
-import { renderClusterModels } from "./stable-prefix/compose";
-import type { ClusterModelView } from "./stable-prefix/types";
 import {
 	type LiveStateTaskEntry,
 	RELEVANT_MEMORY_FOOTER,
@@ -59,8 +63,8 @@ import {
 	buildStaleChildrenMap,
 	buildVolatileEnrichment,
 	bumpRenderedDetailEntries,
-	capWorkingKnowledgeSummaries,
 	computeBaseline,
+	computeSynthesisBacklogCount,
 	extractAssistantSeedText,
 	flattenRecencyEntries,
 	formatRelevantMemoryTitleLine,
@@ -70,9 +74,8 @@ import {
 	loadPinnedEntries,
 	loadSummaryEntries,
 	renderCrossThreadSummaries,
-	renderDiscoverableArchive,
 	renderLiveState,
-	renderWorkingKnowledge,
+	renderWorkingKnowledgeUpdates,
 	resolveVc15Tunables,
 	resolveVc27Cap,
 	selectRelevantMemory,
@@ -93,6 +96,8 @@ function getTracer() {
 }
 
 const CONTEXT_EVENT_OWNER = createContextKey("bound.context-assembly.event-owner");
+
+const logger = createLogger("@bound/agent", "context-assembly");
 
 type ContextEventAttributes = Record<string, string | number | boolean>;
 
@@ -205,7 +210,7 @@ export function computeBaseTruncationTarget(
  * concept — it controls how aggressively truncation cuts once it fires. The safety
  * margin controls WHEN truncation fires.
  */
-export const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
+const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 export const CONTEXT_SAFETY_MARGIN_FLOOR = 512;
 
 export function computeSafetyMargin(contextWindow: number): number {
@@ -446,6 +451,8 @@ export interface VolatileContext {
 	crossThreadSources?: CrossThreadSource[];
 	/** Total memory count for header reconstruction */
 	totalMemCount: number;
+	/** R-MV4 delta baseline this assembly computed; reused by budget-pressure rebuild. */
+	baseline: string;
 	/**
 	 * SHA-256/16-hex of the `StableVolatileInputs` snapshot that fed
 	 * the R-VC24 stable subsection rendering on this assembly. The
@@ -591,6 +598,7 @@ function loadVolatileSectionInputs(args: {
 			buildVolatileEnrichment(
 				db,
 				baseline,
+				nowMs,
 				maxMemory,
 				maxTasks,
 				undefined,
@@ -704,8 +712,7 @@ interface ComposeVolatileSectionsParams {
 	 * renders every summary entry as an unlabeled `- key: gloss` line on the
 	 * stable channel. That line rides the summary list identically on both
 	 * surfaces, so it is intentionally left in place — narrowing it would diverge
-	 * the stable channel and pull the stable-prefix purity subsystem (parity test
-	 * + drift fingerprint) into scope. In practice the residual is a handful of
+	 * the stable channel across surfaces and shift the drift fingerprint. In practice the residual is a handful of
 	 * recent children (the bulk of the measured ~5K lived in the varying bullets).
 	 */
 	includeStaleChildren: boolean;
@@ -726,6 +733,10 @@ interface ComposeVolatileSectionsParams {
 	 */
 	recencyEntries: StageEntry[];
 	budgetPressure: boolean;
+	/** Rendered into the stable skill index; empty renders no index. */
+	activeSkills: ReadonlyArray<{ name: string; description: string }>;
+	/** Rendered into the stable `<stable-context>` block; empty renders none. */
+	clusterModels: ReadonlyArray<ClusterModelView>;
 	nowMs: number;
 	/**
 	 * Current host's `host_name`. Threaded into `renderLiveState` to resolve
@@ -763,58 +774,51 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	varyingLines: string[];
 	synthesisBacklogCount: number | null;
 } {
-	const stableLines: string[] = [];
 	const varyingLines: string[] = [];
 
-	// Surface-independent: computed from the FULL stale map regardless of
-	// `includeStaleChildren`. This set drives the Discoverable-Archive drop
-	// (`renderDiscoverableArchive` below), which lands in `stableLines`. Gating
-	// it on the surface would diverge the stable channel between heartbeat and
-	// active turns and break cross-thread cache reuse. Keeping it full means a
-	// stale-child key dropped here is NOT re-surfaced as a DA title on the active
-	// turn — so on active the only `[stale child of …]`-flagged surfacing (the
-	// varying "Working Knowledge — updates" bullets, gated below) disappears, and
-	// the child does not leak back in via a DA title. Note this does NOT remove
-	// the child's `[stale-detail]` summary-body line from the stable Working
-	// Knowledge block: that line rides `summaries` (see `includeStaleChildren`
-	// docs) and is intentionally identical on both surfaces.
-	const staleChildKeysInWorkingKnowledge = new Set(
-		Array.from(params.staleChildrenMap.values())
-			.flat()
-			.map((e) => e.key),
+	// The stable channel reads the FULL stale map regardless of
+	// `includeStaleChildren`: a stale child dropped from the Discoverable
+	// Archive stays dropped on the active surface, so the stable bytes are
+	// identical across heartbeat and active turns (cross-thread cache reuse).
+	const stableLines = composeStableVolatileSubsection(
+		projectStableVolatileInputs({
+			pinned: params.pinned,
+			summaries: params.summaries,
+			detailEntries: params.detailEntries,
+			parentSummaryMap: params.parentSummaryMap,
+			staleChildrenMap: params.staleChildrenMap,
+			budgetPressure: params.budgetPressure,
+			activeSkills: params.activeSkills,
+			tunables: resolveVc15Tunables(),
+			clusterModels: params.clusterModels,
+		}),
+		params.stableCrossThreadSummaries.length > 0
+			? { crossThreadLines: renderCrossThreadSummaries(params.stableCrossThreadSummaries).lines }
+			: {},
 	);
-
-	// Render in fixed order: Working Knowledge → Discoverable Archive → Live State
-	const wk = renderWorkingKnowledge({
-		pinned: params.pinned,
-		summaries: params.summaries,
-		// #69: stale-child bullets render only on the heartbeat surface.
-		staleChildrenBySummary: params.includeStaleChildren
-			? params.staleChildrenMap
-			: NO_STALE_CHILDREN,
-		deltaKeys: params.deltaKeys,
-	});
-	stableLines.push("");
-	stableLines.push(...wk.stableLines);
-
-	const da = renderDiscoverableArchive({
+	const synthesisBacklogCount = computeSynthesisBacklogCount({
 		entries: params.detailEntries,
 		parentSummaryByKey: params.parentSummaryMap,
-		staleChildKeysInWorkingKnowledge,
+		staleChildKeysInWorkingKnowledge: new Set(
+			Array.from(params.staleChildrenMap.values())
+				.flat()
+				.map((e) => e.key),
+		),
 		budgetPressure: params.budgetPressure,
 		tunables: resolveVc15Tunables(),
-		// R-VC29: summary-tier overflow past WORKING_KNOWLEDGE_SUMMARY_CAP renders
-		// title-only here (under `### Older summaries`), not in Working Knowledge.
-		// Derived through the SAME helper the stable-prefix mirror uses
-		// (stable-prefix/compose.ts renderDiscoverableArchiveStable) so the two
-		// channels stay byte-equivalent.
-		demotedSummaries: capWorkingKnowledgeSummaries(params.summaries).demoted,
 	});
-	stableLines.push(...da.section.lines);
 
-	if (wk.varyingLines.length > 0) {
-		varyingLines.push(...wk.varyingLines);
-	}
+	varyingLines.push(
+		...renderWorkingKnowledgeUpdates({
+			pinned: params.pinned,
+			summaries: params.summaries,
+			// #69: stale-child bullets render only on the heartbeat surface.
+			staleChildrenBySummary: params.includeStaleChildren
+				? params.staleChildrenMap
+				: NO_STALE_CHILDREN,
+			deltaKeys: params.deltaKeys,
+		}),
+	);
 
 	// Recency block: L2 (graph-seeded) + L3 (recency) entries with
 	// `tier='default'` that loadRecencyEntries / loadGraphEntries
@@ -827,7 +831,7 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	// arrives PRE-SELECTED at the call site (selectRelevantMemory: deduped
 	// against the full-body stable prefix, capped at BOUND_VC27_K). The dedup
 	// lives upstream because it needs the full pinned/summary key set, which
-	// the varying renderer (and its byte-equivalent mirror) does not carry —
+	// the varying renderer does not carry —
 	// so here we only title-only format. Detail entries and demoted
 	// summary-overflow titles stay eligible by design: re-surfacing a
 	// relevance-ranked shortlist adjacent to the conversation is the value.
@@ -835,14 +839,9 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		varyingLines.push("");
 		varyingLines.push(RELEVANT_MEMORY_HEADER);
 		for (const entry of params.recencyEntries) {
-			varyingLines.push(formatRelevantMemoryTitleLine(entry));
+			varyingLines.push(formatRelevantMemoryTitleLine(entry, params.nowMs));
 		}
 		varyingLines.push(RELEVANT_MEMORY_FOOTER);
-	}
-
-	if (params.stableCrossThreadSummaries.length > 0) {
-		stableLines.push("");
-		stableLines.push(...renderCrossThreadSummaries(params.stableCrossThreadSummaries).lines);
 	}
 
 	if (params.varyingCrossThreadSummaries.length > 0) {
@@ -854,7 +853,7 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		taskEntries: params.taskDigestEntries,
 		fileEntries: params.fileEntries,
 		advisories: params.advisories,
-		synthesisBacklogCount: da.synthesisBacklogCount,
+		synthesisBacklogCount,
 		budgetPressure: params.budgetPressure,
 		nowMs: params.nowMs,
 		currentHost: params.currentHost,
@@ -864,13 +863,13 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	return {
 		stableLines,
 		varyingLines,
-		synthesisBacklogCount: da.synthesisBacklogCount,
+		synthesisBacklogCount,
 	};
 }
 
 /**
  * Wraps the internal portion of a varying developer-message line array in the
- * `<volatile-context half="varying">` envelope (ask #3), leaving any trailing
+ * `<volatile-context half="varying">` envelope, leaving any trailing
  * operator/platform instruction OUTSIDE the envelope as the final word.
  *
  * Every varying-tail construction path (cold `buildVolatileContext`, the
@@ -966,8 +965,8 @@ export function buildVolatileContext(params: {
 	const varyingLines: string[] = [];
 	const suffixLines: string[] = [];
 
-	// --- VARYING: User/Thread ID, relay info, current model.
-	// Pure projection in `varying-prefix/build.ts`; pinned by V1-V8 props. ---
+	// Varying: User/Thread ID, relay info, current model.
+	// Pure projection in `varying-prefix/build.ts`; pinned by V1-V8 props.
 	const prefixLines = buildVaryingPrefix({
 		userId: params.userId,
 		threadId: params.threadId,
@@ -1057,6 +1056,7 @@ export function buildVolatileContext(params: {
 		buildVolatileEnrichment(
 			params.db,
 			enrichmentBaseline,
+			nowMs,
 			undefined,
 			undefined,
 			params.userMessageText,
@@ -1074,9 +1074,6 @@ export function buildVolatileContext(params: {
 	// Query total memory count for VolatileContext return
 	const totalMemCount = countActiveMemory(params.db);
 
-	// Render the three sections using the shared composer.
-	// Stable side: WK bodies + DA titles. Varying side: WK update markers +
-	// Live State.
 	const enrichmentStartIdx = suffixLines.length;
 	const varyingEnrichmentStartIdx = varyingLines.length;
 	// Hoisted so the R-VC27 selection can ride onto the returned VolatileContext
@@ -1090,6 +1087,15 @@ export function buildVolatileContext(params: {
 			resolveVc27Cap(),
 		),
 	);
+	let activeSkills: Array<{ name: string; description: string }> = [];
+	try {
+		activeSkills = listActiveSkillNameDescriptions(params.db);
+	} catch (error) {
+		logger.debug("Active skill index query failed; rendering no skill index", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+	const clusterModels = loadClusterModels(params.db, params.siteId);
 	const { stableLines: enrichmentStableLines, varyingLines: enrichmentVaryingLines } =
 		composeVolatileSections({
 			db: params.db,
@@ -1109,6 +1115,8 @@ export function buildVolatileContext(params: {
 			advisories,
 			recencyEntries: relevantMemorySelection,
 			budgetPressure: false,
+			activeSkills,
+			clusterModels,
 			nowMs,
 		});
 	const enrichmentLines: string[] = [...enrichmentStableLines, ...enrichmentVaryingLines];
@@ -1123,40 +1131,7 @@ export function buildVolatileContext(params: {
 		crossThreadSources = digest.sources;
 	}
 
-	// --- STABLE: active skill index ---
-	// Skill index is keyed off the active skill set; a skill flipping
-	// active/retired or being newly imported invalidates the prefix, but
-	// steady state (no skill churn) keeps it cacheable across turns.
-	//
-	// `activeSkills` is hoisted out of the try block so the
-	// stable-prefix fingerprint computation below can also see it. On
-	// error, falls through to `[]` — same outcome the rendering branch
-	// has (empty skill index produces no lines).
-	let activeSkills: Array<{ name: string; description: string }> = [];
-	try {
-		activeSkills = listActiveSkillNameDescriptions(params.db);
-
-		if (activeSkills.length > 0) {
-			const skillIndexLines = renderSkillIndex(activeSkills).split("\n");
-			stableLines.push(...skillIndexLines);
-			suffixLines.push(...skillIndexLines);
-		}
-	} catch (_error) {
-		// Non-fatal: active skills query failed
-	}
-
-	// --- STABLE: cluster model topology (`<stable-context>`). Folds in the
-	// same channel as the skill index, AFTER it, to match the seam ordering in
-	// `composeStableVolatileSubsection` (renderSkillIndex → renderClusterModels)
-	// so the parity test stays byte-equivalent. Suppressed-when-empty by
-	// `renderClusterModels`, so a host with no synced topology adds no bytes.
-	const clusterModelLines = renderClusterModels(loadClusterModels(params.db, params.siteId));
-	if (clusterModelLines.length > 0) {
-		stableLines.push(...clusterModelLines);
-		suffixLines.push(...clusterModelLines);
-	}
-
-	// --- VARYING: operator-feedback notifications (24h window). Surfaces
+	// Operator-feedback notifications (24h window). Surfaces
 	// recent operator actions on this site's skills so the agent learns when
 	// its skill proposals were acted on. See `notifications/`.
 	//
@@ -1169,7 +1144,7 @@ export function buildVolatileContext(params: {
 	// advisory-hygiene tracking is part of the role. `buildVolatileContext`
 	// only ever runs on the !noHistory active-conversation path, so the
 	// `taskType === "heartbeat"` gate evaluates false here in practice and is
-	// kept for defensive generality. ---
+	// kept for defensive generality.
 	const notifInputs = loadNotificationInputs({
 		db: params.db,
 		siteId: params.siteId,
@@ -1184,7 +1159,6 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: inactive skill reference note ---
 	if (params.inactiveSkillRef) {
 		const line = `Referenced skill '${params.inactiveSkillRef}' is not active.`;
 		suffixLines.push("");
@@ -1193,7 +1167,6 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: platform (connector) instructions ---
 	// Connector-authored orientation for connector-bound threads. Varying
 	// because the bound connector can change between runs and the connector
 	// may revise its own instructions; placing it in the cached prefix would
@@ -1206,7 +1179,6 @@ export function buildVolatileContext(params: {
 		varyingLines.push(params.platformInstructions);
 	}
 
-	// --- VARYING: systemPromptAddition ---
 	// Operator-supplied per-task instruction. Treated as varying because a
 	// task can be reconfigured between runs; placing it in the cached prefix
 	// would silently freeze old text. Keeps it as the trailing element of the
@@ -1222,7 +1194,7 @@ export function buildVolatileContext(params: {
 	const allVaryingLines = [...varyingLines];
 	const content = suffixLines.join("\n");
 	const stableContent = stableLines.join("\n");
-	// `<volatile-context half="varying">` envelope (ask #3) wraps the internal
+	// `<volatile-context half="varying">` envelope wraps the internal
 	// volatile lines; trailing operator/platform instructions stay outside it.
 	const varyingContent = envelopeVaryingTail(varyingLines, {
 		platformInstructions: params.platformInstructions,
@@ -1245,11 +1217,12 @@ export function buildVolatileContext(params: {
 		staleChildrenMap,
 		budgetPressure: false,
 		activeSkills,
-		clusterModels: loadClusterModels(params.db, params.siteId),
+		clusterModels,
 		stableCrossThreadSummaries,
 	});
 
 	return {
+		baseline: enrichmentBaseline,
 		content,
 		stableContent,
 		hasStableCrossThreadSummarySeed: stableCrossThreadSummaries.length > 0,
@@ -1270,23 +1243,6 @@ export function buildVolatileContext(params: {
 		stablePrefixInputFingerprint,
 		relevantMemory: toRelevantMemoryDebug(relevantMemorySelection),
 	};
-}
-
-/**
- * Estimates the character length of message content for token-budget purposes.
- * Handles both string content and ContentBlock[] content (produced by
- * substituteUnsupportedBlocks when the backend lacks vision/document support).
- * Text blocks contribute their text length; all other blocks contribute their
- * JSON-serialised length as a conservative approximation.
- * @deprecated Use countContentTokens() from @bound/shared for token counting.
- * This function returns character counts, not token counts.
- */
-export function estimateContentLength(content: string | ContentBlock[]): number {
-	if (typeof content === "string") return content.length;
-	return content.reduce((sum: number, block: ContentBlock) => {
-		if (block.type === "text") return sum + block.text.length;
-		return sum + JSON.stringify(block).length;
-	}, 0);
 }
 
 /**
@@ -1600,9 +1556,7 @@ Original output was too large for the context window. If you need the full conte
 	// tool_calls and orphaned tool_results.
 	//
 	// Property-tested at
-	// `tool-pair-sanitize/__tests__/sanitize.property.test.ts`;
-	// parity with the historical inline implementation pinned by
-	// `__tests__/parity-with-production.test.ts`.
+	// `tool-pair-sanitize/__tests__/sanitize.property.test.ts`.
 	const stage3 = startContextStage(historySpan, "context.stage-3-tool-pair-sanitization");
 	eventOwner.stage = stage3;
 	const sanitized = sanitizeToolPairs({
@@ -1721,8 +1675,11 @@ Original output was too large for the context window. If you need the full conte
 				let taskPayload: unknown;
 				try {
 					taskPayload = JSON.parse(taskRow.payload);
-				} catch (_error) {
-					// Malformed task payload — skip skill injection
+				} catch (error) {
+					logger.debug("Malformed task payload; skipping task skill injection", {
+						taskId: params.taskId,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 
 				if (
@@ -1751,8 +1708,11 @@ Original output was too large for the context window. If you need the full conte
 					}
 				}
 			}
-		} catch (_error) {
-			// Non-fatal: skip skill body injection on any error
+		} catch (error) {
+			logger.debug("Task skill injection failed; skipping", {
+				taskId: params.taskId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
@@ -1767,8 +1727,11 @@ Original output was too large for the context window. If you need the full conte
 			if (pinned.block) {
 				systemParts.push(pinned.block);
 			}
-		} catch (_error) {
-			// Non-fatal: skip pinned-skill injection on any error
+		} catch (error) {
+			logger.debug("Thread-pinned skill injection failed; skipping", {
+				threadId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
@@ -1858,7 +1821,6 @@ Original output was too large for the context window. If you need the full conte
 	// time; the drift detector opens its change_log window there (#303).
 	let stableRenderedAtMs: number | undefined;
 	if (!noHistory) {
-		// --- VARYING SUFFIX: per-thread content that busts the cache ---
 		// Extract latest user message for relevance-aware memory boosting
 		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 		const userMessageText = lastUserMsg?.content ?? undefined;
@@ -1916,9 +1878,9 @@ Original output was too large for the context window. If you need the full conte
 			? cachedStable.lines.join("\n")
 			: volatileCtx.stableContent;
 		if (stableContentForWire.length > 0) {
-			// `<volatile-context half="stable">` envelope (ask #3). Applied here,
+			// `<volatile-context half="stable">` envelope. Applied here,
 			// at the channel boundary, NOT inside the cached subsection: the inner
-			// bytes ride the per-process cache and the R-VC25 parity/drift
+			// bytes ride the per-process cache and the R-VC25 drift
 			// byte-comparisons untouched, while the constant wrapper stays
 			// prefix-stable so the system-level cache breakpoint still hits.
 			const wrappedStable = wrapVolatileContext("stable", stableContentForWire);
@@ -1944,7 +1906,7 @@ Original output was too large for the context window. If you need the full conte
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
 		// an adjacent user message wrapped in <system-context>; uncached. The
-		// `<volatile-context half="varying">` envelope (ask #3) is already
+		// `<volatile-context half="varying">` envelope is already
 		// applied inside buildVolatileContext — it wraps only the internal
 		// volatile content (prefix + enrichment + Live State), leaving any
 		// trailing operator/platform instruction OUTSIDE the envelope as the
@@ -1952,7 +1914,7 @@ Original output was too large for the context window. If you need the full conte
 		assembled.push({ role: "developer", content: volatileCtx.varyingContent });
 
 		suffixContent = volatileCtx.varyingContent;
-		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
+		enrichmentBaseline = volatileCtx.baseline;
 		enrichmentTiers = volatileCtx.tiers;
 		crossThreadSources = volatileCtx.crossThreadSources;
 		varyingEnrichmentStartIdx = volatileCtx.varyingEnrichmentStartIdx;
@@ -1980,8 +1942,8 @@ Original output was too large for the context window. If you need the full conte
 
 	// Stage 5.5 (noHistory path): Inject enrichment
 	if (noHistory) {
-		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
 		const nowMs = assemblyNowMs;
+		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true, nowMs);
 
 		const inputs = loadVolatileSectionInputs({
 			db,
@@ -2031,6 +1993,8 @@ Original output was too large for the context window. If you need the full conte
 			advisories: inputs.advisories,
 			recencyEntries: nhRelevantMemory,
 			budgetPressure: false,
+			activeSkills: [],
+			clusterModels: [],
 			nowMs,
 		});
 		const renderedEnrichmentLines: string[] = [...nhStable, ...nhVarying];
@@ -2076,13 +2040,13 @@ Original output was too large for the context window. If you need the full conte
 			sections.push({ name: "volatile-enrichment", tokens: noHistVolatileTokens });
 		}
 
-		// --- VARYING: heartbeat-only resolved-advisory operator-acks (#70).
+		// Heartbeat-only resolved-advisory operator-acks (#70).
 		// The maintenance surface keeps advisory-hygiene tracking; active
 		// conversations strip these (see buildVolatileContext). Computed independent of
 		// enrichment presence so a heartbeat with no memory enrichment still
 		// surfaces its acks. These lines sit after the enrichment window
 		// [start, end), so they do not perturb any indices (and the
-		// budget-pressure splice is gated off for noHistory anyway). ---
+		// budget-pressure splice is gated off for noHistory anyway).
 		if (params.taskType === "heartbeat") {
 			const advisoryNotifLines = renderNotifications({
 				...loadNotificationInputs({
@@ -2112,7 +2076,7 @@ Original output was too large for the context window. If you need the full conte
 
 		if (varyingTailLines.length > 0) {
 			enrichmentMessageIndex = assembled.length;
-			// `<volatile-context half="varying">` envelope (ask #3): wrap the
+			// `<volatile-context half="varying">` envelope: wrap the
 			// internal lines, keep trailing operator/platform instructions
 			// outside. `allVaryingLines` stays the raw (unwrapped) array so the
 			// budget-pressure splice indices remain valid.
@@ -2223,6 +2187,8 @@ Original output was too large for the context window. If you need the full conte
 			advisories: inputs.advisories,
 			recencyEntries: recencyBP,
 			budgetPressure: true,
+			activeSkills: [],
+			clusterModels: [],
 			nowMs,
 		});
 		const reducedEnrichmentLines: string[] = [...bpStable, ...bpVarying];
@@ -2250,7 +2216,7 @@ Original output was too large for the context window. If you need the full conte
 					...bpVarying,
 					...allVaryingLines.slice(varyingEnrichmentEndIdx),
 				];
-				// Re-apply the <volatile-context half="varying"> envelope (ask #3)
+				// Re-apply the <volatile-context half="varying"> envelope
 				// to the rebuilt tail; trailing operator/platform instructions
 				// (still the last lines of rebuiltVarying) stay outside it.
 				assembled[devIdx] = {

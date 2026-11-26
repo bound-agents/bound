@@ -1,6 +1,5 @@
 /**
- * Provider discovery-fetch parse helpers (slice 6, R-MC3,
- * 2026-11-21-model-catalog.md §4.1).
+ * Provider discovery-fetch parse helpers (R-MC3, 2026-11-21-model-catalog.md §4.1).
  *
  * The transport (credentials, endpoint URL, abort wiring) lives in each driver;
  * these functions parse the JSON body of the two models-list endpoints that have
@@ -18,11 +17,8 @@
  * structured metadata, and `models.dev` is the metadata fallback layer.
  */
 
+import { isRecord } from "../is-record";
 import type { BedrockDiscoveryFields, DiscoveredModel } from "./discovery";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 function dataArray(body: unknown): unknown[] {
 	if (!isRecord(body) || !Array.isArray(body.data)) return [];
@@ -49,7 +45,7 @@ function stringField(row: unknown, key: string): string | undefined {
  * Extract the Bedrock `ListFoundationModels` lineup-filter fields from one
  * `modelSummaries` row, or `undefined` when the row carries none of them. The
  * undocumented-but-live `inferenceAPIsSupported` / `explicitPromptCaching`
- * blocks (operator-accepted, 2026-11-23) are read with the same tolerance as the
+ * blocks are read with the same tolerance as the
  * documented `modelLifecycle.status` / `inferenceTypesSupported` / modality
  * lists: a missing nested field stays unset, never guessed, so the namespace
  * lineup filter treats "no signal" as "no protocol".
@@ -189,23 +185,6 @@ export function parseBedrockInferenceProfiles(body: unknown): DiscoveredModel[] 
 			if (Object.keys(bedrock).length > 0) model.bedrock = bedrock;
 		}
 		out.push(model);
-	}
-	return out;
-}
-
-/**
- * Parse an Ollama `/api/tags` body — `{ models: [{ name, model?, ... }] }`.
- * Prefers the canonical `model` field over the display `name`; these rows carry
- * no capability/pricing metadata (that comes from `/api/show` or `models.dev`).
- * Total: a row with neither `model` nor `name` is skipped; a missing array
- * yields `[]`.
- */
-export function parseOllamaTags(body: unknown): DiscoveredModel[] {
-	const out: DiscoveredModel[] = [];
-	for (const row of summaryArray(body, "models")) {
-		const id = stringField(row, "model") ?? stringField(row, "name");
-		if (!id) continue;
-		out.push({ providerModelId: id });
 	}
 	return out;
 }

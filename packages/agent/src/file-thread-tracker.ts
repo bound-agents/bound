@@ -1,11 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import {
-	findMemoryIdByKeyIncludingDeleted,
-	findMemoryValueByKey,
-	insertRow,
-	updateRow,
-} from "@bound/core";
+import { findMemoryIdByKeyIncludingDeleted, insertRow, updateRow } from "@bound/core";
 
 const MEMORY_KEY_PREFIX = "_internal.file_thread.";
 
@@ -21,7 +16,7 @@ const EPHEMERAL_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.cache\//,
 ];
 
-export function isEphemeralPath(filePath: string): boolean {
+function isEphemeralPath(filePath: string): boolean {
 	return EPHEMERAL_PATH_PATTERNS.some((re) => re.test(filePath));
 }
 
@@ -47,11 +42,10 @@ export function trackFilePath(
 	const key = MEMORY_KEY_PREFIX + normalizeFilePathForKey(filePath);
 	const now = new Date().toISOString();
 
-	// Check if memory entry exists (including soft-deleted to avoid UNIQUE violations)
+	// Include soft-deleted rows to avoid UNIQUE violations on the key.
 	const existing = findMemoryIdByKeyIncludingDeleted(db, key);
 
 	if (existing) {
-		// Update existing entry via change-log outbox
 		updateRow(
 			db,
 			"semantic_memory",
@@ -60,7 +54,6 @@ export function trackFilePath(
 			siteId,
 		);
 	} else {
-		// Create new entry via change-log outbox
 		insertRow(
 			db,
 			"semantic_memory",
@@ -78,19 +71,4 @@ export function trackFilePath(
 			siteId,
 		);
 	}
-}
-
-export function getLastThreadForFile(db: Database, filePath: string): string | null {
-	const key = MEMORY_KEY_PREFIX + normalizeFilePathForKey(filePath);
-	const result = findMemoryValueByKey(db, key);
-
-	return result?.value || null;
-}
-
-/** Cross-thread file-conflict notice: `filePath` was last touched by a different thread than the one currently about to read/write it. */
-export function getFileThreadNotificationMessage(
-	filePath: string,
-	otherThreadTitle: string,
-): string {
-	return `File ${filePath} was modified from thread "${otherThreadTitle}".`;
 }

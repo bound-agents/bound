@@ -1,5 +1,5 @@
 /**
- * Shared driver glue for inline credit redemption (slice 5, R-RT18, §7.3).
+ * Shared driver glue for inline credit redemption (R-RT18, §7.3).
  *
  * The executor (`redeemFallbackCredit`) needs two per-turn inputs each
  * credit-capable driver computes the same way: the next fallback target from

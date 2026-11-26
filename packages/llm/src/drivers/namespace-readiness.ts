@@ -29,8 +29,14 @@ export interface NamespaceLineupReadinessDeps<E extends NamespaceLineupEntry> {
 	providerName: string;
 	/** Namespace config id; expanded ids are `${namespaceId}-${providerModelId}`. */
 	namespaceId: string;
-	/** Fetch the routable lineup, or throw. An empty result retries. */
+	/** Fetch the lineup, or throw. An empty (post-`include`) result retries. */
 	loadLineup: (signal: AbortSignal) => Promise<E[]>;
+	/** Keep only routable entries; the rest are dropped before the empty check. */
+	include?: (entry: E) => boolean;
+	/** Registrar provider key. Defaults to `namespaceId`. */
+	registrationKey?: string;
+	/** Replaces {@link buildNamespaceDescriptor} for providers with their own capability rules. */
+	buildDescriptor?: (entry: E) => ModelDescriptor;
 	/** Build the concrete per-model backend; `contextWindow` is 0 when unresolved. */
 	buildPerModelBackend: (entry: E, contextWindow: number) => LLMBackend;
 	/** Per-model overrides keyed by provider model id. */
@@ -38,6 +44,7 @@ export interface NamespaceLineupReadinessDeps<E extends NamespaceLineupEntry> {
 	/** `prompt_caching` when no override sets it. Defaults to false. */
 	defaultPromptCaching?: boolean;
 	logger?: Logger;
+	/** First retry delay; doubles per attempt up to `retryMaxMs`. */
 	retryBaseMs?: number;
 	retryMaxMs?: number;
 }
@@ -118,6 +125,8 @@ export class NamespaceLineupReadiness<E extends NamespaceLineupEntry> implements
 			let entries: E[] = [];
 			try {
 				entries = await this.deps.loadLineup(this.controller.signal);
+				const include = this.deps.include;
+				if (include) entries = entries.filter((entry) => include(entry));
 			} catch (error) {
 				if (this.disposed) return;
 				this.deps.logger?.warn?.(`${name} lineup fetch failed; retrying`, {
@@ -131,7 +140,7 @@ export class NamespaceLineupReadiness<E extends NamespaceLineupEntry> implements
 				const models = this.buildEntries(entries);
 				if (this.disposed) return; // re-check just before the live-router write
 				this.ready = true;
-				registrar.register(this.deps.namespaceId, models);
+				registrar.register(this.deps.registrationKey ?? this.deps.namespaceId, models);
 				this.deps.logger?.info?.(`${name} lineup ready`, { models: models.length });
 				return;
 			}
@@ -148,14 +157,16 @@ export class NamespaceLineupReadiness<E extends NamespaceLineupEntry> implements
 
 	private buildEntries(entries: E[]): Array<{ descriptor: ModelDescriptor; backend: LLMBackend }> {
 		return entries.map((entry) => {
-			const descriptor = buildNamespaceDescriptor({
-				namespaceId: this.deps.namespaceId,
-				entry,
-				override: this.deps.modelOverrides?.[entry.id],
-				...(this.deps.defaultPromptCaching !== undefined && {
-					defaultPromptCaching: this.deps.defaultPromptCaching,
-				}),
-			});
+			const descriptor =
+				this.deps.buildDescriptor?.(entry) ??
+				buildNamespaceDescriptor({
+					namespaceId: this.deps.namespaceId,
+					entry,
+					override: this.deps.modelOverrides?.[entry.id],
+					...(this.deps.defaultPromptCaching !== undefined && {
+						defaultPromptCaching: this.deps.defaultPromptCaching,
+					}),
+				});
 			return {
 				descriptor,
 				backend: this.deps.buildPerModelBackend(entry, descriptor.capabilities.max_context ?? 0),

@@ -8,7 +8,8 @@
  * truncated, `M` total) are read fresh from the DB on EVERY cold-path
  * assembly:
  *
- *   - `truncatedCount`: returned by `truncateHistoryToBudget`; advances
+ *   - `truncatedCount`: the `ancientDropped + middleFolded` total from
+ *     `tieredHistoryTruncation`; advances
  *     when more messages get dropped under tighter budget.
  *   - `totalInThread`: a fresh `SELECT COUNT(*) FROM messages` each cold
  *     path; advances by 1 (or 2) per inner-loop iteration as new

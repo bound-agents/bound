@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Task, Webhook } from "@bound/shared";
 import { createCoreTestDb } from "../../../__tests__/test-database";
 import { insertRow, softDelete } from "../../../index";
-import { findWebhookResponseById } from "../webhook-response-by-id";
+import { findWebhookResponseById } from "../get-webhook-with-task";
 
 const SITE_ID = "site-test";
 const TS = "2026-01-01T00:00:00.000Z";

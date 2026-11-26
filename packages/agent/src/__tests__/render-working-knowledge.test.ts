@@ -1,10 +1,18 @@
 import { describe, expect, it } from "bun:test";
+import { renderWorkingKnowledge as renderWorkingKnowledgeBodies } from "../stable-prefix/compose";
 import type { StageEntry, WorkingKnowledgeInput } from "../summary-extraction";
 import {
 	WORKING_KNOWLEDGE_SUMMARY_CAP,
 	capWorkingKnowledgeSummaries,
-	renderWorkingKnowledge,
+	renderWorkingKnowledgeUpdates,
 } from "../summary-extraction";
+
+function renderWorkingKnowledge(input: WorkingKnowledgeInput) {
+	return {
+		stableLines: renderWorkingKnowledgeBodies(input.pinned, input.summaries),
+		varyingLines: renderWorkingKnowledgeUpdates(input),
+	};
+}
 
 describe("renderWorkingKnowledge — stable/varying split", () => {
 	describe("Empty input", () => {

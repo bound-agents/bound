@@ -382,11 +382,7 @@ export function createWsHandlers(config: WsServerConfig): {
 				};
 
 				const ping = (): void => {
-					try {
-						(ws as unknown as { ping(data?: unknown): void }).ping();
-					} catch {
-						/* best effort — older Bun builds may lack .ping() */
-					}
+					ws.ping();
 				};
 				config.wsTransport.addPeer(
 					ws.data.siteId,
@@ -544,7 +540,6 @@ export function createWsHandlers(config: WsServerConfig): {
 
 			clearSendRetry(ws);
 
-			// Remove WsTransport peer
 			if (config.wsTransport) {
 				config.wsTransport.removePeer(ws.data.siteId);
 			}
@@ -576,6 +571,7 @@ export function createWsHandlers(config: WsServerConfig): {
 type ServerWebSocket<T = unknown> = {
 	send(data: string | Uint8Array, binary?: boolean): number;
 	close(code?: number, reason?: string): void;
+	ping(data?: string | Uint8Array): number;
 	data: T;
 };
 

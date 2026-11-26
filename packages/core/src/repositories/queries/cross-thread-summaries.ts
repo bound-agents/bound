@@ -5,16 +5,10 @@ import type { Database } from "bun:sqlite";
  * Distinct from `listRecentThreadsWithMessages` (which feeds the metadata-only
  * `buildCrossThreadDigest`): this query returns the summary *content* and
  * `summary_through`, filtered to threads whose summary was written within the
- * recency window. Used by both Scenario A (new thread seed) and Scenario B
- * (re-injection after inactivity) — see the #178 design notes in memory.
- *
- * See ../index.ts for conventions. Reads only.
+ * recency window.
  */
 
-/**
- * One sibling thread's summary content for cross-thread injection.
- * Column names mirror exactly what callers destructure.
- */
+/** One sibling thread's summary content for cross-thread injection. */
 export interface CrossThreadSummaryRow {
 	id: string;
 	title: string | null;
@@ -28,13 +22,12 @@ export interface CrossThreadSummaryRow {
  * that have a non-null summary whose `summary_through` is at or after
  * `recencyCutoff` (an ISO-8601 timestamp). Ordered `last_message_at DESC LIMIT 5`.
  *
- * The `EXISTS (SELECT 1 FROM messages ...)` gate preserves the same
- * message-existence check used by `listRecentThreadsWithMessages` — threads
- * with zero messages are excluded even if they somehow carry a summary.
+ * Threads with zero messages are excluded even if they carry a summary (same
+ * gate as `listRecentThreadsWithMessages`).
  *
  * @param recencyCutoff ISO-8601 timestamp; only threads whose
  *   `summary_through >= recencyCutoff` are returned. Callers compute this
- *   as `now - 24h` (the recency window from the #178 design).
+ *   as `now - 24h`.
  */
 export function listCrossThreadSummaries(
 	db: Database,

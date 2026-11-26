@@ -85,15 +85,9 @@ export function createScopedTraceCollector(siteId?: string) {
 
 	return {
 		provider,
-		/**
-		 * Get a tracer from this scoped provider (not the global one).
-		 */
 		getTracer(name: string) {
 			return provider.getTracer(name);
 		},
-		/**
-		 * Serialize all buffered spans and shut down the provider.
-		 */
 		async flush(): Promise<SerializedSpan[]> {
 			await provider.forceFlush();
 			const serialized = exporter.getFinishedSpans().map(serializeReadableSpan);
@@ -173,18 +167,6 @@ export function injectTraceContext(): Record<string, string> | null {
 	const traceFlags = (spanContext.traceFlags & 0xff).toString(16).padStart(2, "0");
 	carrier.traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${traceFlags}`;
 	return carrier;
-}
-
-/**
- * Run a function within a specific trace context.
- * This is used by clients to execute code within the parent trace context
- * extracted from a server's injected trace_context.
- */
-export async function runInTraceContext<T>(
-	ctx: ReturnType<typeof context.active>,
-	fn: () => Promise<T>,
-): Promise<T> {
-	return context.with(ctx, fn);
 }
 
 function hrTimeToNano(hrTime: [number, number]): string {

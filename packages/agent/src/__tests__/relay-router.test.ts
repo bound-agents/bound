@@ -3,13 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema } from "@bound/core";
-import {
-	buildIdempotencyKey,
-	findEligibleHosts,
-	findEligibleHostsByModel,
-	isHostStale,
-} from "../relay-router";
+import { applySchema, isHostFresh } from "@bound/core";
+import { findEligibleHosts, findEligibleHostsByModel } from "../relay-router";
 // Test database setup
 let db: Database;
 let testDbPath: string;
@@ -73,7 +68,7 @@ describe("Relay Router", () => {
 			expect(result.ok).toBe(true);
 			if (result.ok) {
 				expect(result.hosts.length).toBe(1);
-				expect(isHostStale(result.hosts[0])).toBe(true);
+				expect(isHostFresh(result.hosts[0])).toBe(false);
 			}
 		});
 
@@ -167,74 +162,6 @@ describe("Relay Router", () => {
 				expect(result.hosts[0].site_id).toBe("fresh-1");
 				expect(result.hosts[1].site_id).toBe("stale-1");
 			}
-		});
-	});
-
-	describe("isHostStale", () => {
-		it("returns true for hosts with null timestamps", () => {
-			const host = {
-				site_id: "test",
-				host_name: "Test",
-				sync_url: null,
-				online_at: null,
-				modified_at: null,
-			};
-			expect(isHostStale(host)).toBe(true);
-		});
-
-		it("returns true for hosts not seen in 5+ minutes", () => {
-			const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-			const host = {
-				site_id: "test",
-				host_name: "Test",
-				sync_url: null,
-				online_at: staleTime,
-				modified_at: staleTime,
-			};
-			expect(isHostStale(host)).toBe(true);
-		});
-
-		it("returns false for recently active hosts (< 5 min ago)", () => {
-			const recentTime = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-			const host = {
-				site_id: "test",
-				host_name: "Test",
-				sync_url: null,
-				online_at: null,
-				modified_at: recentTime,
-			};
-			expect(isHostStale(host)).toBe(false);
-		});
-
-		it("falls back to online_at when modified_at is null", () => {
-			const recentTime = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-			const host = {
-				site_id: "test",
-				host_name: "Test",
-				sync_url: null,
-				online_at: recentTime,
-				modified_at: null,
-			};
-			expect(isHostStale(host)).toBe(false);
-		});
-	});
-
-	describe("buildIdempotencyKey", () => {
-		it("generates deterministic key for same inputs within same minute", () => {
-			const key1 = buildIdempotencyKey("tool_call", "test-tool", { arg: "value" });
-			const key2 = buildIdempotencyKey("tool_call", "test-tool", { arg: "value" });
-			expect(key1).toBe(key2);
-		});
-
-		it("generates different keys for different inputs", () => {
-			const key1 = buildIdempotencyKey("tool_call", "tool1", { arg: "value1" });
-			const key2 = buildIdempotencyKey("tool_call", "tool2", { arg: "value1" });
-			expect(key1).not.toBe(key2);
-		});
-
-		it("generates 32-character hex string", () => {
-			const key = buildIdempotencyKey("tool_call", "test-tool", {});
-			expect(key).toMatch(/^[0-9a-f]{32}$/);
 		});
 	});
 

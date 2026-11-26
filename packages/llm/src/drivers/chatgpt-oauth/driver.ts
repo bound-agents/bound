@@ -293,11 +293,7 @@ export class ChatGptOAuthDriver implements LLMBackend, SupportsModelDiscovery {
 					isAborted: () => params.signal?.aborted ?? false,
 					providerName: PROVIDER_NAME,
 					modelId,
-					onRetry: (attempt) =>
-						this.logger?.warn?.(
-							`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-							{ model: modelId },
-						),
+					logger: this.logger,
 				}),
 			onStrip: () =>
 				this.logger?.warn?.(

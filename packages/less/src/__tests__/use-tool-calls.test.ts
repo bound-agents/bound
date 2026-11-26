@@ -3,7 +3,7 @@ import type { BoundClient, ToolCallRequest, ToolCallResult } from "@bound/client
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React from "react";
-import type { ResolvedSandboxConfig } from "../tools/sandbox";
+import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import { useToolCalls } from "../tui/hooks/useToolCalls";

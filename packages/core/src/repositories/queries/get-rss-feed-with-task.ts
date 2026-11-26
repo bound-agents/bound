@@ -5,8 +5,6 @@ import type { Database } from "bun:sqlite";
  * Mirrors ./get-webhook-with-task.ts: the feed's custom prompt, model hint,
  * and `no_history` flag live on the task, so list/detail responses LEFT JOIN
  * tasks and surface them on the feed row.
- *
- * Shared by `packages/web/src/server/routes/rss.ts`. Reads only.
  */
 
 /**

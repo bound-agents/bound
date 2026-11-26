@@ -6,6 +6,8 @@
 // module isolates the "which tool calls are scheduled-task cards, and what is
 // their task id" decision so it can be unit-tested without a DOM.
 
+import { UUID_RE } from "./uuid";
+
 interface ToolUseLike {
 	id: string;
 	name: string;
@@ -23,11 +25,6 @@ export interface ScheduledTaskRef {
 	/** The scheduled task's id, parsed from the tool result. */
 	taskId: string;
 }
-
-// A bare UUID — the only thing a successful schedule returns. Anything else
-// (an error string, an `action=update` summary like "Updated task X (...)")
-// must NOT produce a card, so we gate strictly on this shape.
-const TASK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function readAction(input: unknown): string | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
@@ -56,7 +53,10 @@ export function extractScheduledTaskRefs(
 		if (result.exit_code != null && result.exit_code !== 0) continue; // schedule failed
 
 		const taskId = result.content.trim();
-		if (!TASK_ID_RE.test(taskId)) continue;
+		// A bare UUID is the only thing a successful schedule returns. Anything else
+		// (an error string, an `action=update` summary like "Updated task X (...)")
+		// must NOT produce a card, so gate strictly on this shape.
+		if (!UUID_RE.test(taskId)) continue;
 		if (seen.has(tu.id)) continue;
 		seen.add(tu.id);
 

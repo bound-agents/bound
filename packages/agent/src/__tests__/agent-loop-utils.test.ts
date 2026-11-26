@@ -5,11 +5,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { isTransientLLMError, shouldRetryRelayCall } from "@bound/loop";
 import fc from "fast-check";
 import {
 	buildCommandOutput,
-	calculateTurnCost,
-	calculateTurnCostBreakdown,
 	clampMaxOutputTokens,
 	convertDeltaMessages,
 	createFileRefResolver,
@@ -18,13 +17,11 @@ import {
 	getResolvedModelId,
 	hasOrphanedToolCall,
 	insertThreadMessage,
-	isTransientLLMError,
 	resolveToolAnnotations,
-	resolveTurnCost,
-	shouldRetryRelayCall,
 } from "../agent-loop-utils";
 import { compileDynamicPricing } from "../dynamic-pricing";
 import type { ModelResolution } from "../model-resolution";
+import { calculateTurnCost, calculateTurnCostBreakdown, resolveTurnCost } from "../turn-pricing";
 
 // ---------------------------------------------------------------------------
 // Test database setup

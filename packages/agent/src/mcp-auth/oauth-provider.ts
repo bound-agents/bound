@@ -40,7 +40,7 @@ import type { McpTokenBundle, McpTokenStore } from "./token-store";
 export const MCP_OAUTH_CALLBACK_PATH = "/oauth/mcp/callback";
 
 /** The daemon web-router port (WEB_PORT, loopback) the callback lands on (R-MO27). */
-export const MCP_OAUTH_CALLBACK_URL = `http://localhost:3001${MCP_OAUTH_CALLBACK_PATH}`;
+const MCP_OAUTH_CALLBACK_URL = `http://localhost:3001${MCP_OAUTH_CALLBACK_PATH}`;
 
 /**
  * Thrown from `redirectToAuthorization` (R-MO10): the owner does not open a
@@ -280,8 +280,6 @@ export class McpOAuthProvider {
 			clientId: this.server.clientId ?? null,
 		};
 	}
-
-	// --- OAuthClientProvider surface ------------------------------------
 
 	get redirectUrl(): string {
 		return MCP_OAUTH_CALLBACK_URL;

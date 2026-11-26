@@ -80,7 +80,7 @@ import {
 // via relative path because cli has no package re-export and adding one
 // would touch CI surface unrelated to the harness.
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
-import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
+import { insertThreadMessage } from "../../src/agent-loop-utils";
 import { createHarnessEnvironment } from "../../src/harness/environment";
 // `@bound/agent` is the package this harness lives in; use relative paths to
 // avoid the package self-reference resolution issue under tsc. The hermetic
@@ -88,6 +88,7 @@ import { createHarnessEnvironment } from "../../src/harness/environment";
 // shim, MainAgentLoop construction) is shared with persona-lab via the harness
 // core; only the wire-capture / budget / diagnostic logic is driver-specific.
 import { loadModelBackendsConfig } from "../../src/model-backends-config";
+import { estimateMaxTurnCost } from "../../src/turn-pricing";
 import type { RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";

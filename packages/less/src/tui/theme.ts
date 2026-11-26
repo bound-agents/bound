@@ -147,8 +147,3 @@ export const tokens = {
 
 /** A concrete Ink color value exposed by the current semantic theme. */
 export type ThemeColor = (typeof tokens)[keyof typeof tokens];
-/** @deprecated Use ThemeColor for color prop values; this alias remains source-compatible. */
-export type ColorToken = ThemeColor;
-
-/** The eventual theme-swap surface: a future theme is another object of this shape. */
-export type Theme = typeof tokens;

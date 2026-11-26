@@ -1,8 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { AgentFile } from "@bound/shared";
 
-/** Read repository for the `files` table. See ./index.ts for conventions. */
-
 export function findFileById(db: Database, id: string): AgentFile | null {
 	return db.query("SELECT * FROM files WHERE id = ?").get(id) as AgentFile | null;
 }
@@ -60,25 +58,8 @@ export function findFileContentByPathActive(
 	> | null;
 }
 
-/** Like {@link findFileContentByPathActive} but also returns `modified_at`, for callers that need to compare/report freshness alongside content. */
-export function findFileContentModifiedByPathActive(
-	db: Database,
-	path: string,
-): Pick<AgentFile, "content" | "modified_at"> | null {
-	return db
-		.query("SELECT content, modified_at FROM files WHERE path = ? AND deleted = 0")
-		.get(path) as Pick<AgentFile, "content" | "modified_at"> | null;
-}
-
 export function findFileIdByPathActive(db: Database, path: string): Pick<AgentFile, "id"> | null {
 	return db.query("SELECT id FROM files WHERE path = ? AND deleted = 0").get(path) as Pick<
-		AgentFile,
-		"id"
-	> | null;
-}
-
-export function findFileIdByIdActive(db: Database, id: string): Pick<AgentFile, "id"> | null {
-	return db.query("SELECT id FROM files WHERE id = ? AND deleted = 0").get(id) as Pick<
 		AgentFile,
 		"id"
 	> | null;
@@ -92,16 +73,6 @@ export function findFileContentByIdActive(
 		AgentFile,
 		"content"
 	> | null;
-}
-
-/** Like {@link findFileContentByIdActive} but also returns `is_binary`, so callers can decide whether to base64-decode before serving the content. */
-export function findFileContentBinaryByIdActive(
-	db: Database,
-	id: string,
-): Pick<AgentFile, "content" | "is_binary"> | null {
-	return db
-		.query("SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0")
-		.get(id) as Pick<AgentFile, "content" | "is_binary"> | null;
 }
 
 /** Every active file, full rows, newest-created-first. Small-scale admin/debug listing — see {@link listWorkspaceFiles} for the bulk-hydration path. */
@@ -152,16 +123,4 @@ export function listFileIdPathSizeByPrefixActive(
 	return db
 		.query("SELECT id, path, size_bytes FROM files WHERE path LIKE ? AND deleted = 0")
 		.all(pathPattern) as Array<Pick<AgentFile, "id" | "path" | "size_bytes">>;
-}
-
-/** Like {@link listFileIdPathSizeByPrefixActive} but swaps `id` for `modified_at` — for a directory listing sorted or filtered by freshness. */
-export function listFilePathSizeModifiedByPrefixActive(
-	db: Database,
-	pathPattern: string,
-): Array<Pick<AgentFile, "path" | "size_bytes" | "modified_at">> {
-	return db
-		.query(
-			"SELECT path, size_bytes, modified_at FROM files WHERE path LIKE ? AND deleted = 0 ORDER BY path",
-		)
-		.all(pathPattern) as Array<Pick<AgentFile, "path" | "size_bytes" | "modified_at">>;
 }

@@ -45,7 +45,7 @@ describe("shared telemetry bootstrap", () => {
 	it.each(["true", "1"])("enables from OTEL_ENABLED=%s", async (value) => {
 		process.env.OTEL_ENABLED = value;
 		const exporter = new InMemorySpanExporter();
-		initTelemetry("test-service", exporter);
+		initTelemetry("test-service", { traceExporter: exporter });
 		trace.getTracer("test").startSpan("enabled").end();
 		await exporter.forceFlush();
 		expect(exporter.getFinishedSpans()).toHaveLength(1);

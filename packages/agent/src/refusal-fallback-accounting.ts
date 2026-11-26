@@ -1,6 +1,6 @@
 /**
  * Per-attempt provenance and cost accounting for refusal-fallback turns
- * (slice 5, R-RT21, 2026-11-21-model-routing.md §7.4).
+ * (R-RT21, 2026-11-21-model-routing.md §7.4).
  *
  * A single turn can execute multiple attempts — a refused primary attempt plus
  * a credited fallback attempt, or a failed route trial plus a failover attempt.
@@ -13,7 +13,7 @@
  * byte-identical to a pre-slice-5 turn and the metrics aggregation is unchanged.
  */
 
-import type { TurnCostBreakdown } from "./agent-loop-utils";
+import type { TurnCostBreakdown } from "./turn-pricing";
 
 /** Per-attempt token counts, model-scoped — never summed across models. */
 export interface AttemptTokens {
@@ -102,13 +102,4 @@ export function buildTurnCostBreakdownWithAttempts(
 		breakdown.attempts = args.attempts;
 	}
 	return breakdown;
-}
-
-/**
- * Pick the attempt that actually served the turn (the first `ok` outcome), or
- * null when every attempt refused or errored. Used to stamp the turn's
- * authoritative `model_id` / `route_id` after a substitution.
- */
-export function summarizeServedAttempt(attempts: AttemptRecord[]): AttemptRecord | null {
-	return attempts.find((a) => a.outcome === "ok") ?? null;
 }

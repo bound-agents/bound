@@ -6,9 +6,7 @@ import { insertRow, softDelete } from "../../index";
 import {
 	findClientSessionIdById,
 	findLiveClientSessionIdById,
-	hasLiveClientSessionForThreadOnSite,
 	listClientSessionIdsByConnectionId,
-	listClientSessionIdsBySiteId,
 	listClientSessionSiteIdsByThreadId,
 } from "../client-sessions";
 
@@ -40,32 +38,6 @@ afterEach(() => {
 	db.close();
 });
 
-describe("listClientSessionIdsBySiteId", () => {
-	it("returns only live ids for the given site", () => {
-		seedSession({ id: "conn1::t1", site_id: SITE_A });
-		seedSession({ id: "conn2::t2", site_id: SITE_A });
-		seedSession({ id: "conn3::t3", site_id: SITE_B });
-
-		const rows = listClientSessionIdsBySiteId(db, SITE_A);
-		const ids = rows.map((r) => r.id).sort();
-		expect(ids).toEqual(["conn1::t1", "conn2::t2"]);
-	});
-
-	it("omits soft-deleted rows (deleted = 0 filter)", () => {
-		seedSession({ id: "live::t1", site_id: SITE_A });
-		seedSession({ id: "dead::t2", site_id: SITE_A });
-		softDelete(db, "client_sessions", "dead::t2", SITE_A);
-
-		const ids = listClientSessionIdsBySiteId(db, SITE_A).map((r) => r.id);
-		expect(ids).toEqual(["live::t1"]);
-	});
-
-	it("returns [] for a site with no sessions", () => {
-		seedSession({ id: "conn1::t1", site_id: SITE_A });
-		expect(listClientSessionIdsBySiteId(db, "site-unknown")).toEqual([]);
-	});
-});
-
 describe("listClientSessionSiteIdsByThreadId", () => {
 	it("returns the site_ids of every live session on a thread", () => {
 		seedSession({ id: "connA::shared", thread_id: "shared", site_id: SITE_A });
@@ -89,28 +61,6 @@ describe("listClientSessionSiteIdsByThreadId", () => {
 
 	it("returns [] for a thread with no sessions", () => {
 		expect(listClientSessionSiteIdsByThreadId(db, "nope")).toEqual([]);
-	});
-});
-
-describe("hasLiveClientSessionForThreadOnSite", () => {
-	it("returns true when a live session matches thread + site", () => {
-		seedSession({ id: "conn::t1", thread_id: "t1", site_id: SITE_A });
-		expect(hasLiveClientSessionForThreadOnSite(db, "t1", SITE_A)).toBe(true);
-	});
-
-	it("returns false when no row matches", () => {
-		seedSession({ id: "conn::t1", thread_id: "t1", site_id: SITE_A });
-		// right thread, wrong site
-		expect(hasLiveClientSessionForThreadOnSite(db, "t1", SITE_B)).toBe(false);
-		// wrong thread, right site
-		expect(hasLiveClientSessionForThreadOnSite(db, "t2", SITE_A)).toBe(false);
-	});
-
-	it("returns false once the matching row is soft-deleted (deleted = 0 filter)", () => {
-		seedSession({ id: "conn::t1", thread_id: "t1", site_id: SITE_A });
-		expect(hasLiveClientSessionForThreadOnSite(db, "t1", SITE_A)).toBe(true);
-		softDelete(db, "client_sessions", "conn::t1", SITE_A);
-		expect(hasLiveClientSessionForThreadOnSite(db, "t1", SITE_A)).toBe(false);
 	});
 });
 

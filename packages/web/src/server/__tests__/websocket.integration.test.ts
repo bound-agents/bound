@@ -38,7 +38,7 @@ describe("WebSocket Handler", () => {
 
 	beforeEach(() => {
 		eventBus = new TypedEventEmitter();
-		handler = createWebSocketHandler(eventBus);
+		handler = createWebSocketHandler({ eventBus });
 	});
 
 	it("broadcasts message:broadcast events to subscribed clients", async () => {

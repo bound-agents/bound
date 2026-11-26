@@ -19,51 +19,33 @@ const webhookDeliveryDuration = histogram("bound.web.webhook.delivery.duration",
 export interface WebhookHandlerDeps {
 	db: Database;
 	siteId: string;
-	eventBus?: TypedEventEmitter;
+	eventBus: TypedEventEmitter;
 }
 
-/**
- * Extract delivery ID from platform-specific headers for deduplication.
- * Checks for known delivery headers (GitHub, Stripe, generic).
- * Returns null if no delivery header is found.
- */
 function extractDeliveryId(headers: Headers): string | null {
-	// Check GitHub delivery header
 	const githubDelivery = headers.get("x-github-delivery");
 	if (githubDelivery) return `github-${githubDelivery}`;
 
-	// Check Stripe idempotency key
 	const stripeIdempotency = headers.get("stripe-idempotency-key");
 	if (stripeIdempotency) return `stripe-${stripeIdempotency}`;
 
-	// Check generic idempotency key header
 	const genericId = headers.get("x-idempotency-key");
 	if (genericId) return `generic-${genericId}`;
 
-	// No delivery header found
 	return null;
 }
 
-async function readRequestBodyLimited(request: Request): Promise<
-	| {
-			ok: true;
-			body: Buffer;
-	  }
-	| {
-			ok: false;
-			status: 400 | 413;
-	  }
-> {
+async function readRequestBodyLimited(request: Request): Promise<Buffer | null> {
 	const contentLength = request.headers.get("content-length");
 	if (contentLength && /^\d+$/.test(contentLength)) {
 		const declaredLength = Number.parseInt(contentLength, 10);
 		if (declaredLength > MAX_WEBHOOK_BODY_BYTES) {
-			return { ok: false, status: 413 };
+			return null;
 		}
 	}
 
 	if (!request.body) {
-		return { ok: true, body: Buffer.alloc(0) };
+		return Buffer.alloc(0);
 	}
 
 	const reader = request.body.getReader();
@@ -77,15 +59,15 @@ async function readRequestBodyLimited(request: Request): Promise<
 			total += value.byteLength;
 			if (total > MAX_WEBHOOK_BODY_BYTES) {
 				await reader.cancel();
-				return { ok: false, status: 413 };
+				return null;
 			}
 			chunks.push(Buffer.from(value));
 		}
 	} catch {
-		return { ok: false, status: 400 };
+		return null;
 	}
 
-	return { ok: true, body: Buffer.concat(chunks, total) };
+	return Buffer.concat(chunks, total);
 }
 
 /**
@@ -129,12 +111,10 @@ async function handleWebhookRequestInner(
 	name: string,
 	deps: WebhookHandlerDeps,
 ): Promise<Response> {
-	// Only allow POST
 	if (request.method !== "POST") {
 		return new Response("Not found", { status: 404 });
 	}
 
-	// Look up webhook in database
 	const webhook = findWebhookByName(deps.db, name) as Webhook | null;
 
 	if (!webhook) {
@@ -150,14 +130,8 @@ async function handleWebhookRequestInner(
 	// to a non-existent name). Only a valid signature produces a non-404
 	// response. The body read still happens after the name lookup so unknown
 	// names short-circuit before any streaming work.
-	const readResult = await readRequestBodyLimited(request);
-	if (!readResult.ok) {
-		return new Response("", { status: 404 });
-	}
-	const rawBody = readResult.body;
-
-	// Reject empty body
-	if (rawBody.length === 0) {
+	const rawBody = await readRequestBodyLimited(request);
+	if (!rawBody || rawBody.length === 0) {
 		return new Response("", { status: 404 });
 	}
 
@@ -176,7 +150,6 @@ async function handleWebhookRequestInner(
 			return new Response("", { status: 404 });
 		}
 	} else {
-		// Validate signature
 		const validationResult = validateWebhookSignature(
 			webhook.signature_format,
 			webhook.secret,
@@ -189,7 +162,6 @@ async function handleWebhookRequestInner(
 		}
 	}
 
-	// Build envelope with filtered headers
 	const envelope = JSON.stringify({
 		method: "POST",
 		path: `/webhook/${name}`,
@@ -225,15 +197,12 @@ async function handleWebhookRequestInner(
 		return new Response("", { status: 202 });
 	}
 
-	// Emit connector:event to trigger scheduler
-	if (deps.eventBus) {
-		deps.eventBus.emit("connector:event", {
-			trigger_key: `webhook:${name}`,
-			handle_id: webhook.id,
-			task_id: webhook.task_id,
-			batch_size: 1,
-		});
-	}
+	deps.eventBus.emit("connector:event", {
+		trigger_key: `webhook:${name}`,
+		handle_id: webhook.id,
+		task_id: webhook.task_id,
+		batch_size: 1,
+	});
 
 	return new Response("", { status: 202 });
 }

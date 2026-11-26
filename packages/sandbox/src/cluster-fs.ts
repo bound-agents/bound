@@ -1,10 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import {
-	listFilePathContentByPrefixActive,
-	listWorkspaceFiles,
-	listWorkspaceFilesModifiedSince,
-} from "@bound/core";
+import { listWorkspaceFiles, listWorkspaceFilesModifiedSince } from "@bound/core";
 import { type IFileSystem, InMemoryFs, MountableFs } from "just-bash";
 
 /**
@@ -43,9 +39,6 @@ export interface FileChange {
 	sizeBytes?: number;
 }
 
-/**
- * Create a ClusterFs.
- */
 export function createClusterFs(config: ClusterFsConfig): MountableFs;
 export function createClusterFs(
 	config: ClusterFsConfig & { db: Database; siteId: string },
@@ -54,11 +47,9 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterF
 	const baseFs = new InMemoryFs();
 	const fs = new MountableFs({ base: baseFs });
 
-	// Create /home/user as InMemoryFs
 	const homeUserFs = new InMemoryFs();
 	fs.mount("/home/user", homeUserFs);
 
-	// If db and siteId are provided, expose the in-memory path enumerator
 	if (config.db && config.siteId) {
 		const getInMemoryPaths = (): string[] => {
 			const paths: string[] = [];
@@ -95,82 +86,11 @@ export async function snapshotWorkspace(
 			const hash = createHash("sha256").update(content).digest("hex");
 			snapshot.set(path, hash);
 		} catch (err: unknown) {
-			if (!isExpectedFsError(err)) {
-				// Re-throw unexpected errors (permission denied, etc.)
-				throw err;
-			}
-			// Expected: file doesn't exist or is a directory
+			if (!isExpectedFsError(err)) throw err;
 		}
 	}
 
 	return snapshot;
-}
-
-export async function diffWorkspaceAsync(
-	before: Map<string, string>,
-	after: Map<string, string>,
-	fs?: IFileSystem,
-): Promise<FileChange[]> {
-	const changes: FileChange[] = [];
-	const allPaths = new Set([...before.keys(), ...after.keys()]);
-
-	for (const path of allPaths) {
-		const beforeHash = before.get(path);
-		const afterHash = after.get(path);
-
-		if (!beforeHash && afterHash) {
-			let content: string | undefined;
-			let sizeBytes: number | undefined;
-			if (fs) {
-				try {
-					content = await fs.readFile(path);
-					sizeBytes = Buffer.byteLength(content);
-				} catch (err: unknown) {
-					const code = (err as NodeJS.ErrnoException)?.code;
-					if (code !== "ENOENT" && code !== "EISDIR") {
-						// Re-throw unexpected errors (permission denied, etc.)
-						throw err;
-					}
-					// Expected: file doesn't exist or is a directory
-				}
-			}
-			changes.push({
-				path,
-				operation: "created",
-				content,
-				sizeBytes,
-			});
-		} else if (beforeHash && !afterHash) {
-			changes.push({
-				path,
-				operation: "deleted",
-			});
-		} else if (beforeHash !== afterHash && beforeHash && afterHash) {
-			let content: string | undefined;
-			let sizeBytes: number | undefined;
-			if (fs) {
-				try {
-					content = await fs.readFile(path);
-					sizeBytes = Buffer.byteLength(content);
-				} catch (err: unknown) {
-					const code = (err as NodeJS.ErrnoException)?.code;
-					if (code !== "ENOENT" && code !== "EISDIR") {
-						// Re-throw unexpected errors (permission denied, etc.)
-						throw err;
-					}
-					// Expected: file doesn't exist or is a directory
-				}
-			}
-			changes.push({
-				path,
-				operation: "modified",
-				content,
-				sizeBytes,
-			});
-		}
-	}
-
-	return changes;
 }
 
 export function diffWorkspace(
@@ -178,30 +98,37 @@ export function diffWorkspace(
 	after: Map<string, string>,
 ): FileChange[] {
 	const changes: FileChange[] = [];
-	const allPaths = new Set([...before.keys(), ...after.keys()]);
-
-	for (const path of allPaths) {
+	for (const path of new Set([...before.keys(), ...after.keys()])) {
 		const beforeHash = before.get(path);
 		const afterHash = after.get(path);
-
 		if (!beforeHash && afterHash) {
-			changes.push({
-				path,
-				operation: "created",
-			});
+			changes.push({ path, operation: "created" });
 		} else if (beforeHash && !afterHash) {
-			changes.push({
-				path,
-				operation: "deleted",
-			});
-		} else if (beforeHash !== afterHash && beforeHash && afterHash) {
-			changes.push({
-				path,
-				operation: "modified",
-			});
+			changes.push({ path, operation: "deleted" });
+		} else if (beforeHash && afterHash && beforeHash !== afterHash) {
+			changes.push({ path, operation: "modified" });
 		}
 	}
+	return changes;
+}
 
+/** Like {@link diffWorkspace}, but also reads content for created/modified paths when `fs` is given. */
+export async function diffWorkspaceAsync(
+	before: Map<string, string>,
+	after: Map<string, string>,
+	fs?: IFileSystem,
+): Promise<FileChange[]> {
+	const changes = diffWorkspace(before, after);
+	if (!fs) return changes;
+	for (const change of changes) {
+		if (change.operation === "deleted") continue;
+		try {
+			change.content = await fs.readFile(change.path);
+			change.sizeBytes = Buffer.byteLength(change.content);
+		} catch (err: unknown) {
+			if (!isExpectedFsError(err)) throw err;
+		}
+	}
 	return changes;
 }
 
@@ -238,11 +165,7 @@ export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<v
  * so the OCC baseline includes the re-hydrated content and FS_PERSIST does not
  * mistake a re-pull for an agent edit (Invariant #5).
  *
- * `is_binary = 1` rows store base64 in `files.content` (the web upload path
- * does `Buffer.from(data).toString("base64")`); the VFS holds binary as a
- * latin1 "binary string" (1 char = 1 byte), which the read tool re-encodes via
- * `Buffer.from(raw, "binary").toString("base64")`. So binary rows are decoded
- * base64 -> binary string here, the symmetric inverse. Text rows write as-is.
+ * Binary rows are decoded via {@link decodeFileContent}.
  *
  * Returns the new cursor: the wall-clock time captured BEFORE the SELECT. Any
  * row written during the scan is therefore re-pulled on the next pass rather
@@ -284,15 +207,4 @@ export function createVfsRehydrator(
 	return async (): Promise<void> => {
 		cursor = await rehydrateWorkspaceIncremental(fs, db, cursor);
 	};
-}
-
-export async function hydrateRemoteCache(
-	fs: MountableFs,
-	db: Database,
-	hostName: string,
-): Promise<void> {
-	const pattern = `/mnt/${hostName}/%`;
-	for (const row of listFilePathContentByPrefixActive(db, pattern)) {
-		await fs.writeFile(row.path, row.content ?? "");
-	}
 }

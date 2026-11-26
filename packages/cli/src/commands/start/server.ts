@@ -1,6 +1,6 @@
 /**
  * Server subsystem: web server creation, message:created handler wiring,
- * delegation logic, and platform connector initialization.
+ * and platform connector initialization.
  */
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -20,8 +20,8 @@ import {
 	serializeRelayTraceCarrier,
 } from "@bound/agent";
 import { awaitPlatformRequestResponse, resolveDefaultModelId } from "@bound/agent";
-import type { ClientToolResolver } from "@bound/agent";
-import type { AppContext } from "@bound/core";
+import type { AgentLoopConfig, ClientToolResolver } from "@bound/agent";
+import { type AppContext, resolveRelayConfig } from "@bound/core";
 import {
 	DEFAULT_MODEL_HINT,
 	type DispatchEntry,
@@ -54,7 +54,6 @@ import {
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
 	RssPoller,
-	createConnectorTool,
 	getConnectorHandle,
 	isSubscriptionRejected,
 } from "@bound/platforms";
@@ -66,6 +65,7 @@ import type {
 	McpConfig,
 	RouteHealthSnapshot,
 	StatusForwardPayload,
+	SyncConfig,
 } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
@@ -77,6 +77,7 @@ import {
 	injectTraceContext,
 	isUserFacingInterface,
 	routeHealthSnapshotSchema,
+	wsSchema,
 } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
@@ -84,10 +85,42 @@ import type { OauthMcpResolverBridge } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 import type { AgentLoopFactory } from "./agent-factory.js";
-import { resolvePlatformToolsForThread } from "./platform-tools.js";
-import { createWsTransportHolderStubs } from "./wire-ws-transport-holder.js";
+import { createPlatformConnectorTool, resolvePlatformToolsForThread } from "./platform-tools.js";
+import {
+	type WsTransportHolder,
+	createWsTransportHolderStubs,
+} from "./wire-ws-transport-holder.js";
 export type { AgentLoopFactory } from "./agent-factory.js";
 const getTracer = () => trace.getTracer("bound.web");
+
+/**
+ * Client tools advertised by the WS sessions subscribed to a thread, the
+ * connection that owns them, and the session's system-prompt addition.
+ */
+function resolveThreadClientTools(
+	wsRegistry: ClientToolResolver | undefined,
+	threadId: string,
+): {
+	clientTools: AgentLoopConfig["clientTools"];
+	connectionId: string | undefined;
+	systemPromptAddition: string | undefined;
+} {
+	const registered = wsRegistry?.getClientToolsForThread(threadId);
+	const clientTools = registered && registered.size > 0 ? registered : undefined;
+	const firstToolName = clientTools?.keys().next().value;
+	return {
+		clientTools,
+		connectionId: firstToolName
+			? wsRegistry?.getConnectionForTool(threadId, firstToolName)
+			: undefined,
+		systemPromptAddition: wsRegistry?.getSystemPromptAdditionForThread(threadId),
+	};
+}
+
+function readSyncConfig(optionalConfig: AppContext["optionalConfig"]): SyncConfig | undefined {
+	const result = optionalConfig.sync;
+	return result?.ok ? (result.value as SyncConfig) : undefined;
+}
 
 function injectRelayTraceCarrier(): Record<string, string> | null {
 	const injected = injectTraceContext();
@@ -98,26 +131,6 @@ function injectRelayTraceCarrier(): Record<string, string> | null {
 	return { traceparent: `00-${traceId}-${spanId}-${traceFlags.toString(16).padStart(2, "0")}` };
 }
 
-/**
- * Format a notification payload as a human-readable message for the agent.
- *
- * `proactive` and `introspect` payloads carry agent-authored free-text
- * `content` from a sibling thread — the calling agent's narrative
- * description of state. The bridge wraps the resulting `developer`
- * message in `<system-context>...</system-context>`, so without an
- * explicit provenance signal the receiving agent reads its sibling's
- * narrative as authoritative system state and primes diagnoses on the
- * phrasing rather than on ground truth. (Observed in production: the
- * agent built a full dedup fix from a notify payload's characterization
- * of a bug, before discovering the real bug was elsewhere entirely.)
- *
- * For these two payload kinds, the prefix marks the content as
- * agent-authored and unverified so the receiving agent treats it as
- * a past assertion to verify against source thread tool_results /
- * messages, not as system fact. `task_complete` and `advisory_created`
- * are system-generated payloads (the runtime produces their fields
- * from real DB state) so they keep the simpler `[notification]` shape.
- */
 export function createRemotePlatformRequest(
 	deps: Pick<AppContext, "db" | "siteId" | "eventBus" | "optionalConfig">,
 ): NonNullable<ConnectorToolContext["remotePlatformRequest"]> {
@@ -148,18 +161,13 @@ export function createRemotePlatformRequest(
 				timeout_ms: 15_000,
 			}),
 			timeoutMs: 15_000,
-			// Legacy carried no key here; the minted row id is a deterministic,
-			// redelivery-stable key (R-DW5/6).
+			// The minted row id is the deterministic, redelivery-stable key (R-DW5/6).
 			traceContext: serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
 			topologyRole: resolveTopologyRole(deps.optionalConfig),
 		});
 		if (routed.path === "error") throw new Error(routed.reason);
 		const entry = { id: routed.id };
 
-		// 4D-D union await: resolves whether the response arrived over the legacy
-		// relay_inbox (pre-drop) or the durable spool (post-4E). The shared helper
-		// consumes a durable row exactly-once via the token-fenced claim → deliver →
-		// ack lifecycle.
 		return await awaitPlatformRequestResponse({ db: deps.db, siteId: deps.siteId }, entry.id, {
 			deadline: Date.now() + 15_000,
 			targetSiteId,
@@ -190,14 +198,7 @@ export function createMcpAppProxyRelay(
 	},
 ) => Promise<{ status: number; headers: Record<string, string>; body_base64: string }> {
 	return async (ownerSiteId, payload) => {
-		const relayCfg = resolveTopologyRole(deps.optionalConfig);
-		const syncCfg = deps.optionalConfig.sync;
-		const timeoutMs =
-			syncCfg?.ok &&
-			typeof (syncCfg.value as { relay?: { inference_timeout_ms?: number } }).relay
-				?.inference_timeout_ms === "number"
-				? (syncCfg.value as { relay: { inference_timeout_ms: number } }).relay.inference_timeout_ms
-				: 300_000;
+		const timeoutMs = resolveRelayConfig(readSyncConfig(deps.optionalConfig)).inference_timeout_ms;
 		const routed = routeRelayRequest(deps.db, {
 			targetSiteId: ownerSiteId,
 			sourceSiteId: deps.siteId,
@@ -205,7 +206,7 @@ export function createMcpAppProxyRelay(
 			payload: JSON.stringify(payload),
 			timeoutMs,
 			traceContext: serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
-			topologyRole: relayCfg,
+			topologyRole: resolveTopologyRole(deps.optionalConfig),
 		});
 		if (routed.path === "error") throw new Error(routed.reason);
 		const result = (await awaitPlatformRequestResponse(
@@ -254,8 +255,6 @@ export function createRouteHealthRelay(
 	};
 }
 
-export { formatNotification } from "@bound/agent";
-
 export interface ResolveDelegationMessageIdParams {
 	db: Database;
 	siteId: string;
@@ -270,11 +269,6 @@ export interface ResolveDelegationMessageIdResult {
 	 * A real `messages.id` representing the claimed batch — the last injected
 	 * notification's id, or a non-notification claim's id (which already equals
 	 * its `messages.id`), or empty string when there are no claims.
-	 *
-	 * Under the single delegation path (R-UD1) the loop runs locally and there
-	 * is no cross-host id to forward, so this is no longer a delegation
-	 * precondition; it is retained as a convenience handle to the batch's
-	 * representative message and is still asserted by the notification tests.
 	 *
 	 * Preference order (highest wins):
 	 * 1. A non-notification claim (user / tool_result — dispatch entry id
@@ -296,9 +290,7 @@ export interface ResolveDelegationMessageIdResult {
  * job is the side effect: a notification claim's dispatch_queue id is a
  * synthetic UUID (from `enqueueNotification`), so the real developer-role
  * message must be written here before assembly so the agent sees it. The
- * returned id maps the batch to a real row (see the result type) — formerly
- * forwarded cross-host on the now-removed `process` delegation path; today the
- * loop assembles locally from the just-written rows, so no forwarding occurs.
+ * returned id maps the batch to a real row (see the result type).
  */
 export function resolveDelegationMessageId(
 	params: ResolveDelegationMessageIdParams,
@@ -348,43 +340,13 @@ export interface ServerResult {
 	 */
 	stopLeaderElections: () => void;
 	/**
-	 * Stops the two background scan intervals initServer started (the stale
-	 * client-tool-call expiry scan and, when cache-warming is enabled, the
-	 * warm-poke driver) and removes the process-exit listeners that back them.
-	 * These intervals hold the event loop open, so a caller that boots many
-	 * servers in one process (the test suite) must stop them or the process
-	 * never exits. Idempotent; a no-op when the web server failed to start.
+	 * Stops the background intervals initServer started (client-tool-call
+	 * expiry scan, warm-poke driver, remote platform-tool refresh) and removes
+	 * the process-exit listeners that back them. They hold the event loop open,
+	 * so the node's teardown must stop them. Idempotent.
 	 */
 	stopScanIntervals: () => void;
-	wsTransportHolder: {
-		addPeer: (
-			siteId: string,
-			sendFrame: (frame: Uint8Array) => boolean,
-			symmetricKey: Uint8Array,
-		) => void;
-		removePeer: (siteId: string) => void;
-		handleChangelogPush: (siteId: string, payload: Record<string, unknown>) => void;
-		handleChangelogAck: (siteId: string, payload: Record<string, unknown>) => void;
-		drainChangelog: (siteId: string) => void;
-		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
-		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
-		handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
-		handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
-		drainDurableWorkSpool: (siteId: string) => void;
-		seedNewPeer: (siteId: string) => void;
-		handleSnapshotAck: (siteId: string, payload: unknown) => void;
-		continueSnapshotSeed: (siteId: string) => void;
-		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
-		handleReseedRequest: (siteId: string, payload: unknown) => void;
-		handleConsistencyRequest: (siteId: string, payload: unknown) => void;
-		requestConsistency: (
-			tables: string[],
-		) => Promise<Map<string, { count: number; pks: string[] }>>;
-		handleRowPullRequest: (siteId: string, payload: unknown) => void;
-		handleRowPullAck: (siteId: string, payload: unknown) => void;
-		continueRowPull: (siteId: string) => void;
-		continueConsistencyStream: (siteId: string) => void;
-	};
+	wsTransportHolder: WsTransportHolder;
 }
 
 export interface ServerDeps {
@@ -452,9 +414,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const stopLeaderElections = (): void => {
 		for (const stop of leaderElectionStops.splice(0)) stop();
 	};
-	// Teardown for the two background scan intervals, assigned once the web
-	// server (which owns them) has started. No-op until then.
-	let stopScanIntervals: () => void = () => {};
+	const scanIntervalStops: Array<() => void> = [];
+	const stopScanIntervals = (): void => {
+		for (const stop of scanIntervalStops.splice(0)) stop();
+	};
 	const {
 		appContext,
 		modelRouter,
@@ -473,7 +436,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
 	relayProcessor.setAgentLoopFactory(agentLoopFactory);
 
-	// 12. Web + sync servers
 	appContext.logger.info("Starting servers...");
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	let syncServer: Awaited<ReturnType<typeof createSyncServer>> | null = null;
@@ -488,14 +450,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// `packages/agent/src/handle-message-tracker.ts` and the integration test
 	// `handle-message-tracker.integration.test.ts` for the lifecycle contract.
 
-	// Mutable holder for wsTransport (populated in Phase 8 after sync init).
-	// Seeded with marker-tagged placeholders that log + throw if invoked before
-	// wiring — a visible-at-runtime default over the former silent no-ops that hid
-	// the #253 spool wedge. `wireWsTransportHolder` (index.ts) copies the real
-	// instance's methods on and asserts none is left at a placeholder.
-	const wsTransportHolder: ServerResult["wsTransportHolder"] = createWsTransportHolderStubs(
-		appContext.logger,
-	);
+	// Placeholders log + throw until `wireWsTransportHolder` (index.ts) copies
+	// the real WsTransport methods on after sync init (#253).
+	const wsTransportHolder: WsTransportHolder = createWsTransportHolderStubs(appContext.logger);
 
 	// Wire the executor into the relay processor for Discord/platform process relays.
 	relayProcessor.setThreadExecutor(threadExecutor);
@@ -519,17 +476,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// Web server: internal management interface
 		const webPort = ports?.webPort ?? Number.parseInt(process.env.WEB_PORT || "3001", 10);
 		const webHost = ports?.webHost ?? process.env.WEB_BIND_HOST ?? "localhost";
-
-		// Deduplicate models by ID — pooled backends (same ID, multiple providers)
-		// should appear as a single entry. Use the first provider for display.
-		const seenIds = new Set<string>();
-		const uniqueModels: Array<{ id: string; provider: string }> = [];
-		for (const b of modelBackends.backends) {
-			if (!seenIds.has(b.id)) {
-				seenIds.add(b.id);
-				uniqueModels.push({ id: b.id, provider: b.provider });
-			}
-		}
 
 		const operatorUserId = deterministicUUID(
 			BOUND_NAMESPACE,
@@ -575,12 +521,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// peers' URLs (#36). Webhook ingestion is on the sync port.
 			syncBindHost: syncHost,
 			syncPort,
-			hubUrl: ((): string | undefined => {
-				const cfg = appContext.optionalConfig.sync;
-				if (!cfg?.ok) return undefined;
-				const hub = (cfg.value as { hub?: unknown }).hub;
-				return typeof hub === "string" && hub.length > 0 ? hub : undefined;
-			})(),
+			hubUrl: readSyncConfig(appContext.optionalConfig)?.hub || undefined,
 			// Agent-side MCP servers (mcp.json) — forwarded to the web app so the
 			// MCP-Apps route can source app-bearing http servers and proxy the
 			// browser to them. Web-router only; never the sync router.
@@ -602,26 +543,25 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			relayMcpAppProxy: createMcpAppProxyRelay(appContext),
 			// Settings › Models / model picker: read peers' own route-health snapshots.
 			relayRouteHealth: createRouteHealthRelay(appContext),
+			// Relayed /v1/responses inference honors sync.relay.inference_timeout_ms.
+			inferenceTimeoutMs: resolveRelayConfig(readSyncConfig(appContext.optionalConfig))
+				.inference_timeout_ms,
 		});
 		await webServer.start();
 
 		// Capture connection registry from web server for client tool lookup in handleThread
 		const wsRegistry = webServer?.wsRegistry;
 
-		// Wire it into the relay processor too, so a delegated loop on this host
-		// (a notify/introspect wakeup routed here because the live session lives
-		// here) can resolve the thread's client tools (issue #91).
+		// The relay processor resolves client tools for a notify/introspect wakeup
+		// routed here because the live session lives here (issue #91).
 		if (wsRegistry) {
 			relayProcessor.setWsRegistry(wsRegistry);
 		}
 
 		// Start sync server if sync prerequisites are available
 		if (appContext.siteId && keyring && appContext.logger) {
-			// Read WS config if present
-			const syncConfigResult = appContext.optionalConfig.sync;
-			const wsConfig = (
-				syncConfigResult?.ok ? (syncConfigResult.value as Record<string, unknown>).ws : undefined
-			) as Record<string, unknown> | undefined;
+			const wsBlock = readSyncConfig(appContext.optionalConfig)?.ws;
+			const wsConfig = wsBlock ? wsSchema.parse(wsBlock) : undefined;
 
 			syncServer = await createSyncServer(appContext.db, appContext.eventBus, {
 				port: syncPort,
@@ -633,8 +573,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				keyManager,
 				wsConfig: wsConfig
 					? {
-							idleTimeout: (wsConfig.idle_timeout as number) ?? 120,
-							backpressureLimit: (wsConfig.backpressure_limit as number) ?? 2097152,
+							idleTimeout: wsConfig.idle_timeout,
+							backpressureLimit: wsConfig.backpressure_limit,
 						}
 					: undefined,
 				wsTransportHolder,
@@ -651,10 +591,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		appContext.eventBus.on("status:forward", (payload: StatusForwardPayload) => {
 			statusForwardCache.set(payload.thread_id, payload);
 		});
-
-		// Whole-loop delegation (the `process` relay kind) is removed: every loop
-		// runs locally on the trigger host and relays only inference. There is no
-		// dispatch-and-poll-for-remote-completion anymore (R-UD1).
 
 		// #76: dispatcher-owned background aux execution. See the ownership comment
 		// in handleThread. Runs under the same thread-exclusive executor lock as
@@ -774,16 +710,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					// client tool registry. For boundless this includes the frozen cwd,
 					// git context, and injected context-file bodies. For connector/event
 					// surfaces it includes their platform-authored instructions.
-					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(seed.parentThreadId);
-					const clientTools =
-						clientToolsFromRegistry && clientToolsFromRegistry.size > 0
-							? clientToolsFromRegistry
-							: undefined;
-					const firstToolName = clientTools?.keys().next().value;
-					const connectionId = firstToolName
-						? wsRegistry?.getConnectionForTool(seed.parentThreadId, firstToolName)
-						: undefined;
-					const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(
+					const { clientTools, connectionId, systemPromptAddition } = resolveThreadClientTools(
+						wsRegistry,
 						seed.parentThreadId,
 					);
 					const platformInstructions = platformMcpRegistry?.getInstructionsForThread(
@@ -843,16 +771,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					);
 					try {
 						acknowledgeBatch(appContext.db, claimed);
-					} catch {
-						// claimed entries reset via executor error path
+					} catch (ackError) {
+						// Claimed entries reset via the executor error path.
+						appContext.logger.debug("[agent] Background aux batch ack failed", {
+							threadId: thread_id,
+							error: formatError(ackError),
+						});
 					}
 					return {};
 				}
 			});
 		};
 
-		// handleThread delegates to the shared ThreadExecutor.
-		// The executor owns the thread-exclusive lock and drain loop.
+		// The ThreadExecutor owns the thread-exclusive lock and drain loop.
 		const handleThread = async (thread_id: string, traceContext?: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
@@ -910,9 +841,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					// clamped output — it exists only to re-read the cached prefix. We
 					// require EVERY claimed entry to be a warm poke: if a real user
 					// message or tool result was co-claimed, the turn must run normally
-					// with full tools. Warm pokes are also forced to run locally below —
-					// a delegated poke would rebuild its config on the remote host and
-					// run with full tools, defeating the clamp.
+					// with full tools.
 					const isCacheWarmPoke =
 						claimed.length > 0 &&
 						claimed.every(
@@ -923,11 +852,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					try {
 						// Inject notification context as developer-role messages so the
 						// agent can see and respond to non-user events (task completions,
-						// etc.). This is the load-bearing side effect — the rows must
-						// exist before local assembly. The returned id maps the batch to
-						// a real `messages` row; it is no longer forwarded anywhere (the
-						// loop runs locally under the single delegation path, R-UD1).
-						const { delegationMessageId } = resolveDelegationMessageId({
+						// etc.). The rows must exist before local assembly.
+						resolveDelegationMessageId({
 							db: appContext.db,
 							siteId: appContext.siteId,
 							hostName: appContext.hostName,
@@ -952,11 +878,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							.get(thread_id) as { user_id: string; interface: string } | null;
 						const userId = threadRow?.user_id || operatorUserId;
 
-						// `agent.handle-message` and `web.handle-message` wrap BOTH the
-						// delegation path and the local-loop path so the whole logical
-						// cycle lives on one trace regardless of where inference runs.
-						// Computed outside the branches so the span is open before the
-						// first decision the handler makes.
+						// `agent.handle-message` and `web.handle-message` keep the whole
+						// logical cycle on one trace regardless of where inference runs.
 						const inboundCtx = traceContext
 							? extractTraceContext(
 									(() => {
@@ -980,19 +903,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						handleMessageTracker.touchTurn(thread_id);
 
 						{
-							// Single delegation path (R-UD1): the loop ALWAYS runs locally
-							// on the host that received the trigger. It producer-assembles
-							// from its own authoritative state and relays only the inference
-							// (segments) — and, under uniform tool dispatch, any tool calls —
-							// outward. There is no whole-loop `process` delegation, so a host
-							// can never re-assemble from an un-synced replica (the history:0
-							// bug class). Model affinity and client-session affinity are no
-							// longer correctness requirements (R-UD12): the model host is
-							// reached via the inference relay, and client tools relay to the
-							// session host. `delegationMessageId` is retained for notification
-							// wakeup bookkeeping. See
-							// docs/design/specs/2026-06-29-unified-delegation.md.
-							void delegationMessageId;
+							// R-UD1: the loop always runs on the trigger host, assembling
+							// from its own authoritative state and relaying only inference
+							// and tool calls (R-UD12: affinity is an optimization).
 							// Derive the platform tag and platform tools for
 							// this thread. The tag tells the agent which surface the
 							// current turn originated from — web, boundless, discord, etc.
@@ -1026,19 +939,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								}
 							}
 
-							// Resolve client tools from WS connections subscribed to this thread
-							const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
-							const resolvedClientTools =
-								clientToolsFromRegistry && clientToolsFromRegistry.size > 0
-									? clientToolsFromRegistry
-									: undefined;
-							const firstToolName = resolvedClientTools
-								? clientToolsFromRegistry?.keys().next().value
-								: undefined;
-							const resolvedConnectionId = firstToolName
-								? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
-								: undefined;
-							const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(thread_id);
+							const {
+								clientTools: resolvedClientTools,
+								connectionId: resolvedConnectionId,
+								systemPromptAddition,
+							} = resolveThreadClientTools(wsRegistry, thread_id);
 
 							// Emit "thinking" status so WebSocket clients (TUI) show thinking indicator
 							appContext.eventBus.emit("status:forward", {
@@ -1051,10 +956,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							// Capture turn boundary for metrics recording and context tracking.
 							const turnStartAt = new Date().toISOString();
 
-							// `agent.handle-message` and the open/resume logic are
-							// hoisted above the if/else so they cover both delegation
-							// and local-loop branches. `turnCtx` is captured outside
-							// and reused here.
 							const tracer = getTracer();
 							const rootSpan = tracer.startSpan(
 								"web.handle-message",
@@ -1200,7 +1101,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// the executor releases the lock (no new message:created fires to re-dispatch).
 			if (needsRetrigger) {
 				appContext.logger.info(`[agent] Re-triggering dispatch for thread ${thread_id}`);
-				// Use setImmediate to avoid holding the current call stack
+				// Deferred to a fresh macrotask so the executor lock is released first.
 				setTimeout(
 					() =>
 						handleThread(thread_id).catch((err) =>
@@ -1264,8 +1165,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				notification_id: randomUUID(),
 			};
 
-			// Route through the session-host resolver (#91 under unified
-			// delegation): if the task's thread has a live boundless session on
+			// Route through the session-host resolver (#91): if the task's thread
+			// has a live boundless session on
 			// another host, the wakeup ships there instead of waking a second,
 			// detached loop here. Local delivery emits notify:enqueued, which the
 			// listener below turns into handleThread — no direct call needed.
@@ -1301,7 +1202,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			);
 		}
 
-		// Task 1: Periodic TTL-based expiry scan for stale client tool calls
+		// Periodic TTL-based expiry scan for stale client tool calls.
 		const CLIENT_TOOL_CALL_TTL_MS = 5 * 60 * 1000; // 5 minutes default
 		const EXPIRY_SCAN_INTERVAL_MS = scanIntervals?.expiryScanIntervalMs ?? 60 * 1000; // Scan every 60 seconds
 
@@ -1388,7 +1289,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		}, EXPIRY_SCAN_INTERVAL_MS);
 
-		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via the
+		// Cache-warming "warm poke" driver (issue #10). Opt-in via the
 		// `cache_warming` block in model_backends.js. Periodically finds active
 		// threads whose prompt cache is warm but near expiry and enqueues a
 		// tool-less poke wakeup so the next real message lands on a cache-read
@@ -1407,7 +1308,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		);
 		if (warmingEnabled) {
 			appContext.logger.info(
-				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h; per-thread TTL + poke cap derived from each thread's backend)`,
+				`[warm-poke] Cache-warming driver enabled (scan ${Math.round((scanIntervals?.warmPokeScanIntervalMs ?? WARM_POKE_SCAN_INTERVAL_MS) / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h; per-thread TTL + poke cap derived from each thread's backend)`,
 			);
 			// Resolve a thread's warm-poke policy from its backend (issue #10):
 			// whether the backend opts into warming at all (`cache_warming.enabled`),
@@ -1432,13 +1333,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				if (!ttl) return null;
 				return { ttlMs: parseDurationMs(ttl), maxPokes: warmCfg.maxPokes };
 			};
-			const WARM_POKE_SCAN_INTERVAL_MS_EFFECTIVE =
+			const warmPokeScanIntervalMs =
 				scanIntervals?.warmPokeScanIntervalMs ?? WARM_POKE_SCAN_INTERVAL_MS;
 			warmPokeInterval = setInterval(() => {
 				try {
 					const targets = selectWarmPokeTargets(appContext.db, {
 						resolvePokePolicy,
-						scanIntervalMs: WARM_POKE_SCAN_INTERVAL_MS,
+						scanIntervalMs: warmPokeScanIntervalMs,
 						activeWindowMs: DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
 					});
 					for (const threadId of targets) {
@@ -1458,7 +1359,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						error: formatError(error),
 					});
 				}
-			}, WARM_POKE_SCAN_INTERVAL_MS_EFFECTIVE);
+			}, warmPokeScanIntervalMs);
 		}
 
 		// Clean up on server stop — clear both scan intervals and detach the
@@ -1472,7 +1373,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			process.off("SIGINT", cleanup);
 			process.off("SIGTERM", cleanup);
 		};
-		stopScanIntervals = cleanup;
+		scanIntervalStops.push(cleanup);
 		process.on("exit", cleanup);
 		process.on("SIGINT", cleanup);
 		process.on("SIGTERM", cleanup);
@@ -1481,12 +1382,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		appContext.logger.warn("Continuing without web UI. API will not be available.");
 	}
 
-	// 13. Platform connectors (if configured)
 	const platformsResult = appContext.optionalConfig.platforms;
 	if (platformsResult?.ok) {
 		const platformsConfig = platformsResult.value as import("@bound/shared").PlatformsConfig;
 
-		// TASK 1: Bootstrap PlatformMcpRegistry
 		platformMcpRegistry = new PlatformMcpRegistryClass({
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -1501,9 +1400,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
 
-		// TASK 2: Integrate leader election with MCP server instantiation
-		// Create adapter that wraps registry operations for the connector interface
-		// The adapter gates subscription reconnection behind leader election (AC6.1, AC6.2)
+		// Subscriptions run only on the leader (AC6.1, AC6.2).
 		const mcpLeaderAdapter = {
 			platform: "mcp-platforms",
 			delivery: "broadcast" as const,
@@ -1548,57 +1445,60 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				await platformMcpRegistry?.reconnectAll();
 				appContext.logger.info("[platforms-mcp] All subscriptions reconnected");
 
-				// Listen for new connector handles arriving via sync — activate immediately
-				appContext.eventBus.on("connector:handle_synced", async ({ handle_id }) => {
-					if (!platformMcpRegistry) return;
-					const handle = getConnectorHandle(appContext.db, handle_id);
-					if (handle?.task_id) {
-						appContext.logger.info("[platforms-mcp] Activating synced handle", {
-							handle_id,
-							server_name: handle.server_name,
-						});
-						try {
-							await platformMcpRegistry.activateSubscription(handle);
-						} catch (err) {
-							// The connector permanently rejected this subscription (e.g.
-							// a spoke bound a Discord channel the bot can't view — the
-							// spoke has no local client, so it couldn't validate at attach
-							// time; the leader is the first host that can). Roll the
-							// synced handle + task back so the deletion propagates to the
-							// spoke rather than leaving a dead subscription that never
-							// delivers. A non-rejection error (transient) is logged and
-							// left for the next reconnect. Wrapping also prevents an
-							// unhandled rejection in this event handler.
-							if (isSubscriptionRejected(err)) {
-								appContext.logger.warn(
-									"[platforms-mcp] Rolling back synced handle: connector rejected subscription",
-									{
-										handle_id,
-										server_name: handle.server_name,
-										reason: err instanceof Error ? err.message : String(err),
-									},
-								);
-								softDelete(appContext.db, "connector_handles", handle_id, appContext.siteId);
-								softDelete(appContext.db, "tasks", handle.task_id, appContext.siteId);
-							} else {
-								appContext.logger.error("[platforms-mcp] Failed to activate synced handle", {
-									handle_id,
-									error: err instanceof Error ? err.message : String(err),
-								});
-							}
-						}
-					}
-				});
+				appContext.eventBus.on("connector:handle_synced", activateSyncedHandle);
 			},
 			async disconnect() {
 				appContext.logger.info(
 					"[platforms-mcp] Leader election: disconnect() — stopping subscriptions",
 				);
-				// On leadership loss: tear down all subscriptions (non-leader has empty registry)
+				appContext.eventBus.off("connector:handle_synced", activateSyncedHandle);
+				// A non-leader keeps the registry but holds no subscriptions.
 				await platformMcpRegistry?.shutdown();
 				appContext.logger.info("[platforms-mcp] All subscriptions stopped");
 			},
 		};
+
+		// Leader-only: activate connector handles that arrive via sync.
+		async function activateSyncedHandle({ handle_id }: { handle_id: string }): Promise<void> {
+			if (!platformMcpRegistry) return;
+			const handle = getConnectorHandle(appContext.db, handle_id);
+			if (handle?.task_id) {
+				appContext.logger.info("[platforms-mcp] Activating synced handle", {
+					handle_id,
+					server_name: handle.server_name,
+				});
+				try {
+					await platformMcpRegistry.activateSubscription(handle);
+				} catch (err) {
+					// The connector permanently rejected this subscription (e.g.
+					// a spoke bound a Discord channel the bot can't view — the
+					// spoke has no local client, so it couldn't validate at attach
+					// time; the leader is the first host that can). Roll the
+					// synced handle + task back so the deletion propagates to the
+					// spoke rather than leaving a dead subscription that never
+					// delivers. A non-rejection error (transient) is logged and
+					// left for the next reconnect. Wrapping also prevents an
+					// unhandled rejection in this event handler.
+					if (isSubscriptionRejected(err)) {
+						appContext.logger.warn(
+							"[platforms-mcp] Rolling back synced handle: connector rejected subscription",
+							{
+								handle_id,
+								server_name: handle.server_name,
+								reason: err instanceof Error ? err.message : String(err),
+							},
+						);
+						softDelete(appContext.db, "connector_handles", handle_id, appContext.siteId);
+						softDelete(appContext.db, "tasks", handle.task_id, appContext.siteId);
+					} else {
+						appContext.logger.error("[platforms-mcp] Failed to activate synced handle", {
+							handle_id,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+			}
+		}
 
 		// Use PlatformLeaderElection to gate subscription management
 		// Non-leader hosts have the registry but with no subscriptions (AC6.2)
@@ -1621,7 +1521,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// Collect platform names from MCP registry (AC6.5)
 		const platformNames = platformMcpRegistry.getServerNames();
 
-		// TASK 3: Wire relay processor to use new registry (AC7.3)
+		// AC7.3
 		relayProcessor.setPlatformMcpRegistry(platformMcpRegistry);
 		appContext.logger.info("[platforms-mcp] Relay processor wired");
 
@@ -1631,16 +1531,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			db: appContext.db,
 			siteId: appContext.siteId,
 			remotePlatformRequest: createRemotePlatformRequest(appContext),
+			logger: appContext.logger,
 		};
-		const rawConnectorTool = createConnectorTool(connectorCtx);
-		connectorTool = {
-			kind: "platform" as const,
-			toolDefinition: rawConnectorTool.toolDefinition,
-			execute: rawConnectorTool.execute,
-			idempotent: rawConnectorTool.idempotent,
-			readOnly: rawConnectorTool.readOnly,
-			resolveAnnotations: rawConnectorTool.resolveAnnotations,
-		};
+		connectorTool = createPlatformConnectorTool(connectorCtx);
 		appContext.logger.info("[platforms-mcp] Connector tool created");
 
 		// Surface remote platform connectors' read-only tools to local agents.
@@ -1663,7 +1556,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// after our daemon started, and drops tools whose host went away.
 			// 60s is a tradeoff between pickup latency and relay traffic — a
 			// remote daemon advertising a new tool will be visible within one
-			// cycle. Cleared on shutdown via the existing process listeners.
+			// cycle.
 			const remoteRefreshInterval = setInterval(() => {
 				platformMcpRegistry?.discoverRemoteTools().catch((error) => {
 					appContext.logger.warn("[platforms-mcp] Remote tool refresh failed", {
@@ -1671,7 +1564,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					});
 				});
 			}, 60_000);
-			const clearRemoteRefresh = () => clearInterval(remoteRefreshInterval);
+			const clearRemoteRefresh = () => {
+				clearInterval(remoteRefreshInterval);
+				process.off("exit", clearRemoteRefresh);
+				process.off("SIGINT", clearRemoteRefresh);
+				process.off("SIGTERM", clearRemoteRefresh);
+			};
+			scanIntervalStops.push(clearRemoteRefresh);
 			process.on("exit", clearRemoteRefresh);
 			process.on("SIGINT", clearRemoteRefresh);
 			process.on("SIGTERM", clearRemoteRefresh);
@@ -1680,9 +1579,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// handle syncs in, re-discover remote tools immediately rather than
 			// waiting up to 60s for the next periodic refresh. This runs on EVERY
 			// host (not just the platform leader) — any host may run a loop that
-			// references a remote platform tool by name, and the single delegation
-			// path means assembly must see that tool's definition wherever the loop
-			// lands. Fire-and-forget; errors are logged inside discoverRemoteTools.
+			// references a remote platform tool by name, and assembly must see that
+			// tool's definition wherever the loop lands (R-UD1).
 			appContext.eventBus.on("connector:handle_synced", () => {
 				platformMcpRegistry?.discoverRemoteTools().catch((error) => {
 					appContext.logger.warn("[platforms-mcp] handle_synced remote tool discovery failed", {
@@ -1710,13 +1608,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
 	}
 
-	// 14. RSS feed poller — the pull-side counterpart of webhook ingestion.
+	// RSS feed poller — the pull-side counterpart of webhook ingestion.
 	// Runs its own leader election (platform_leader:rss) independent of the
 	// Discord connectors block above, so feeds poll even on clusters with no
 	// platforms.json. Exactly one host walks the feeds; dedup state
 	// (rss_feeds.seen_guids) is synced, so failover resumes without
-	// re-delivering the backlog. Items land in relay_inbox as passive
-	// `rss_intake` rows and ride the same connector:event → scheduler →
+	// re-delivering the backlog. Items land as passive `rss_intake` durable
+	// work rows and ride the same connector:event → scheduler →
 	// buildEventWakeupContent track as webhooks.
 	{
 		const rssPoller = new RssPoller({

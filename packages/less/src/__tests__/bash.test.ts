@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { bashTool, createBashTool } from "../tools/bash";
-import { DISABLED_SANDBOX } from "../tools/sandbox";
+import { DISABLED_SANDBOX } from "../tools/sandbox-policy";
 import { type ResolvedShell, resolveShell } from "../tools/shell";
 
 // CI runners can be slow; ensure per-test timeout is respected

@@ -30,16 +30,6 @@ export const MAX_SOURCE_STRUCTURE_INPUT_BYTES = 1_000_000;
 export const SOURCE_STRUCTURE_INPUT_LIMIT_ERROR = "source file exceeds read_structure input limit";
 export const SOURCE_STRUCTURE_PARSE_ERROR = "could not parse source structure";
 
-/**
- * The declaration grammar emitted by read_structure for registered TS/JS files.
- *
- * At module top level, supported files emit named function, class, variable,
- * interface, type alias, enum, namespace/module, and named export declarations.
- * Imports, anonymous defaults, export stars, and nested declarations are omitted.
- */
-export const SUPPORTED_SOURCE_STRUCTURE_GRAMMAR =
-	"top-level function, class, variable, interface, type alias, enum, namespace, module, and named export declarations";
-
 const PYTHON_EXTENSIONS = [".py", ".pyi"] as const;
 const GO_EXTENSIONS = [".go"] as const;
 const RUST_EXTENSIONS = [".rs"] as const;

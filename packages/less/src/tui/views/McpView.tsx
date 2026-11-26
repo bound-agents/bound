@@ -15,7 +15,7 @@ export interface McpViewProps {
 /**
  * McpView: Modal overlay for MCP server configuration.
  *
- * Implements AC9.7: view server list with status badges, add/remove/enable/disable
+ * View server list with status badges, add/remove/enable/disable
  */
 export function McpView({
 	mcpManager,

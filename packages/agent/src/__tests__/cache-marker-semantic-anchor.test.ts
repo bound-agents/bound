@@ -35,11 +35,7 @@ function markerPosition(messages: LLMMessage[]): number | null {
 }
 
 function place(messages: LLMMessage[]) {
-	return coldPathPlaceCacheMarker(
-		messages,
-		{ bucketTokens: 0, estimateTokens: charEstimate },
-		CAPS,
-	);
+	return coldPathPlaceCacheMarker(messages, { estimateTokens: charEstimate }, CAPS);
 }
 
 describe("semantic-anchor cache placement", () => {

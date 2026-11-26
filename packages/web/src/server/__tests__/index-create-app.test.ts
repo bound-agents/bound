@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { applyMetricsSchema, applySchema } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { createWebApp } from "../index";
+import * as responsesRoutes from "../routes/responses";
 
 // Covers the createWebApp wiring branches the integration test does not:
 // the required-operatorUserId guard and the Host-header DNS-rebinding
@@ -70,5 +71,29 @@ describe("createWebApp wiring", () => {
 			}),
 		);
 		expect(res.status).toBe(404);
+	});
+
+	it("forwards topologyRole to the responses route", async () => {
+		const spy = spyOn(responsesRoutes, "createResponsesRoutes");
+		try {
+			await createWebApp(db, eventBus, { operatorUserId: "op", topologyRole: "spoke" });
+			expect(spy).toHaveBeenCalledTimes(1);
+			expect(spy.mock.calls[0][5]).toBe("spoke");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("runs onRequest before the routes it registers", async () => {
+		const seen: string[] = [];
+		const app = await createWebApp(db, eventBus, {
+			operatorUserId: "op",
+			onRequest: (method, path) => seen.push(`${method} ${path}`),
+		});
+		const res = await app.fetch(
+			new Request("http://localhost:3001/api/status", { headers: { host: "localhost" } }),
+		);
+		expect(res.status).toBe(200);
+		expect(seen).toEqual(["GET /api/status"]);
 	});
 });

@@ -25,12 +25,13 @@
  *      should change it.)
  *
  *   D5 Total over the synced-table list — every name in the
- *      module-level SYNCED_TABLE_NAMES list appears in the output,
+ *      TABLE_REDUCER_MAP appears in the output,
  *      and no others.
  */
 
 import type Database from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { TABLE_REDUCER_MAP } from "@bound/shared";
 import fc from "fast-check";
 import { getSyncedTableSchemas } from "../schema-introspection";
 import { createCoreTestDb } from "./test-database";
@@ -103,32 +104,7 @@ describe("getSyncedTableSchemas — property tests", () => {
 		const db = freshDb();
 		const schemas = getSyncedTableSchemas(db);
 		const tableNames = schemas.map((s) => s.table).sort();
-		// Source-of-truth list — must match `SYNCED_TABLE_NAMES` in
-		// schema-introspection.ts. This test pins the two lists in
-		// sync; a divergence would surface here.
-		const expected = [
-			"advisories",
-			"agents",
-			"client_sessions",
-			"cluster_config",
-			"connector_handles",
-			"files",
-			"hosts",
-			"mcp_auth_challenges",
-			"memory_edges",
-			"messages",
-			"model_aliases",
-			"model_routing_rules",
-			"route_drains",
-			"rss_feeds",
-			"semantic_memory",
-			"skills",
-			"tasks",
-			"threads",
-			"turns",
-			"users",
-			"webhooks",
-		];
+		const expected = Object.keys(TABLE_REDUCER_MAP).sort();
 		expect(tableNames).toEqual(expected);
 		db.close();
 	});

@@ -16,11 +16,19 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { renderDiscoverableArchive as renderArchiveLines } from "../stable-prefix/compose";
 import {
 	type DetailEntry,
 	type DiscoverableArchiveInput,
-	renderDiscoverableArchive,
+	computeSynthesisBacklogCount,
 } from "../summary-extraction";
+
+function renderDiscoverableArchive(input: DiscoverableArchiveInput) {
+	return {
+		section: { lines: renderArchiveLines(input) },
+		synthesisBacklogCount: computeSynthesisBacklogCount(input),
+	};
+}
 
 function da(entries: DetailEntry[], extra?: Partial<DiscoverableArchiveInput>): string {
 	return renderDiscoverableArchive({

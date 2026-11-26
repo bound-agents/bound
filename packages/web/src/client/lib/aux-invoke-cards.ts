@@ -18,6 +18,9 @@
 // `Thread: <uuid>` content trailer (or a "queued on thread <uuid>"
 // placeholder); those parse as a legacy fallback.
 
+import { readMetadataBag } from "./metadata-bag";
+import { UUID_SOURCE } from "./uuid";
+
 interface ToolUseLike {
 	id: string;
 	name: string;
@@ -41,8 +44,6 @@ export interface AuxInvokeRef {
 	status: "running" | "completed" | "failed";
 }
 
-const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-
 // Legacy content-trailer form (pre-metadata rows). Anchored to end-of-content
 // so a summary that merely *mentions* some other thread mid-text cannot
 // hijack the link.
@@ -55,21 +56,6 @@ function readString(input: unknown, key: string): string | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
 	const value = (input as Record<string, unknown>)[key];
 	return typeof value === "string" ? value : undefined;
-}
-
-/** Parse a message's metadata bag, tolerating the raw JSON-string form. */
-function readMetadataBag(metadata: ResultLike["metadata"]): Record<string, unknown> | undefined {
-	if (metadata == null) return undefined;
-	let bag: unknown = metadata;
-	if (typeof metadata === "string") {
-		try {
-			bag = JSON.parse(metadata);
-		} catch {
-			return undefined;
-		}
-	}
-	if (typeof bag !== "object" || bag === null) return undefined;
-	return bag as Record<string, unknown>;
 }
 
 /**

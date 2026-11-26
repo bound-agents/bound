@@ -13,7 +13,7 @@ import {
 import { injectTraceContext } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { resolveClientSessionHost } from "./delegation";
-import { readUnionResponseEntry } from "./relay-await-helpers";
+import { readDurableResponseEntry } from "./relay-await-helpers";
 import { type TopologyRole, routeRelayRequest } from "./relay-router";
 
 const POLL_MS = 100;
@@ -120,13 +120,11 @@ function waitForRemoteResult(
 	outboxId: string,
 ): Promise<AwaitableClientToolResult | null> {
 	const read = (): AwaitableClientToolResult | null | undefined => {
-		// 4D-D union read: consume the winning scalar response for this request,
-		// whether it landed in legacy relay_inbox (pre-drop) or the durable spool
-		// (post-4E). readUnionResponseEntry claims a durable row under a fresh
-		// token and defers its ack to settle(); a legacy row's markProcessed is
-		// likewise deferred — so we settle() only AFTER taking delivery, matching
+		// Consume the winning scalar response row for this request.
+		// readDurableResponseEntry claims it under a fresh token and defers the ack
+		// to settle(), so we settle() only after taking delivery, matching
 		// awaitPlatformRequestResponse's claim → deliver → ack ordering.
-		const entry = readUnionResponseEntry(deps.db, outboxId, deps.siteId);
+		const entry = readDurableResponseEntry(deps.db, outboxId, deps.siteId);
 		if (!entry) return undefined;
 		if (entry.kind === "client_result") {
 			const parsed = parseJsonSafe(clientResultPayloadSchema, entry.payload, entry.kind);

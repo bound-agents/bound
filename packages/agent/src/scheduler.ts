@@ -12,7 +12,6 @@ import {
 	findThreadIdById,
 	insertDurableWork,
 	insertRow,
-	listHostsWithLiveness,
 	releaseDurableWorkClaim,
 	resolveEffectiveModelHint,
 	updateRow,
@@ -22,7 +21,7 @@ import {
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import {
 	BOUND_NAMESPACE,
-	counter,
+	RPC_REQUEST_TTL_MS,
 	deterministicUUID,
 	formatError,
 	parseJsonUntyped,
@@ -38,11 +37,8 @@ import {
 	recordAgentOperationalMetric,
 	recordSchedulerClaimDelay,
 	recordSchedulerExecutionDuration,
-	recordSchedulerQueueDelay,
 } from "./operational-metrics";
 import {
-	FIRING_HOST_STALE_MS,
-	canRunHere,
 	computeFiringKey,
 	computeNextRunAt,
 	deriveFiringArtifactId,
@@ -77,69 +73,14 @@ const LEASE_VERIFY_SETTLE_MS = (() => {
 })();
 
 /**
- * Producer mode for task_fire durable-work rows (slices 5B/5C, R-DW15–R-DW21).
- *
- * Three states, read once from `BOUND_TASK_FIRE_MODE` at module init and
- * overridable in tests via {@link setTaskFireModeForTesting}:
- *  - `"legacy"`   — byte-identical to pre-slice behaviour: the phase-1
- *    pending→claimed CAS + run, no comparison computation, no telemetry. A
- *    rollback posture.
- *  - `"compare"`  — the legacy path still executes; in addition the scheduler
- *    computes the would-be durable enqueue decision and emits a
- *    `task_fire_comparison` telemetry record. NO durable_work row is inserted
- *    — comparison mode never runs two execution paths for one artifact. The
- *    dual-execution proof the migration plan requires; a rollback posture.
- *  - `"durable"` — DEFAULT (slice 5C). The rendezvous winner ENQUEUES a
- *    `task_fire` durable_work row instead of performing the legacy CAS; the
- *    same-tick consumer lane ({@link processPendingTaskFire}) claims it and
- *    bridges the legacy CAS into runTask. The comparison record still fires
- *    (now carrying `enqueue_inserted`) so drift stays observable.
- *
- * Follows the BOUND_DURABLE_* toggle pattern (packages/core/src/durable-work.ts)
- * as a three-state string rather than a boolean. Lives at scheduler module
- * scope — the scheduler is the only producer/consumer of task_fire.
+ * TTL for an enqueued `task_fire` durable_work row. The registry declares
+ * `ttlMs: null` for `task_fire`, so the producer picks the window at enqueue
+ * time. The consumer lane runs on the same tick that enqueues, so a firing is
+ * normally claimed within one {@link POLL_INTERVAL}; the RPC-request window
+ * leaves headroom for a briefly-stalled scheduler. A firing not claimed within
+ * it dead-letters into workspool-redrivable state.
  */
-export type TaskFireMode = "legacy" | "compare" | "durable";
-
-function parseTaskFireMode(raw: string | undefined): TaskFireMode {
-	switch (raw?.toLowerCase()) {
-		case "legacy":
-			return "legacy";
-		case "durable":
-			return "durable";
-		case "compare":
-			return "compare";
-		default:
-			// Unset or unrecognized defaults to durable — the end-state execution
-			// path (slice 5C). "legacy" and "compare" remain explicit rollback
-			// postures.
-			return "durable";
-	}
-}
-
-let TASK_FIRE_MODE: TaskFireMode = parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
-
-/** Test seam: override the task_fire producer mode. */
-export function setTaskFireModeForTesting(mode: TaskFireMode | undefined): void {
-	TASK_FIRE_MODE = mode ?? parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
-}
-
-/**
- * TTL for an enqueued `task_fire` durable_work row (slice 5C). The registry
- * declares `ttlMs: null` for `task_fire`, so the producer picks the window at
- * enqueue time. The consumer lane runs on the SAME tick that enqueues (after
- * phase-3), so a firing is normally claimed within one {@link POLL_INTERVAL};
- * this window is the RPC-request class (5 min, matching the registry's
- * RPC_REQUEST_TTL_MS) — far larger than the tick cadence, with headroom for a
- * briefly-stalled scheduler. A firing not claimed within it dead-letters into
- * workspool-redrivable state, the right failure surface for a wedged scheduler.
- */
-const TASK_FIRE_TTL_MS = 5 * 60 * 1000;
-
-/** OTel counter for task_fire comparison records (slice 5B dual-execution proof). */
-const taskFireComparisonCounter = counter("bound.scheduler.task_fire.comparison", {
-	description: "task_fire producer comparison-mode decisions by decision_match (slice 5B)",
-});
+const TASK_FIRE_TTL_MS = RPC_REQUEST_TTL_MS;
 
 /**
  * Extracts the raw cron expression from a trigger_spec string.
@@ -476,33 +417,24 @@ function retryDeferredTask(
  *
  * Success path: leaves `next_run_at = NULL`. Event tasks must only be woken by
  * real `connector:event` emissions (the `onEvent` path in this scheduler), not
- * by `phase1Schedule`. Setting a periodic fallback caused phase1 to re-claim
- * completed event tasks every N minutes with no new event payload — a spin
- * observed in production as one real interaction producing 29 wake-ups over
- * 70 minutes with no new content on any of them. The periodic-fallback idea
- * came from a spec note about the connector **dispatcher** ("periodic cron
- * fallback wakes the dispatcher even without list_changed"); that note
- * applies to the dispatcher, not to per-event handler tasks like this one —
- * the two got conflated. (The dispatcher itself was later removed; see the
- * MCP Platform Connectors RFC.)
+ * by `phase1Schedule`; a periodic fallback re-fires completed event tasks with
+ * no new event payload.
  *
- * Failure path: 60s retry IF AND ONLY IF the relay_inbox still has unprocessed
- * envelopes for this task's thread. Capped at MAX_FAILURE_BACKOFFS to avoid
- * permanent self-spin on a broken handler. After the cap (or with no pending
- * envelopes), the task waits in pending for a real event.
+ * Failure path: 60s retry if and only if the durable intake spool still holds
+ * pending foldable rows for this task's thread. Capped at
+ * MAX_EVENT_TASK_FAILURE_BACKOFFS to avoid permanent self-spin on a broken
+ * handler. After the cap (or with no pending rows), the task waits in pending
+ * for a real event.
  *
- * The unprocessed-inbox precondition is load-bearing: scheduler.ts:895 calls
- * markProcessed BEFORE the agent loop runs (after the wakeup developer/
+ * The pending-intake precondition is load-bearing: runTask acknowledges the
+ * folded intake claims before the agent loop runs (after the wakeup developer/
  * tool_call/tool_result triple is durably persisted), so by the time we reach
- * resetEventTask the common-case inbox is already drained. An unconditional
+ * resetEventTask the common-case spool is already drained. An unconditional
  * retry would re-fire the agent loop on an empty buildEventWakeupContent
- * payload — the "Execute scheduled task." fallback — giving the agent context-
- * free phantom wakeups. Observed in production: a single soft-fail produced a
- * 5-wakeup cluster within minutes with no new event content on any retry. The
- * narrow case the
- * retry still serves: persistence failed BEFORE markProcessed (DB error
- * during message inserts), so the inbox is genuinely unprocessed and the
- * retry replays the actual event payload.
+ * payload (the "Execute scheduled task." fallback), giving the agent
+ * context-free phantom wakeups. The retry serves the case where persistence
+ * failed before the acknowledgement, so the intake is genuinely unconsumed and
+ * the retry replays the actual event payload.
  *
  * Re-reads current DB state before resetting to avoid resurrecting tasks that
  * were cancelled or soft-deleted externally during execution, and to read the
@@ -540,32 +472,25 @@ function resetEventTask(
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
 	if (task.thread_id) {
-		// Re-arm if EITHER store has pending foldable intake for this thread.
-		// markProcessed / acknowledgeDurableWork (below, post-wakeup-insert) drain
-		// what this run folded BEFORE the agent loop runs, so a pending row here
-		// can only be (a) an event that arrived MID-RUN — onEvent's CAS claim
-		// fails while the task is claimed/running, so without this re-arm the
-		// event strands until the next event happens to fire — or (b) a wakeup
-		// that failed before draining, where the retry replays the actual payload.
+		// Re-arm if the spool has pending foldable intake for this thread.
+		// acknowledgeDurableWork (post-wakeup-insert) drains what this run folded
+		// before the agent loop runs, so a pending row here is either (a) an event
+		// that arrived mid-run (onEvent's CAS claim fails while the task is
+		// claimed/running, so without this re-arm the event strands until the next
+		// event fires) or (b) a wakeup that failed before draining, where the retry
+		// replays the actual payload.
 		//
 		// Kinds match buildEventWakeupContent's readers exactly: webhook_intake,
-		// connector_intake, AND rss_intake all fold into the wakeup, from both the
-		// legacy relay_inbox and the new durable_work intake store (4C-2). Since
-		// the single-delivery-vehicle change, connector_intake rows are the ONLY
+		// connector_intake, and rss_intake. connector_intake rows are the only
 		// leader-local record of a platform event, so missing them here loses
-		// events outright (observed: Discord messages during an active loop
-		// produced no response). The completion path runs this check too —
-		// completing the CURRENT wakeup says nothing about rows that arrived
-		// after its fold drained the stores.
+		// events outright. The completion path runs this check too: completing the
+		// current wakeup says nothing about rows that arrived after its fold.
 		//
-		// A stray platform-MCP `intake` row sharing this thread_id would NOT
-		// survive a retry into the helper, so it is deliberately not counted
-		// (retrying on its presence would be a phantom wakeup).
-		// Post-N+1: the durable spool is the sole intake store; legacy relay_inbox
-		// is retired.
-		const pendingRelay = 0;
+		// A stray platform-MCP `intake` row sharing this thread_id would not survive
+		// a retry into the helper, so it is not counted (retrying on its presence
+		// would be a phantom wakeup).
 		const pendingDurable = countPendingIntakeDurableWork(db, task.thread_id);
-		if (pendingRelay > 0 || pendingDurable > 0) {
+		if (pendingDurable > 0) {
 			const failures = current.consecutive_failures ?? 0;
 			if (isCompletion) {
 				// Success path with pending rows: immediate re-arm — this is a
@@ -877,7 +802,7 @@ export function formatIdleDuration(ms: number): string {
 }
 
 /**
- * Identity payload of a single deterministic task firing (slice 5A, R-DW15–21).
+ * Identity payload of a single deterministic task firing (R-DW15–21).
  *
  * A `task_fire` durable_work row carries ONLY the firing's identity — the
  * `(task_id, scheduled_at)` pair that names one due instant of a synced
@@ -1097,12 +1022,8 @@ export class Scheduler {
 			// Phase 3: Run
 			this.phase3Run();
 
-			// Slice 5A: task_fire consumer lane. A durable pass mirroring the relay
-			// processor's — claims pending task_fire rows targeted at this host,
-			// bridges the legacy CAS into runTask, and consumes the firing. In 5A no
-			// production code enqueues task_fire rows (the producer flip is 5B/5C),
-			// so this carries only test traffic; it is fire-and-forget on the tick
-			// cadence and never blocks the synchronous phases above.
+			// task_fire consumer lane: fire-and-forget on the tick cadence so it never
+			// blocks the synchronous phases above.
 			void this.processPendingTaskFire().catch((error) => {
 				this.ctx.logger.error("[scheduler] task_fire consumer pass escaped", {
 					error: formatError(error),
@@ -1193,11 +1114,9 @@ export class Scheduler {
 							}
 
 							case "event": {
-								// Post-N+1: legacy relay_inbox is retired; the durable spool is the
-								// sole intake store, drained by buildEventWakeupContent's durable
-								// claim/ack. There is no separate legacy backlog to reschedule
-								// against here, so an event task that failed does not self-rearm on
-								// a backlog count.
+								// The durable spool is the sole intake store, drained by
+								// buildEventWakeupContent's claim/ack, so a failed event task does
+								// not self-rearm on a backlog count.
 								nextRunAtIso = null;
 								break;
 							}
@@ -1281,7 +1200,7 @@ export class Scheduler {
 		// (c) Heal stuck rows in terminal state with stale next_run_at.
 		// Generalized healer covering all four task types and all failed-write paths.
 		// Defends against any future eviction-vs-completion race that escapes the
-		// CAS in (b), and recovers existing stuck rows on restart (e.g., d2ecf42d).
+		// CAS in (b), and recovers existing stuck rows on restart.
 		healStuckTasks(this.ctx.db, this.ctx.logger, this.ctx.siteId, this.lastUserInteractionAt);
 	}
 
@@ -1296,139 +1215,19 @@ export class Scheduler {
 			.all(now) as Task[];
 
 		for (const task of pendingTasks) {
-			// Rendezvous winner. Reused verbatim by the 5B comparison computation
-			// below so the legacy dispatch decision and the would-be durable enqueue
-			// decision derive from ONE evaluation — a mismatch is therefore
-			// structurally impossible while 5C's producer has not yet diverged from
-			// this gate, which is exactly the invariant the telemetry proves.
-			const legacyDispatched = shouldDispatchHere(
-				this.ctx.db,
-				task,
-				this.ctx.hostName,
-				this.ctx.siteId,
-			);
-			let legacyClaimWon = false;
-			let enqueueInserted = false;
-			if (TASK_FIRE_MODE === "durable") {
-				// Slice 5C: the rendezvous winner ENQUEUES a task_fire durable_work
-				// row instead of performing the legacy pending→claimed CAS. The
-				// same-tick consumer lane (processPendingTaskFire, after phase-3)
-				// claims the row and bridges the legacy CAS into runTask, so the
-				// synced tasks row lifecycle is UNCHANGED (R-DW17 by construction).
-				// The INSERT OR IGNORE fence on (kind, idempotency_key) dedupes
-				// re-enqueues across ticks while next_run_at is unchanged.
-				if (legacyDispatched) {
-					enqueueInserted = this.enqueueTaskFire(task);
-				}
-			} else if (legacyDispatched) {
-				const claimedAt = new Date().toISOString();
-				// CAS: only claim if still pending (prevents duplicate scheduling from other hosts)
-				const txFn = this.ctx.db.transaction(() => {
-					const result = this.ctx.db
-						.query(
-							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-routed: explicit createChangeLogEntry follows the CAS UPDATE in this transaction (pending → claimed)
-						)
-						.run(this.ctx.siteId, claimedAt, task.id);
-					if (result.changes > 0) {
-						// Generate changelog entry for the successful claim
-						return createChangeLogEntry(this.ctx.db, "tasks", task.id, this.ctx.siteId, {
-							status: "claimed",
-							claimed_by: this.ctx.siteId,
-							claimed_at: claimedAt,
-							modified_at: new Date().toISOString(),
-						});
-					}
-					return null;
-				});
-
-				const hlc = txFn();
-				if (!hlc) {
-					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
-						taskId: task.id,
-					});
-				} else {
-					legacyClaimWon = true;
-					if (task.next_run_at) {
-						recordSchedulerQueueDelay(
-							new Date(claimedAt).getTime() - new Date(task.next_run_at).getTime(),
-							{ type: task.type },
-						);
-					}
-				}
+			// The rendezvous winner enqueues a task_fire durable_work row; the
+			// same-tick consumer lane (processPendingTaskFire) claims it and performs
+			// the pending→claimed CAS before runTask, so the synced tasks row
+			// lifecycle is unchanged (R-DW17). The INSERT OR IGNORE fence on
+			// (kind, idempotency_key) dedupes re-enqueues while next_run_at is unchanged.
+			if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+				this.enqueueTaskFire(task);
 			}
-
-			// Slices 5B/5C: task_fire comparison record. In "legacy" mode this is a
-			// no-op (rollback posture, byte-identical to pre-slice). In "compare" the
-			// legacy CAS above ran exactly as at HEAD and NO row was enqueued
-			// (enqueue_inserted=false). In "durable" the enqueue above replaced the
-			// legacy CAS and enqueue_inserted reflects the fence result. decision_match
-			// stays legacy_dispatched===would_enqueue — both derive from the single
-			// shouldDispatchHere evaluation, so drift from this gate is detectable.
-			this.recordTaskFireComparison(task, legacyDispatched, legacyClaimWon, enqueueInserted);
 		}
 	}
 
 	/**
-	 * Emit the slices-5B/5C task_fire comparison record for one due scheduled firing.
-	 *
-	 * `would_enqueue` is the rendezvous winner result — the SAME value the legacy
-	 * gate used ({@link shouldDispatchHere}'s output, threaded in as
-	 * `legacyDispatched`), not a recomputation — so `decision_match` is
-	 * structurally true today. The record exists to (a) count real firings that
-	 * flow through the comparison window and (b) catch drift if 5C's producer ever
-	 * diverges from this gate. Logs + a low-cardinality OTel counter only; never
-	 * persisted to a synced table (bounded namespace). Event tasks never reach
-	 * here (phase-1 scans `next_run_at IS NOT NULL`), preserving R-DW18.
-	 */
-	private recordTaskFireComparison(
-		task: Task,
-		legacyDispatched: boolean,
-		legacyClaimWon: boolean,
-		enqueueInserted: boolean,
-	): void {
-		if (TASK_FIRE_MODE === "legacy") return;
-
-		// Phase-1 already filtered to next_run_at non-null, but keep the guard so a
-		// future caller can't slip an event firing into the comparison lane.
-		const scheduledAt = task.next_run_at;
-		if (scheduledAt === null) return;
-
-		const firingKey = computeFiringKey(task.id, scheduledAt);
-		if (firingKey === null) return;
-		const idempotencyKey = taskFireIdempotencyKey({
-			task_id: task.id,
-			scheduled_at: scheduledAt,
-		});
-		// Rendezvous candidate-set size — the same live-host set shouldDispatchHere
-		// scored — recorded for window observability, not decision logic.
-		const candidateCount = this.countFiringCandidates(task);
-		// The new path's decision IS the rendezvous winner the legacy gate computed.
-		const wouldEnqueue = legacyDispatched;
-		const decisionMatch = legacyDispatched === wouldEnqueue;
-
-		this.ctx.logger.info("[scheduler] task_fire comparison", {
-			event: "task_fire_comparison",
-			task_id: task.id,
-			scheduled_at: scheduledAt,
-			firing_key: firingKey,
-			idempotency_key: idempotencyKey,
-			legacy_dispatched: legacyDispatched,
-			legacy_claim_won: legacyClaimWon,
-			would_enqueue: wouldEnqueue,
-			// Slice 5C: the fence result of the real enqueue in durable mode; always
-			// false in compare mode (nothing is enqueued there).
-			enqueue_inserted: enqueueInserted,
-			candidate_count: candidateCount,
-			decision_match: decisionMatch,
-		});
-		// Low-cardinality counter: decision_match only (IDs live in the log line).
-		taskFireComparisonCounter.add(1, {
-			"bound.task_fire.decision_match": String(decisionMatch),
-		});
-	}
-
-	/**
-	 * Slice 5C: enqueue a `task_fire` durable_work row for a due scheduled firing
+	 * Enqueue a `task_fire` durable_work row for a due scheduled firing
 	 * the rendezvous named this host to win. Identity-only payload (R-DW15); the
 	 * (kind, idempotency_key) fence collapses re-enqueues across ticks while the
 	 * binding's `next_run_at` is unchanged. Returns the fence result (true = a new
@@ -1452,47 +1251,24 @@ export class Scheduler {
 	}
 
 	/**
-	 * Count the live-host rendezvous candidate set for a firing, mirroring
-	 * {@link shouldDispatchHere}'s candidate construction (live hosts passing the
-	 * task's own affinity gate, plus self). Observability only — the winner
-	 * decision is reused from the gate, never recomputed here.
-	 */
-	private countFiringCandidates(task: Task): number {
-		const cutoff = Date.now() - FIRING_HOST_STALE_MS;
-		const seen = new Set<string>();
-		for (const row of listHostsWithLiveness(this.ctx.db)) {
-			if (seen.has(row.site_id)) continue;
-			const ts = row.modified_at ?? row.online_at;
-			if (!ts || new Date(ts).getTime() < cutoff) continue;
-			const peerHostName = row.host_name ?? row.site_id;
-			if (!canRunHere(this.ctx.db, task, peerHostName, row.site_id)) continue;
-			seen.add(row.site_id);
-		}
-		if (!seen.has(this.ctx.siteId)) seen.add(this.ctx.siteId);
-		return seen.size;
-	}
-
-	/**
-	 * Slice 5A consumer lane for `task_fire` durable-work rows.
+	 * Consumer lane for `task_fire` durable-work rows.
 	 *
 	 * Mirrors the relay processor's `processPendingDurableWork`: claim a pending
 	 * row targeted at this host (local-exclusive, BEGIN IMMEDIATE), execute it,
-	 * then token-fenced ack. The execution bridge is deliberately minimal so
-	 * that {@link runTask} stays UNTOUCHED (5C refactors it): the consumer
-	 * validates the payload, re-reads the LIVE `tasks` binding, verifies the
-	 * firing is still due for the payload's `scheduled_at`, performs the legacy
-	 * `pending → claimed` CAS, and invokes `runTask`. The firing is consumed
+	 * then token-fenced ack. The consumer validates the payload, re-reads the
+	 * live `tasks` binding, verifies the firing is still due for the payload's
+	 * `scheduled_at`, performs the `pending → claimed` CAS, and invokes
+	 * {@link runTask}. The firing is consumed
 	 * only after `runTask` returns — its completion/failure write-backs ARE the
 	 * task outcome, so the firing was executed either way.
 	 *
 	 * Disposition matrix:
 	 *  - malformed payload (not `{task_id, scheduled_at}`) → token-fenced
-	 *    dead-letter (redrivable after a producer fix); mirrors 4D-A's
-	 *    null-source_site handling.
+	 *    dead-letter (redrivable after a producer fix).
 	 *  - binding gone / paused / re-armed / claimed elsewhere / next_run_at moved
 	 *    / event task (next_run_at NULL) → STALE: consume as a no-op with a
 	 *    structured log, never an error, never re-executing a moved-on binding.
-	 *  - legacy `pending → claimed` CAS loses (a peer claimed first) → STALE:
+	 *  - `pending → claimed` CAS loses (a peer claimed first) → STALE:
 	 *    consume as a no-op.
 	 *  - infrastructure failure BEFORE `runTask` starts → leave the row
 	 *    `processing` (claim-owned) for boot recovery; only after the attempt
@@ -1587,7 +1363,7 @@ export class Scheduler {
 			const dueTask = task as Task;
 
 			try {
-				// Legacy pending → claimed CAS (the phase1 shape). This is the exclusion
+				// pending → claimed CAS. This is the exclusion
 				// point: if a peer already claimed/ran this firing, the CAS no-ops and we
 				// treat it as a stale firing rather than double-running. runTask's own
 				// claimed → running lease CAS then works unchanged.
@@ -1631,11 +1407,9 @@ export class Scheduler {
 					claimed_at: claimedAt,
 				};
 
-				// Daily-budget gate (R-U35), preserved from phase-3 (R-DW17): an
-				// autonomous task over budget must NOT run. In legacy/compare mode this
-				// gate lives in phase3Run, which releases the claim back to pending; the
-				// durable bridge reaches runTask by a different path, so it must apply
-				// the same check. Release the freshly-claimed binding to pending (as
+				// Daily-budget gate (R-U35, R-DW17): an autonomous task over budget must
+				// not run. phase3Run applies the same gate; this bridge reaches runTask
+				// by a different path, so it must check too. Release the freshly-claimed binding to pending (as
 				// phase-3 does) and RELEASE the firing's claim back to pending (NOT
 				// consume): budget deferral does not advance next_run_at, so the next
 				// tick's producer re-mints the identical key task-fire:<id>:<instant>.
@@ -1666,7 +1440,7 @@ export class Scheduler {
 					return;
 				}
 
-				// Bridge into the UNTOUCHED execution body. runTask launches the agent
+				// runTask launches the agent
 				// loop asynchronously (setImmediate); its completion/failure write-backs
 				// land the task outcome independently. We hand off with the freshly-
 				// claimed row snapshot so runTask's claimed → running lease CAS matches.
@@ -2023,29 +1797,17 @@ export class Scheduler {
 				} else if (task.type === "consolidation") {
 					taskContent = buildConsolidationContext(this.ctx.db);
 				} else if (task.type === "event") {
-					// Event tasks (e.g. webhook-triggered) carry their dynamic
-					// payload in relay_inbox keyed by thread_id, written at
-					// intake time by webhook-handler.ts. Without this branch
-					// the agent would just see "Execute scheduled task." with no
-					// clue what fired the trigger, and would have to reconstruct
-					// the event by hand from external state (GitHub, etc.).
-					// Helper reads BOTH stores (relay_inbox + durable_work intake),
-					// merges oldest-first, dedupes twins, and CLAIMS the durable rows
-					// it folds. It returns relay ids to markProcessed and durable
-					// claims to acknowledge, both drained post-persist (below).
+					// Event tasks carry their dynamic payload in durable intake rows keyed
+					// by thread_id. The helper claims the rows it folds; the claims are
+					// acknowledged after the wakeup triple persists (below).
 					const eventResult = buildEventWakeupContent(this.ctx.db, task, this.ctx.siteId);
-					// `next_run_at` on an event task is the mid-run re-arm path. The
-					// relay inbox is local-only, but the re-armed task row syncs; a peer
-					// can therefore claim this firing without the envelope that caused
-					// it. Do not persist a synthetic wakeup or invoke the loop without a
-					// locally foldable envelope from EITHER store. Resetting returns the
-					// listener to its normal pending state; the host holding the rows
-					// will still consume them on its own re-arm.
-					if (
-						(task.run_count ?? 0) > 0 &&
-						eventResult.processedIds.length === 0 &&
-						eventResult.durableClaims.length === 0
-					) {
+					// `next_run_at` on an event task is the mid-run re-arm path. Intake
+					// rows are local-only, but the re-armed task row syncs; a peer can
+					// therefore claim this firing without the rows that caused it. Do not
+					// persist a synthetic wakeup or invoke the loop without locally
+					// foldable intake. Resetting returns the listener to pending; the host
+					// holding the rows consumes them on its own re-arm.
+					if ((task.run_count ?? 0) > 0 && eventResult.durableClaims.length === 0) {
 						this.ctx.logger.info(
 							"[scheduler] Skipping re-armed event task with no local inbox payload",
 							{
@@ -2064,8 +1826,6 @@ export class Scheduler {
 				}
 
 				// 1. System notification establishing the wakeup context.
-				// Formerly a user message with "." — changed to system to avoid
-				// confusing models and polluting history/memory generation.
 				insertRow(
 					this.ctx.db,
 					"messages",

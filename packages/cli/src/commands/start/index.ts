@@ -11,6 +11,7 @@ import type { MCPServerConfig } from "@bound/agent";
 import { ThreadExecutor, listModelAliases, startHostHeartbeat } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
+import { initTelemetry, setTelemetrySiteId, shutdownTelemetry } from "@bound/shared";
 import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
@@ -29,7 +30,6 @@ import { initSandbox } from "./sandbox.js";
 import { initScheduler } from "./scheduler.js";
 import { initServer } from "./server.js";
 import { initSync } from "./sync.js";
-import { initTelemetry, setTelemetrySiteId, shutdownTelemetry } from "./telemetry.js";
 import { createWsTransportHolderStubs, wireWsTransportHolder } from "./wire-ws-transport-holder.js";
 
 /**
@@ -147,6 +147,13 @@ export async function startNode(
 		mcpCommands,
 		mcpServerNames,
 	);
+	const mcpCommandContext = commandContext ?? {
+		db: appContext.db,
+		siteId: appContext.siteId,
+		eventBus: appContext.eventBus,
+		logger: appContext.logger,
+		mcpClients: mcpClientsMap,
+	};
 	reloadMcpForReconnect = (serverName: string): Promise<void> =>
 		reconnectResolvedMcpServer({
 			appContext,
@@ -154,13 +161,7 @@ export async function startNode(
 			mcpServerNames,
 			confirmGates,
 			sandbox,
-			commandContext: commandContext ?? {
-				db: appContext.db,
-				siteId: appContext.siteId,
-				eventBus: appContext.eventBus,
-				logger: appContext.logger,
-				mcpClients: mcpClientsMap,
-			},
+			commandContext: mcpCommandContext,
 			serverName,
 			// A server whose startup connect failed outright has no parked client;
 			// rebuild it from live config so the resolution still lands (#299).
@@ -246,6 +247,7 @@ export async function startNode(
 					platformMcpRegistry: null,
 					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
 					stopLeaderElections: () => {},
+					stopScanIntervals: () => {},
 					// Single-host fallback (no model router / no sync): the holder is never
 					// wired — initSync returns wsTransport: undefined by design — so these
 					// stubs are live forever. Benign mode keeps the pre-#253 semantics
@@ -271,22 +273,14 @@ export async function startNode(
 				mcpServerNames,
 				confirmGates,
 				sandbox,
-				commandContext: commandContext ?? {
-					db: appContext.db,
-					siteId: appContext.siteId,
-					eventBus: appContext.eventBus,
-					logger: appContext.logger,
-					mcpClients: mcpClientsMap,
-				},
+				commandContext: mcpCommandContext,
 				oldConfig,
 				newConfig,
 				// R-MO2/R-MO13: thread the SAME oauth provider wiring the startup path uses
 				// (shared store + raise debouncer, R-MO22) so an oauth server added or
 				// changed via SIGHUP raises a challenge on a connect-time 401 instead of
 				// dead-failing. Undefined when no oauth-configured server exists.
-				provideAuth: mcpOAuth
-					? (server) => ({ ...server, authProvider: mcpOAuth.providerFor(server) ?? undefined })
-					: undefined,
+				provideAuth: provideMcpAuth,
 			});
 		},
 		onModelBackendsChanged: async (_oldConfig, newConfig) => {
@@ -385,10 +379,8 @@ ${webUrl ? `\nOpen ${webUrl} in your browser to start chatting.\n` : ""}
 Press Ctrl+C to stop.
 `);
 
-	// Build the single teardown path. This is exactly the body of the former
-	// setupGracefulShutdown shutdown handler, minus the signal registration:
-	// everything that holds the process open (servers, scheduler, heartbeat,
-	// pruning, relay processor, ws transport + changelog bus, ws client, MCP
+	// The single teardown path: everything that holds the process open (servers, scheduler,
+	// heartbeat, pruning, relay processor, ws transport + changelog bus, ws client, MCP
 	// clients, span tracker, telemetry) is stopped here, plus the PID lockfile.
 	// runStart drives it from a signal; startNode callers (tests) drive it from
 	// NodeHandle.stop(). Idempotent via the `stopped` latch so a double stop() or
@@ -418,10 +410,12 @@ Press Ctrl+C to stop.
 			relayProcessorHandle?.stop();
 			// Leader-election intervals query the DB; stop them before it closes.
 			serverResult.stopLeaderElections();
+			serverResult.stopScanIntervals();
 			if (wsTransport) {
 				wsTransport.stop();
-				const { setChangelogEventBus } = await import("@bound/core");
+				const { setChangelogEventBus, setDurableWorkEventBus } = await import("@bound/core");
 				setChangelogEventBus(null);
+				setDurableWorkEventBus(null);
 			}
 			wsClient?.close();
 			for (const [, client] of mcpClientsMap) {

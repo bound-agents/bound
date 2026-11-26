@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
-import { validateColumnName } from "./change-log";
+import { SYNCED_TABLE_NAMES, validateColumnName } from "./change-log";
 
 export interface ColumnInfo {
 	name: string;
@@ -23,30 +23,6 @@ interface PragmaTableInfoRow {
 	pk: number;
 }
 
-const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
-	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
-	"hosts",
-	"cluster_config",
-	"advisories",
-	"skills",
-	"agents",
-	"memory_edges",
-	"connector_handles",
-	"webhooks",
-	"rss_feeds",
-	"client_sessions",
-	"mcp_auth_challenges",
-	"model_routing_rules",
-	"route_drains",
-	"model_aliases",
-	"turns",
-];
-
 /**
  * Returns column metadata for every synced table, ordered by declaration order
  * within each table. Reads via `PRAGMA table_info` so the result always
@@ -61,9 +37,6 @@ const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
 export function getSyncedTableSchemas(db: Database): TableSchemaInfo[] {
 	const out: TableSchemaInfo[] = [];
 	for (const table of SYNCED_TABLE_NAMES) {
-		// Defense-in-depth: validate the identifier even though it comes from
-		// a closed union, so a future refactor can't silently introduce an
-		// unsafe name.
 		validateColumnName(table);
 		const rows = db.query(`PRAGMA table_info(${table})`).all() as PragmaTableInfoRow[];
 		const columns: ColumnInfo[] = rows

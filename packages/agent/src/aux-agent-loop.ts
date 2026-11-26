@@ -16,7 +16,7 @@ import { context } from "@opentelemetry/api";
 import { parseContentBlocks } from "./agent-loop-utils";
 import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
 import { buildCacheMarkers, coldPathPlaceCacheMarker } from "./cache-marker";
-import { selectCacheTtl } from "./cache-prediction";
+import { CACHE_TTL } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
 import { resolveClientSessionHost } from "./delegation";
 import { injectNotificationMessage } from "./notification-injection";
@@ -28,7 +28,7 @@ const CLIENT_TOOL_POLL_MS = 150;
 /** Wait floor when the call names no timeout of its own. */
 export const CLIENT_TOOL_TIMEOUT_MS = 300_000;
 /** Headroom past the call's own timeout for the client's kill grace and the result's trip back. */
-export const CLIENT_TOOL_TIMEOUT_GRACE_MS = 30_000;
+const CLIENT_TOOL_TIMEOUT_GRACE_MS = 30_000;
 
 type ClientToolWaitOutcome =
 	| { kind: "result"; content: string; isError: boolean }
@@ -181,7 +181,6 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		return coldPathPlaceCacheMarker(
 			messages,
 			{
-				bucketTokens: 0,
 				estimateTokens: (message) => countTokens(JSON.stringify(message.content)),
 			},
 			cacheMarkerCaps ?? undefined,
@@ -205,7 +204,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			maxOutputTokens,
 		} = this.prepareSharedFrameInputs(resolution);
 		const truncationTargetTokens = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
-		const cacheTtl = selectCacheTtl("aux");
+		const cacheTtl = CACHE_TTL;
 		const assemblyClock = realTimeClock();
 		const assemblyNowMs = assemblyClock.nowMs();
 

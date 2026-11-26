@@ -926,8 +926,7 @@ describe("Phase 4: capability management", () => {
 		expect(caps?.vision).toBe(false);
 	});
 
-	// AC5.1 — markRateLimited + isRateLimited round-trip
-	it("markRateLimited + isRateLimited round-trip (AC5.1)", () => {
+	it("recordRouteFailure + isRateLimited round-trip (AC5.1)", () => {
 		const router = createModelRouter({
 			backends: [
 				{
@@ -942,7 +941,7 @@ describe("Phase 4: capability management", () => {
 			default: "test",
 		});
 		expect(router.isRateLimited("test")).toBe(false);
-		router.markRateLimited("test", 60_000);
+		router.recordRouteFailure("test", { errorKind: "rate_limit" });
 		expect(router.isRateLimited("test")).toBe(true);
 	});
 
@@ -964,7 +963,7 @@ describe("Phase 4: capability management", () => {
 			},
 			{ clock: () => now },
 		);
-		router.markRateLimited("test", 1_000);
+		router.recordRouteFailure("test", { errorKind: "rate_limit", retryAfterMs: 1_000 });
 		expect(router.isRateLimited("test")).toBe(true);
 		now += 999;
 		expect(router.isRateLimited("test")).toBe(true);
@@ -995,7 +994,7 @@ describe("Phase 4: capability management", () => {
 			],
 			default: "a",
 		});
-		router.markRateLimited("a", 60_000);
+		router.recordRouteFailure("a", { errorKind: "rate_limit" });
 		const eligible = router.listEligible();
 		expect(eligible.map((b) => b.id)).toEqual(["b"]);
 	});
@@ -1095,9 +1094,15 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 
 		// Mark both vision backends as rate-limited with different expiry times
 		const now = Date.now();
-		router.markRateLimited("vision-backend-1", 30_000); // Expires in 30s
-		router.markRateLimited("vision-backend-2", 60_000); // Expires in 60s
-		router.markRateLimited("no-vision", 10_000); // Expires in 10s (should be ignored)
+		router.recordRouteFailure("vision-backend-1", {
+			errorKind: "rate_limit",
+			retryAfterMs: 30_000,
+		}); // Expires in 30s
+		router.recordRouteFailure("vision-backend-2", {
+			errorKind: "rate_limit",
+			retryAfterMs: 60_000,
+		}); // Expires in 60s
+		router.recordRouteFailure("no-vision", { errorKind: "rate_limit", retryAfterMs: 10_000 }); // Expires in 10s (should be ignored)
 
 		const earliest = router.getEarliestCapableRecovery({ vision: true });
 		expect(earliest).toBeDefined();
@@ -1135,7 +1140,7 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 		});
 
 		// Only mark non-vision backend as rate-limited
-		router.markRateLimited("no-vision", 10_000);
+		router.recordRouteFailure("no-vision", { errorKind: "rate_limit", retryAfterMs: 10_000 });
 
 		// Query for vision requirement — should return null since vision backend is not rate-limited
 		const earliest = router.getEarliestCapableRecovery({ vision: true });
@@ -1188,8 +1193,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 		});
 
 		const now = Date.now();
-		router.markRateLimited("backend-a", 100_000);
-		router.markRateLimited("backend-b", 50_000);
+		router.recordRouteFailure("backend-a", { errorKind: "rate_limit", retryAfterMs: 100_000 });
+		router.recordRouteFailure("backend-b", { errorKind: "rate_limit", retryAfterMs: 50_000 });
 
 		const earliest = router.getEarliestCapableRecovery();
 		expect(earliest).toBeDefined();
@@ -1231,8 +1236,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 		});
 
 		const now = Date.now();
-		router.markRateLimited("full-featured", 50_000);
-		router.markRateLimited("limited", 100_000);
+		router.recordRouteFailure("full-featured", { errorKind: "rate_limit", retryAfterMs: 50_000 });
+		router.recordRouteFailure("limited", { errorKind: "rate_limit", retryAfterMs: 100_000 });
 
 		// Query for vision requirement — only full-featured supports it
 		const earliest = router.getEarliestCapableRecovery({ vision: true });
@@ -1268,8 +1273,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 			default: "partial-1",
 		});
 
-		router.markRateLimited("partial-1", 50_000);
-		router.markRateLimited("partial-2", 100_000);
+		router.recordRouteFailure("partial-1", { errorKind: "rate_limit", retryAfterMs: 50_000 });
+		router.recordRouteFailure("partial-2", { errorKind: "rate_limit", retryAfterMs: 100_000 });
 
 		// Query for both vision AND tool_use — no backend has both
 		const earliest = router.getEarliestCapableRecovery({
@@ -1640,7 +1645,7 @@ describe("ModelRouter.reload — in-place config swap", () => {
 
 	it("clears rate-limit state for backends that disappear", () => {
 		const router = createModelRouter(initialConfig);
-		router.markRateLimited("old-backend", 60_000);
+		router.recordRouteFailure("old-backend", { errorKind: "rate_limit" });
 		expect(router.isRateLimited("old-backend")).toBe(true);
 
 		router.reload({

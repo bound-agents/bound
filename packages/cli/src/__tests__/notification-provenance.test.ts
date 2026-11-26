@@ -34,7 +34,7 @@
  * doesn't have to break the test.
  */
 import { describe, expect, it } from "bun:test";
-import { formatNotification } from "../commands/start/server";
+import { formatNotification } from "@bound/agent";
 
 describe("notification provenance marker", () => {
 	it("flags proactive notification content as agent-authored on render", () => {

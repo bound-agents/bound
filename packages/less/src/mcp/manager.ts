@@ -1,10 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { Tool } from "@modelcontextprotocol/client";
-/**
- * MCP Server lifecycle manager.
- * Manages per-server state (spawn, connect, disconnect, enumerate).
- * Implements AC6.1, AC6.2, AC6.6, AC6.7.
- */
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
@@ -18,52 +13,35 @@ export interface McpServerState {
 	transport: StdioClientTransport | StreamableHTTPClientTransport | null;
 }
 
-// Type guard for checking transport type
 function isStdioTransport(
 	transport: StdioClientTransport | StreamableHTTPClientTransport | null,
 ): transport is StdioClientTransport {
 	return transport instanceof StdioClientTransport;
 }
 
-/**
- * Check if two server configs are functionally equal.
- * Returns true if all relevant fields match (name, transport, command/url, args/env, enabled).
- */
+function sameJson(a: unknown, b: unknown): boolean {
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
-	// Check basic fields
-	if (a.name !== b.name || a.transport !== b.transport || a.enabled !== b.enabled) {
-		return false;
-	}
-
-	// Check transport-specific fields
+	if (a.name !== b.name || a.transport !== b.transport || a.enabled !== b.enabled) return false;
+	if (!sameJson(a.allowTools ?? null, b.allowTools ?? null)) return false;
+	if (!sameJson(a.confirm ?? [], b.confirm ?? [])) return false;
 	if (a.transport === "stdio" && b.transport === "stdio") {
-		// TypeScript discriminated union narrowing — a and b are now StdioConfig type
-		if (a.command !== b.command) {
-			return false;
-		}
-
-		const aArgs = a.args || [];
-		const bArgs = b.args || [];
-		if (JSON.stringify(aArgs) !== JSON.stringify(bArgs)) {
-			return false;
-		}
-
-		const aEnv = a.env || {};
-		const bEnv = b.env || {};
-		if (JSON.stringify(aEnv) !== JSON.stringify(bEnv)) {
-			return false;
-		}
-	} else if (a.transport === "http" && b.transport === "http") {
-		// TypeScript discriminated union narrowing — a and b are now HttpConfig type
-		if (a.url !== b.url) {
-			return false;
-		}
-		if (JSON.stringify(a.headers ?? {}) !== JSON.stringify(b.headers ?? {})) {
-			return false;
-		}
+		return (
+			a.command === b.command &&
+			sameJson(a.args ?? [], b.args ?? []) &&
+			sameJson(a.env ?? {}, b.env ?? {})
+		);
 	}
-
+	if (a.transport === "http" && b.transport === "http") {
+		return a.url === b.url && sameJson(a.headers ?? {}, b.headers ?? {});
+	}
 	return true;
+}
+
+function disabledState(config: McpServerConfig): McpServerState {
+	return { config, status: "disabled", client: null, tools: [], error: null, transport: null };
 }
 
 /**
@@ -72,7 +50,7 @@ function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
  * spawns but never answers stalls startup for a minute per server, and a
  * server that exits early is only failed once its `close` event is delivered
  * — late on a starved event loop. A timeout turns either into a fast,
- * non-fatal `failed` server (AC6.6).
+ * non-fatal `failed` server.
  */
 export const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10_000;
 
@@ -99,54 +77,19 @@ export class McpServerManager {
 	}
 
 	/**
-	 * Ensures all enabled servers are spawned/connected and tools are enumerated.
-	 * Non-fatal: failures are marked on the server state but don't throw.
-	 * AC6.1: Stdio MCP server spawns, handshakes, enumerates tools
-	 * AC6.2: HTTP/SSE MCP server connects and enumerates tools
-	 * AC6.6: Failure is non-fatal — server marked failed, tools omitted, others unaffected
+	 * Ensures all enabled servers are connected and their tools enumerated.
+	 * Failures are non-fatal: the server is marked failed and others proceed.
 	 */
 	async ensureAllEnabled(configs: McpServerConfig[]): Promise<void> {
 		for (const config of configs) {
-			if (!config.enabled) {
-				// Skip disabled servers, but record them in state
-				if (!this.servers.has(config.name)) {
-					this.servers.set(config.name, {
-						config,
-						status: "disabled",
-						client: null,
-						tools: [],
-						error: null,
-						transport: null,
-					});
-				}
-			} else {
-				// Try to spawn/connect this server
-				try {
-					await this.connectServer(config);
-				} catch (error) {
-					// AC6.6: Non-fatal error handling
-					const errorMessage = error instanceof Error ? error.message : String(error);
-					this.logger.error("mcp_server_failed", {
-						serverName: config.name,
-						error: errorMessage,
-					});
-
-					this.servers.set(config.name, {
-						config,
-						status: "failed",
-						client: null,
-						tools: [],
-						error: errorMessage,
-						transport: null,
-					});
-				}
+			if (config.enabled) {
+				await this.tryConnectOrFail(config);
+			} else if (!this.servers.has(config.name)) {
+				this.servers.set(config.name, disabledState(config));
 			}
 		}
 	}
 
-	/**
-	 * Connect to a single MCP server and enumerate its tools.
-	 */
 	private async connectServer(config: McpServerConfig): Promise<void> {
 		const client = new Client({
 			name: "boundless",
@@ -157,33 +100,27 @@ export class McpServerManager {
 
 		try {
 			if (config.transport === "stdio") {
-				// TypeScript discriminated union narrowing — config is now StdioConfig type
 				transport = new StdioClientTransport({
 					command: config.command,
 					args: config.args,
 					env: config.env,
 				});
 			} else if (config.transport === "http") {
-				// TypeScript discriminated union narrowing — config is now HttpConfig type
 				transport = new StreamableHTTPClientTransport(
 					new URL(config.url),
 					config.headers ? { requestInit: { headers: config.headers } } : undefined,
 				);
 			} else {
-				// Exhaustiveness check — config is never type if a new transport is added
 				throw new Error(`Unknown transport type: ${(config as { transport: string }).transport}`);
 			}
 
-			// Connect client to transport
 			// Both calls are bounded: see DEFAULT_MCP_CONNECT_TIMEOUT_MS.
 			const requestOptions = { timeout: this.connectTimeoutMs };
 			await client.connect(transport, requestOptions);
 
-			// Enumerate tools
 			const toolsResult = await client.listTools(undefined, requestOptions);
 			const tools = toolsResult.tools || [];
 
-			// Success
 			this.servers.set(config.name, {
 				config,
 				status: "running",
@@ -199,7 +136,6 @@ export class McpServerManager {
 				toolCount: tools.length,
 			});
 		} catch (error) {
-			// Cleanup on failure
 			try {
 				await client.close();
 			} catch {
@@ -212,8 +148,7 @@ export class McpServerManager {
 	}
 
 	/**
-	 * Terminates all running servers.
-	 * AC6.7: sends SIGTERM then SIGKILL after 2s to stdio subprocesses
+	 * Terminates all running servers; stdio subprocesses get SIGTERM, then SIGKILL after 2s.
 	 */
 	async terminateAll(): Promise<void> {
 		const promises: Promise<void>[] = [];
@@ -227,15 +162,11 @@ export class McpServerManager {
 		await Promise.all(promises);
 	}
 
-	/**
-	 * Terminate a single server.
-	 */
 	private async terminateServer(serverName: string, state: McpServerState): Promise<void> {
 		try {
-			// Close the client (sends SIGTERM for stdio)
+			// Closing a stdio client sends SIGTERM; SIGKILL follows after a 2s grace.
 			await state.client?.close();
 
-			// For stdio transports, check if process still alive after 2s and send SIGKILL
 			if (isStdioTransport(state.transport)) {
 				// Note: Accessing StdioClientTransport.process is an internal SDK detail.
 				// This implementation verified against @modelcontextprotocol/client (SDK v2).
@@ -244,15 +175,18 @@ export class McpServerManager {
 					process?: {
 						pid?: number;
 						killed?: boolean;
+						exitCode?: number | null;
+						signalCode?: string | null;
 						kill(signal: string): void;
 					};
 				};
 				const process = processField.process;
-				// Wait 2s for graceful shutdown
-				await new Promise((resolve) => setTimeout(resolve, 2000));
-
-				// Check if still alive and send SIGKILL
-				if (process?.pid && !process.killed) {
+				const hasExited = () =>
+					process?.exitCode != null || process?.signalCode != null || process?.killed === true;
+				if (process?.pid && !hasExited()) {
+					await new Promise((resolve) => setTimeout(resolve, 2000));
+				}
+				if (process?.pid && !hasExited()) {
 					try {
 						process.kill("SIGKILL");
 					} catch {
@@ -268,7 +202,6 @@ export class McpServerManager {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		} finally {
-			// Update state
 			const currentState = this.servers.get(serverName);
 			if (currentState) {
 				currentState.status = "not-spawned";
@@ -279,10 +212,6 @@ export class McpServerManager {
 		}
 	}
 
-	/**
-	 * Get tools from all running servers.
-	 * Returns map of serverName -> { tools: Tool[], config: McpServerConfig }
-	 */
 	getRunningTools(): Map<string, { tools: Tool[]; config: McpServerConfig }> {
 		const result = new Map<string, { tools: Tool[]; config: McpServerConfig }>();
 
@@ -295,18 +224,10 @@ export class McpServerManager {
 		return result;
 	}
 
-	/**
-	 * Get full state for all servers (for TUI display).
-	 * Returns map of serverName -> McpServerState
-	 */
 	getServerStates(): Map<string, McpServerState> {
 		return new Map(this.servers);
 	}
 
-	/**
-	 * Get the client for a specific server.
-	 * Returns null if server is not running.
-	 */
 	getClient(serverName: string): Client | null {
 		const state = this.servers.get(serverName);
 		if (state?.status === "running") {
@@ -315,11 +236,7 @@ export class McpServerManager {
 		return null;
 	}
 
-	/**
-	 * Attempt to connect a server config or mark it as failed.
-	 * Helper method to reduce duplication in reload() logic.
-	 */
-	private async tryConnectOrFail(config: McpServerConfig, result: ReloadResult): Promise<void> {
+	private async tryConnectOrFail(config: McpServerConfig, result?: ReloadResult): Promise<void> {
 		try {
 			await this.connectServer(config);
 		} catch (error) {
@@ -338,13 +255,12 @@ export class McpServerManager {
 				transport: null,
 			});
 
-			result.failed.push(config.name);
+			result?.failed.push(config.name);
 		}
 	}
 
 	/**
-	 * Hot-reload: update server configurations and reconcile state.
-	 * AC6.8: Diffs old vs new configs by name.
+	 * Hot-reload: diff old vs new configs by name and reconcile state.
 	 * - Added: new server name not in current state → spawn/connect
 	 * - Removed: current server not in new configs → terminate
 	 * - Changed: config differs (command, url, enabled, etc.) → terminate old, spawn new
@@ -359,13 +275,11 @@ export class McpServerManager {
 			failed: [],
 		};
 
-		// Build map of new configs by name
 		const newConfigsByName = new Map<string, McpServerConfig>();
 		for (const config of newConfigs) {
 			newConfigsByName.set(config.name, config);
 		}
 
-		// Handle removed and changed servers
 		const currentNames = Array.from(this.servers.keys());
 		for (const currentName of currentNames) {
 			const currentState = this.servers.get(currentName);
@@ -374,57 +288,35 @@ export class McpServerManager {
 			const newConfig = newConfigsByName.get(currentName);
 
 			if (!newConfig) {
-				// Server removed
 				result.removed.push(currentName);
 				await this.terminateServer(currentName, currentState);
 				this.servers.delete(currentName);
 			} else if (!configsEqual(currentState.config, newConfig)) {
-				// Server config changed
 				result.changed.push(currentName);
 				await this.terminateServer(currentName, currentState);
 				this.servers.delete(currentName);
 
-				// Try to spawn the new config if enabled
 				if (newConfig.enabled) {
 					await this.tryConnectOrFail(newConfig, result);
 				} else {
-					// Add disabled server
-					this.servers.set(newConfig.name, {
-						config: newConfig,
-						status: "disabled",
-						client: null,
-						tools: [],
-						error: null,
-						transport: null,
-					});
+					this.servers.set(newConfig.name, disabledState(newConfig));
 				}
 			}
 		}
 
-		// Handle added and newly enabled servers
 		for (const newConfig of newConfigs) {
 			if (!this.servers.has(newConfig.name)) {
-				// Server added
 				result.added.push(newConfig.name);
 
 				if (newConfig.enabled) {
 					await this.tryConnectOrFail(newConfig, result);
 				} else {
-					// Add disabled server
-					this.servers.set(newConfig.name, {
-						config: newConfig,
-						status: "disabled",
-						client: null,
-						tools: [],
-						error: null,
-						transport: null,
-					});
+					this.servers.set(newConfig.name, disabledState(newConfig));
 				}
 			} else {
-				// Server already exists but unchanged. Check if it was disabled and now enabled.
+				// Unchanged config: reconnect a server that was disabled and is now enabled.
 				const currentState = this.servers.get(newConfig.name);
 				if (currentState && currentState.status === "disabled" && newConfig.enabled) {
-					// Re-enable the server
 					this.servers.delete(newConfig.name);
 
 					await this.tryConnectOrFail(newConfig, result);

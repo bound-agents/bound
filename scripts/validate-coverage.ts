@@ -153,19 +153,36 @@ export function estimateUnloaded(source: string): { lines: number; functions: nu
 const SOURCE_EXTENSION = /\.(ts|tsx|js|jsx|mts|cts|mjs|cjs|svelte)$/;
 
 /**
- * Tracked production source files of a package, by repo-relative path. Tracked
- * only: generated artifacts (e.g. packages/sandbox/src/_runtime/, gitignored)
+ * Production source files of a package in the working tree, by repo-relative
+ * path: tracked files still on disk plus untracked, non-ignored ones, so an
+ * uncommitted move or delete measures what the tests ran against. Ignored
+ * files are excluded: generated artifacts (e.g. packages/sandbox/src/_runtime/)
  * are not code anyone writes tests for.
  */
 export function packageSourceFiles(root: string, pkg: string): string[] {
-	const proc = Bun.spawnSync(["git", "ls-files", "-z", "--", `packages/${pkg}/src`], { cwd: root });
+	const proc = Bun.spawnSync(
+		[
+			"git",
+			"ls-files",
+			"-z",
+			"--cached",
+			"--others",
+			"--exclude-standard",
+			"--",
+			`packages/${pkg}/src`,
+		],
+		{ cwd: root },
+	);
 	if (proc.exitCode !== 0) throw new Error(`git ls-files failed: ${proc.stderr.toString()}`);
 	return proc.stdout
 		.toString()
 		.split("\0")
 		.filter(
 			(file) =>
-				SOURCE_EXTENSION.test(file) && !file.endsWith(".d.ts") && isCountedSource(file, pkg),
+				SOURCE_EXTENSION.test(file) &&
+				!file.endsWith(".d.ts") &&
+				isCountedSource(file, pkg) &&
+				existsSync(join(root, file)),
 		)
 		.sort();
 }

@@ -1,7 +1,7 @@
 [test]
 # Exclude e2e tests from bun test runner (use Playwright instead)
 root = "packages"
-preload = ["./packages/core/src/reflect-preload.ts", "./scripts/test-preload.ts"]
+preload = ["./scripts/test-preload.ts"]
 
 # Coverage is gated by package total, not here: Bun's coverageThreshold applies
 # to every file and silently ignores misspelled keys. See

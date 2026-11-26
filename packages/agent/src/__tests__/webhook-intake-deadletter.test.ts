@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto";
 import { applySchema, getDurableWork, insertDurableWork, insertRow } from "@bound/core";
 import { registerConnectorEventDelivery } from "@bound/platforms";
 import { TypedEventEmitter } from "@bound/shared";
-import { applyAdvisory, getPendingAdvisories } from "../advisories";
+import { getPendingAdvisories } from "../advisories";
 import { Scheduler } from "../scheduler";
 import { reconcileStaleWebhookIntake } from "../webhook-intake-reconciler";
 
 const SITE = "site-a";
 const NOW = new Date("2026-06-24T12:00:00.000Z");
-const STALE_AFTER_MS = 15 * 60 * 1000; // 15 minutes
+const STALE_AFTER_MS = 15 * 60 * 1000;
+const noopBus = { emit: () => true } as unknown as TypedEventEmitter;
 
 function makeDb(): Database {
 	const db = new Database(":memory:");
@@ -77,87 +78,6 @@ function unprocessedCount(db: Database, refId: string): number {
 	return row.c;
 }
 
-function advisoryCountWithTitle(db: Database, refId: string): number {
-	const title = `Webhook intake not draining: handler thread ${refId} is dark`;
-	const row = db
-		.query("SELECT COUNT(*) AS c FROM advisories WHERE deleted = 0 AND title = ?")
-		.get(title) as { c: number };
-	return row.c;
-}
-
-describe("webhook intake reconciler — recoverable (live binding, dark handler)", () => {
-	it("raises one advisory when a live webhook's handler is dark, without draining the intake", () => {
-		const db = makeDb();
-		insertWebhook(db, { threadId: "thread-live", name: "bound" });
-		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(60) });
-
-		const result = reconcileStaleWebhookIntake(db, SITE, {
-			staleAfterMs: STALE_AFTER_MS,
-			now: NOW,
-		});
-
-		expect(result.advisoriesRaised).toBe(1);
-		expect(result.deadLettered).toBe(0);
-		const advisories = getPendingAdvisories(db);
-		expect(advisories.length).toBe(1);
-		expect(advisories[0].detail).toContain("bound");
-		// The advisory does NOT drain the queue — reviving the handler does.
-		expect(unprocessedCount(db, "thread-live")).toBe(1);
-	});
-
-	it("does NOT re-raise after the advisory has been applied (the churn fix)", () => {
-		const db = makeDb();
-		insertWebhook(db, { threadId: "thread-live", name: "bound" });
-		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(60) });
-
-		const first = reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW });
-		expect(first.advisoriesRaised).toBe(1);
-
-		// Operator applies the advisory — it leaves the proposed set but the
-		// underlying intake still can't drain (handler still dark).
-		const advisoryId = getPendingAdvisories(db)[0].id;
-		applyAdvisory(db, advisoryId, SITE);
-
-		const second = reconcileStaleWebhookIntake(db, SITE, {
-			staleAfterMs: STALE_AFTER_MS,
-			now: NOW,
-		});
-		expect(second.advisoriesRaised).toBe(0);
-		expect(advisoryCountWithTitle(db, "thread-live")).toBe(1);
-	});
-
-	it("groups multiple stale rows for one live handler into a single advisory with the count", () => {
-		const db = makeDb();
-		insertWebhook(db, { threadId: "thread-live", name: "bound" });
-		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(60) });
-		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(40) });
-
-		const result = reconcileStaleWebhookIntake(db, SITE, {
-			staleAfterMs: STALE_AFTER_MS,
-			now: NOW,
-		});
-
-		expect(result.advisoriesRaised).toBe(1);
-		expect(getPendingAdvisories(db)[0].evidence).toContain('"count":2');
-	});
-
-	it("raises distinct advisories for distinct live dark handlers", () => {
-		const db = makeDb();
-		insertWebhook(db, { threadId: "thread-a", name: "alpha" });
-		insertWebhook(db, { threadId: "thread-b", name: "beta" });
-		insertIntake(db, { refId: "thread-a", receivedAt: minutesAgo(60) });
-		insertIntake(db, { refId: "thread-b", receivedAt: minutesAgo(45) });
-
-		const result = reconcileStaleWebhookIntake(db, SITE, {
-			staleAfterMs: STALE_AFTER_MS,
-			now: NOW,
-		});
-
-		expect(result.advisoriesRaised).toBe(2);
-		expect(result.deadLettered).toBe(0);
-	});
-});
-
 it("re-emits stale live intake so the scheduler drains it, without creating an advisory", () => {
 	const db = makeDb();
 	insertWebhook(db, { threadId: "thread-live", name: "bound" });
@@ -167,13 +87,11 @@ it("re-emits stale live intake so the scheduler drains it, without creating an a
 		emit: (event: string, payload: unknown) => emitted.push({ event, payload }),
 	} as TypedEventEmitter;
 
-	const result = reconcileStaleWebhookIntake(db, SITE, {
+	const result = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
 	});
-
-	expect(result.advisoriesRaised).toBe(0);
 	expect(result.redelivered).toBe(1);
 	expect(emitted).toEqual([
 		{
@@ -197,7 +115,7 @@ it("does not re-emit an already processed intake row", () => {
 		emit: (_event: string, payload: unknown) => emitted.push(payload),
 	} as TypedEventEmitter;
 
-	const result = reconcileStaleWebhookIntake(db, SITE, {
+	const result = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -279,12 +197,12 @@ it("routes repeated stale re-emissions through scheduler CAS into one durable wa
 	);
 	registerConnectorEventDelivery(eventBus, scheduler);
 
-	const first = reconcileStaleWebhookIntake(db, SITE, {
+	const first = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
 	});
-	const second = reconcileStaleWebhookIntake(db, SITE, {
+	const second = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -313,7 +231,7 @@ it("routes repeated stale re-emissions through scheduler CAS into one durable wa
 		expect(wakeups).toHaveLength(1);
 		expect(wakeups[0].content).toContain("action");
 		expect(getDurableWork(db, inboxId)?.claim_state).toBe("consumed");
-		reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW, eventBus });
+		reconcileStaleWebhookIntake(db, { staleAfterMs: STALE_AFTER_MS, now: NOW, eventBus });
 		expect(runs).toBe(1);
 	} finally {
 		releaseRun?.();
@@ -351,7 +269,7 @@ it("re-emits stale RSS intake with its feed trigger and binding identity", () =>
 		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
 	} as TypedEventEmitter;
 
-	const result = reconcileStaleWebhookIntake(db, SITE, {
+	const result = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -398,7 +316,7 @@ it("re-emits stale connector intake with its per-handle trigger and binding iden
 		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
 	} as TypedEventEmitter;
 
-	const result = reconcileStaleWebhookIntake(db, SITE, {
+	const result = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -421,7 +339,7 @@ it("re-emits stale connector intake with its per-handle trigger and binding iden
 		"UPDATE durable_work SET claim_state = 'consumed' WHERE ref_id = ? AND kind = 'connector_intake'",
 		[threadId],
 	);
-	const afterProcessing = reconcileStaleWebhookIntake(db, SITE, {
+	const afterProcessing = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -469,12 +387,12 @@ it("dead-letters stale connector intake when its live handle backs a cancelled t
 		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
 	} as TypedEventEmitter;
 
-	const first = reconcileStaleWebhookIntake(db, SITE, {
+	const first = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
 	});
-	const second = reconcileStaleWebhookIntake(db, SITE, {
+	const second = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -527,12 +445,12 @@ it("dead-letters stale connector intake when its live handle backs a soft-delete
 		emit: (_event: string, payload: unknown) => emitted.push(payload),
 	} as TypedEventEmitter;
 
-	const first = reconcileStaleWebhookIntake(db, SITE, {
+	const first = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
 	});
-	const second = reconcileStaleWebhookIntake(db, SITE, {
+	const second = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
 		eventBus,
@@ -575,9 +493,10 @@ it("dead-letters stale connector intake after its handle is soft-deleted", () =>
 		kind: "connector_intake",
 	});
 
-	const result = reconcileStaleWebhookIntake(db, SITE, {
+	const result = reconcileStaleWebhookIntake(db, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
+		eventBus: noopBus,
 	});
 
 	expect(result.deadLettered).toBe(1);
@@ -591,12 +510,11 @@ describe("webhook intake reconciler — orphaned (no live binding)", () => {
 		insertWebhook(db, { threadId: "thread-gone", name: "bound-v2", deleted: 1 });
 		insertIntake(db, { refId: "thread-gone", receivedAt: minutesAgo(60) });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-
-		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(1);
 		expect(getPendingAdvisories(db).length).toBe(0);
 		expect(unprocessedCount(db, "thread-gone")).toBe(0);
@@ -606,12 +524,11 @@ describe("webhook intake reconciler — orphaned (no live binding)", () => {
 		const db = makeDb();
 		insertIntake(db, { refId: "thread-orphan", receivedAt: minutesAgo(60) });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-
-		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(1);
 		expect(getPendingAdvisories(db).length).toBe(0);
 		expect(unprocessedCount(db, "thread-orphan")).toBe(0);
@@ -623,9 +540,10 @@ describe("webhook intake reconciler — orphaned (no live binding)", () => {
 		insertIntake(db, { refId: "thread-gone", receivedAt: minutesAgo(60) });
 		insertIntake(db, { refId: "thread-gone", receivedAt: minutesAgo(1) });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
 
 		expect(result.deadLettered).toBe(2);
@@ -636,13 +554,17 @@ describe("webhook intake reconciler — orphaned (no live binding)", () => {
 		const db = makeDb();
 		insertWebhook(db, { threadId: "thread-gone", name: "bound-v2", deleted: 1 });
 		insertIntake(db, { refId: "thread-gone", receivedAt: minutesAgo(60) });
-		reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW });
-
-		const second = reconcileStaleWebhookIntake(db, SITE, {
+		reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-		expect(second.advisoriesRaised).toBe(0);
+
+		const second = reconcileStaleWebhookIntake(db, {
+			staleAfterMs: STALE_AFTER_MS,
+			now: NOW,
+			eventBus: noopBus,
+		});
 		expect(second.deadLettered).toBe(0);
 	});
 });
@@ -653,12 +575,11 @@ describe("webhook intake reconciler — non-triggers", () => {
 		insertWebhook(db, { threadId: "thread-live", name: "bound" });
 		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(1) });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-
-		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(0);
 	});
 
@@ -667,12 +588,11 @@ describe("webhook intake reconciler — non-triggers", () => {
 		insertWebhook(db, { threadId: "thread-live", name: "bound" });
 		insertIntake(db, { refId: "thread-live", receivedAt: minutesAgo(60), processed: true });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-
-		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(0);
 	});
 
@@ -680,12 +600,11 @@ describe("webhook intake reconciler — non-triggers", () => {
 		const db = makeDb();
 		insertIntake(db, { refId: "thread-x", receivedAt: minutesAgo(60), kind: "intake" });
 
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
 		});
-
-		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(0);
 	});
 });
@@ -719,7 +638,7 @@ describe("webhook intake reconciler — durable work store", () => {
 			.query("SELECT id, task_id FROM webhooks WHERE thread_id = ?")
 			.get("durable-live") as { id: string; task_id: string };
 		const emitted: Array<{ event: string; payload: unknown }> = [];
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
 			eventBus: {
@@ -727,7 +646,7 @@ describe("webhook intake reconciler — durable work store", () => {
 			} as TypedEventEmitter,
 		});
 
-		expect(result).toEqual({ advisoriesRaised: 0, redelivered: 1, deadLettered: 0 });
+		expect(result).toEqual({ redelivered: 1, deadLettered: 0 });
 		expect(emitted).toEqual([
 			{
 				event: "connector:event",
@@ -748,14 +667,19 @@ describe("webhook intake reconciler — durable work store", () => {
 			refId: "durable-orphan",
 			receivedAt: minutesAgo(60),
 		});
-		const first = reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW });
-		const second = reconcileStaleWebhookIntake(db, SITE, {
+		const first = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
+			eventBus: noopBus,
+		});
+		const second = reconcileStaleWebhookIntake(db, {
+			staleAfterMs: STALE_AFTER_MS,
+			now: NOW,
+			eventBus: noopBus,
 		});
 
-		expect(first).toEqual({ advisoriesRaised: 0, redelivered: 0, deadLettered: 1 });
-		expect(second).toEqual({ advisoriesRaised: 0, redelivered: 0, deadLettered: 0 });
+		expect(first).toEqual({ redelivered: 0, deadLettered: 1 });
+		expect(second).toEqual({ redelivered: 0, deadLettered: 0 });
 		expect(getPendingAdvisories(db)).toEqual([]);
 		expect(
 			db
@@ -767,7 +691,7 @@ describe("webhook intake reconciler — durable work store", () => {
 		});
 	});
 
-	it("coalesces stale relay and durable rows into one recovery nudge with a combined batch count", () => {
+	it("coalesces stale durable rows into one recovery nudge with a combined batch count", () => {
 		const db = makeDb();
 		insertWebhook(db, { threadId: "mixed-live", name: "bound" });
 		insertIntake(db, { refId: "mixed-live", receivedAt: minutesAgo(60) });
@@ -777,7 +701,7 @@ describe("webhook intake reconciler — durable work store", () => {
 			receivedAt: minutesAgo(45),
 		});
 		const emitted: Array<{ event: string; payload: { batch_size: number } }> = [];
-		const result = reconcileStaleWebhookIntake(db, SITE, {
+		const result = reconcileStaleWebhookIntake(db, {
 			staleAfterMs: STALE_AFTER_MS,
 			now: NOW,
 			eventBus: {
@@ -785,7 +709,7 @@ describe("webhook intake reconciler — durable work store", () => {
 			} as TypedEventEmitter,
 		});
 
-		expect(result).toEqual({ advisoriesRaised: 0, redelivered: 1, deadLettered: 0 });
+		expect(result).toEqual({ redelivered: 1, deadLettered: 0 });
 		expect(emitted).toHaveLength(1);
 		expect(emitted[0]).toMatchObject({ event: "connector:event", payload: { batch_size: 2 } });
 	});

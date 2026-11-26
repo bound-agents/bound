@@ -28,8 +28,7 @@ import {
 	RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { APP_FRAME_SANDBOX, buildAppFrameSrcdoc, frameAllowAttribute } from "./mcp-app-frame";
-
-const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };
+import { IMPLEMENTATION } from "./mcp-app-host";
 
 /** The UI resource payload backing an MCP App, extracted from `resources/read`. */
 export interface UiResourceData {

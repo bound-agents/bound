@@ -2,12 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	buildSystemPromptAddition,
-	buildToolSet,
-	collectContextFiles,
-	collectGitContext,
-} from "../tools/registry";
+import { collectContextFiles } from "../tools/context-files";
+import { buildSystemPromptAddition, buildToolSet, collectGitContext } from "../tools/registry";
 import { resolveShell } from "../tools/shell";
 
 // packages/less/src/__tests__ → packages/less/src → packages/less → packages → repo root
@@ -19,7 +15,7 @@ const SHELL_TOOL_NAME = resolveShell(undefined).toolName;
 
 describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
-		const { tools, handlers } = buildToolSet("/tmp", "localhost");
+		const { tools, handlers } = buildToolSet({ hostname: "localhost" });
 
 		// Should have exactly 7 core tools (read, structure, write, edit, shell, copy, search)
 		expect(tools).toHaveLength(7);
@@ -46,7 +42,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("has correct tool definition structure", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		for (const tool of tools) {
 			expect(tool.type).toBe("function");
@@ -57,7 +53,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("has correct boundless_read parameters", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		const readTool = tools.find((t) => t.function.name === "boundless_read");
 		expect(readTool).toBeDefined();
@@ -76,7 +72,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("exposes only path for boundless_read_structure", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
 		expect(structure).toBeDefined();
 		const params = structure?.function.parameters as {
@@ -88,7 +84,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("describes every registered read-structure language", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
 		expect(structure).toBeDefined();
 
@@ -99,7 +95,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("shell tool exposes optional timeout + cwd params, command required", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		const shellTool = tools.find((t) => t.function.name === SHELL_TOOL_NAME);
 		expect(shellTool).toBeDefined();
@@ -123,7 +119,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("has correct boundless_write parameters", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		const writeTool = tools.find((t) => t.function.name === "boundless_write");
 		expect(writeTool).toBeDefined();
@@ -136,7 +132,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("has correct boundless_edit parameters", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		const editTool = tools.find((t) => t.function.name === "boundless_edit");
 		expect(editTool).toBeDefined();
@@ -149,7 +145,7 @@ describe("buildToolSet", () => {
 	});
 
 	it("has correct shell-tool parameters", () => {
-		const { tools } = buildToolSet("/tmp", "localhost");
+		const { tools } = buildToolSet({ hostname: "localhost" });
 
 		const shellTool = tools.find((t) => t.function.name === SHELL_TOOL_NAME);
 		expect(shellTool).toBeDefined();
@@ -188,7 +184,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools, handlers } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core + 1 MCP tool
 		expect(tools).toHaveLength(8);
@@ -239,7 +235,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core + 1 MCP tool (no collision)
 		expect(tools).toHaveLength(8);
@@ -297,7 +293,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core tools only (both MCP servers rejected due to collision)
 		expect(tools).toHaveLength(7);
@@ -359,7 +355,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core + 3 MCP tools
 		expect(tools).toHaveLength(10);
@@ -418,7 +414,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools, handlers } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core + 2 MCP tools
 		expect(tools).toHaveLength(9);
@@ -470,7 +466,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { tools } = buildToolSet({ hostname: "localhost", mcpTools });
 
 		// Should have 7 core + 2 MCP tools (delete excluded)
 		expect(tools).toHaveLength(9);
@@ -521,7 +517,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+		const { handlers } = buildToolSet({ hostname: "localhost", mcpTools, confirmFn });
 
 		const handler = handlers.get("boundless_mcp_admin_destroy_database");
 		expect(handler).toBeDefined();
@@ -581,15 +577,12 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { handlers } = buildToolSet(
-			"/tmp",
-			"localhost",
+		const { handlers } = buildToolSet({
+			hostname: "localhost",
 			mcpTools,
 			confirmFn,
-			undefined,
-			undefined,
-			mockManager,
-		);
+			mcpManager: mockManager,
+		});
 
 		const handler = handlers.get("boundless_mcp_admin_destroy_database");
 		expect(handler).toBeDefined();
@@ -640,15 +633,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { handlers } = buildToolSet(
-			"/tmp",
-			"localhost",
-			mcpTools,
-			undefined,
-			undefined,
-			undefined,
-			mockManager,
-		);
+		const { handlers } = buildToolSet({ hostname: "localhost", mcpTools, mcpManager: mockManager });
 
 		const handler = handlers.get("boundless_mcp_admin_destroy_database");
 		expect(handler).toBeDefined();
@@ -707,7 +692,7 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+		const { tools, handlers } = buildToolSet({ hostname: "localhost", mcpTools, confirmFn });
 
 		// Should have 7 core + 2 MCP tools (delete excluded)
 		expect(tools).toHaveLength(9);

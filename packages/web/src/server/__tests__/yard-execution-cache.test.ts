@@ -76,7 +76,7 @@ describe("Yard execution websocket replay", () => {
 		const { TypedEventEmitter } = await import("@bound/shared");
 		const { createWebSocketHandler } = await import("../websocket");
 		const eventBus = new TypedEventEmitter();
-		const handler = createWebSocketHandler(eventBus);
+		const handler = createWebSocketHandler({ eventBus });
 		const sent: Array<Record<string, unknown>> = [];
 		const ws = {
 			readyState: 1,

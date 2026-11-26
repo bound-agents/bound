@@ -3,7 +3,7 @@
  *
  * Discoverable Archive sorts detail entries by `last_accessed_at DESC`
  * and renders each line with a `(last accessed Nd ago)` fragment from
- * `relativeTimeFragment`. R-MV5 (delta-read invariant) forbids bumping
+ * `relativeTimeAt`. R-MV5 (delta-read invariant) forbids bumping
  * `last_accessed_at` on `query` / `memory --action search` SELECT
  * calls — that's the agent's deliberate lookups, which should remain
  * audit-pure.

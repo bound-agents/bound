@@ -39,7 +39,7 @@
 
 import { describe, it } from "bun:test";
 import fc from "fast-check";
-import { calculateTurnCost } from "../agent-loop-utils";
+import { calculateTurnCost } from "../turn-pricing";
 
 const tokens = fc.integer({ min: 0, max: 1_000_000 });
 const price = fc.double({ min: 0, max: 100, noNaN: true });

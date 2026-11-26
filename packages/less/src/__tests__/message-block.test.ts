@@ -5,12 +5,9 @@ import { join } from "node:path";
 import { formatWithHashes } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
-import {
-	MessageBlock,
-	parseMessageContent,
-	textContentLines,
-	withoutBoundlessProvenance,
-} from "../tui/components/MessageBlock";
+import { MessageBlock } from "../tui/components/MessageBlock";
+import { parseMessageContent } from "../tui/util/message-text";
+import { textContentLines, withoutBoundlessProvenance } from "../tui/util/transcript";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));

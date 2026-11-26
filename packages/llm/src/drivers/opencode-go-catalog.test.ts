@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { DEEPSEEK_ROW } from "../__tests__/opencode-go-fixtures";
 import {
 	fallbackOpenCodeGoProtocol,
 	parseOpenCodeGoModels,
 	parseOpenCodeGoPricing,
 	selectOpenCodeGoProtocol,
 } from "./opencode-go-catalog";
-import { DEEPSEEK_ROW } from "./opencode-go-fixtures";
 
 describe("parseOpenCodeGoModels", () => {
 	it("extracts a chat row into a catalog entry with full DiscoveredModel metadata", () => {
@@ -156,6 +156,7 @@ describe("fallbackOpenCodeGoProtocol", () => {
 		expect(fallbackOpenCodeGoProtocol("opencode-go/Qwen3.7-max")).toBe("messages");
 		expect(fallbackOpenCodeGoProtocol("minimax-m3")).toBe("messages");
 		expect(fallbackOpenCodeGoProtocol("kimi-k3")).toBe("chat-completions");
+		expect(fallbackOpenCodeGoProtocol("opencode-go/MiniMax-M2")).toBe("messages");
 	});
 });
 

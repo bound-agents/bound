@@ -48,8 +48,6 @@ describe("built-in-tools", () => {
 		}
 	});
 
-	// ─── read structure ─────────────────────────────────────────────────
-
 	describe("read structure", () => {
 		it("reads through the VFS and returns anchored symbols without function bodies", async () => {
 			fs.writeFileSync(
@@ -145,8 +143,6 @@ describe("built-in-tools", () => {
 		});
 	});
 
-	// ─── read ───────────────────────────────────────────────────────────
-
 	describe("read", () => {
 		it("reads a file with line numbers", async () => {
 			fs.writeFileSync("/home/user/hello.txt", "line one\nline two\nline three\n");
@@ -239,8 +235,6 @@ describe("built-in-tools", () => {
 		});
 	});
 
-	// ─── write ──────────────────────────────────────────────────────────
-
 	describe("write", () => {
 		it("writes a new file and returns byte count", async () => {
 			const result = await tool("bms_write").execute({
@@ -284,8 +278,6 @@ describe("built-in-tools", () => {
 			expect(result).toContain(`${bytes} bytes`);
 		});
 	});
-
-	// ─── host path guard ────────────────────────────────────────────────
 
 	describe("host path guard", () => {
 		it("rejects Windows write paths without creating VFS files", async () => {
@@ -378,8 +370,6 @@ describe("built-in-tools", () => {
 			expect(result).toContain("readable");
 		});
 	});
-
-	// ─── edit ───────────────────────────────────────────────────────────
 
 	describe("edit", () => {
 		it("applies a single edit and returns unified diff", async () => {
@@ -571,8 +561,6 @@ describe("built-in-tools", () => {
 		});
 	});
 
-	// ─── retrieve_task ──────────────────────────────────────────────────
-
 	describe("retrieve_task", () => {
 		it("declares itself as a zero-argument tool", () => {
 			const def = tool("retrieve_task").toolDefinition;
@@ -605,8 +593,6 @@ describe("built-in-tools", () => {
 			expect((result as string).length).toBeGreaterThan(0);
 		});
 	});
-
-	// ─── search ───────────────────────────────────────────────────────────
 
 	describe("search", () => {
 		beforeEach(async () => {

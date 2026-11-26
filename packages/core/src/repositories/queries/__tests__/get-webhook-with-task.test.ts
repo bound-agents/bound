@@ -5,7 +5,6 @@ import { createCoreTestDb } from "../../../__tests__/test-database";
 import { insertRow, softDelete } from "../../../index";
 import {
 	getWebhookWithTaskById,
-	getWebhookWithTaskByName,
 	listWebhooksForCli,
 	listWebhooksWithTask,
 } from "../get-webhook-with-task";
@@ -186,28 +185,6 @@ describe("get-webhook-with-task finders", () => {
 			seedWebhook(db, { id: "wh-z", name: "zero", task_id: "task-z" });
 			const row = getWebhookWithTaskById(db, "wh-z");
 			expect(row?.no_history).toBe(0);
-		});
-	});
-
-	describe("getWebhookWithTaskByName", () => {
-		it("finds a live webhook by name with task fields", () => {
-			seedTask(db, { id: "task-n", model_hint: "haiku", no_history: 1 });
-			seedWebhook(db, { id: "wh-n", name: "named-hook", task_id: "task-n" });
-			const row = getWebhookWithTaskByName(db, "named-hook");
-			expect(row?.id).toBe("wh-n");
-			expect(row?.model_hint).toBe("haiku");
-			expect(row?.no_history).toBe(1);
-		});
-
-		it("returns null for an absent name", () => {
-			expect(getWebhookWithTaskByName(db, "ghost")).toBeNull();
-		});
-
-		it("returns null for a soft-deleted webhook by name", () => {
-			seedTask(db, { id: "task-n", model_hint: "haiku" });
-			seedWebhook(db, { id: "wh-n", name: "named-hook", task_id: "task-n" });
-			softDelete(db, "webhooks", "wh-n", SITE_ID);
-			expect(getWebhookWithTaskByName(db, "named-hook")).toBeNull();
 		});
 	});
 

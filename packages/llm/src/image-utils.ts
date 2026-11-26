@@ -51,18 +51,3 @@ export function sniffImageMediaType(bytes: Uint8Array): ImageMediaType | null {
 	}
 	return null;
 }
-
-/**
- * Decode enough of a base64 string to sniff the image format, then return
- * the corrected media type (or the declared one if sniffing fails).
- */
-export function correctMediaType(base64Data: string, declaredType: string): string {
-	try {
-		// Only decode enough bytes for magic number detection (16 bytes = ~24 base64 chars)
-		const slice = base64Data.slice(0, 24);
-		const bytes = Uint8Array.from(atob(slice), (c) => c.charCodeAt(0));
-		return sniffImageMediaType(bytes) ?? declaredType;
-	} catch {
-		return declaredType;
-	}
-}

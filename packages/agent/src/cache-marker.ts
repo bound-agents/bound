@@ -159,7 +159,7 @@ export function maybePlaceCacheMarker(
  * advanced from 90k → 120k; cumulative cache orphaned for 5 turns until
  * the new bucket primed.
  *
- * The fundamental issue with token-bucket math: `bucketTokens` is a magic
+ * The fundamental issue with token-bucket math: the bucket size is a magic
  * number. There IS no principled value of N — pick 10k and big tool
  * results overflow, pick 50k and small inner loops never benefit. The
  * placer was tuning a symptom.
@@ -199,12 +199,6 @@ export function maybePlaceCacheMarker(
 export interface StableCacheMarkerParams {
 	messages: ReadonlyArray<LLMMessage>;
 	/**
-	 * @deprecated Unused under the semantic-anchor algorithm. Kept in the
-	 * input shape for backward compatibility with callers that still pass
-	 * a value; the placer ignores it. Pass any value (e.g. `0`).
-	 */
-	bucketTokens: number;
-	/**
 	 * Token estimator. Pure and deterministic. The function is called once
 	 * per non-marker, non-developer message; its result is summed to
 	 * compute `positionTokens` (the wire byte position of the cachePoint).
@@ -218,13 +212,6 @@ export interface StableCacheMarkerPlacement {
 	index: number;
 	/** Cumulative tokens BEFORE the marker (= bytes that get cached). 0 when not placed. */
 	positionTokens: number;
-	/**
-	 * Equal to `positionTokens` under the semantic-anchor algorithm.
-	 * Retained in the response shape for backward compatibility with the
-	 * web debugger's marker-tick rendering, which historically read this
-	 * field as the bucket-aligned target.
-	 */
-	targetTokens: number;
 	/** Reason for non-placement. */
 	reason?: "capability-disabled" | "no-eligible-anchor";
 }
@@ -235,18 +222,15 @@ export interface StableCacheMarkerPlacement {
  * Behavior:
  * - Skips messages with role `"cache"` when accumulating tokens (existing
  *   markers don't count toward the cumulative position).
- * - Returns `placed: false, reason: "below-bucket"` when total cumulative
- *   tokens < `bucketTokens` (nothing useful to cache yet — system-level
- *   anchor handles this regime).
  * - Returns `placed: false, reason: "capability-disabled"` when caps
  *   explicitly disable prompt caching.
- * - Otherwise returns the LATEST splice index whose cumulative-tokens-
- *   before-marker is ≤ `floor(totalTokens / bucketTokens) * bucketTokens`.
+ * - Otherwise anchors at the latest user message (see the semantic-anchor
+ *   notes above), falling back to `computeCacheMarkerIndex`.
  *
  * The function does NOT mutate `messages`. Use `placeStableCacheMarker`
  * for the mutating version.
  */
-export function computeStableCacheMarkerPlacement(
+function computeStableCacheMarkerPlacement(
 	params: StableCacheMarkerParams,
 	caps: CacheMarkerCaps | undefined,
 ): StableCacheMarkerPlacement {
@@ -255,7 +239,6 @@ export function computeStableCacheMarkerPlacement(
 			placed: false,
 			index: -1,
 			positionTokens: 0,
-			targetTokens: 0,
 			reason: "capability-disabled",
 		};
 	}
@@ -275,16 +258,11 @@ export function computeStableCacheMarkerPlacement(
 	// turn's worth of content. That's the natural cache-invalidation
 	// cadence: cumulative cache grows monotonically by one user turn per
 	// transition over the thread lifetime.
-	//
-	// `bucketTokens` is now unused — the magic-number era is over. The
-	// param is kept in the input shape for backward compat with existing
-	// callers; new callers should pass anything (e.g. `0`) and ignore it.
 	if (messages.length < 2) {
 		return {
 			placed: false,
 			index: -1,
 			positionTokens: 0,
-			targetTokens: 0,
 			reason: "no-eligible-anchor",
 		};
 	}
@@ -333,7 +311,6 @@ export function computeStableCacheMarkerPlacement(
 			placed: false,
 			index: -1,
 			positionTokens: 0,
-			targetTokens: 0,
 			reason: "no-eligible-anchor",
 		};
 	}
@@ -396,7 +373,6 @@ export function computeStableCacheMarkerPlacement(
 				placed: false,
 				index: -1,
 				positionTokens: 0,
-				targetTokens: 0,
 				reason: "no-eligible-anchor",
 			};
 		}
@@ -408,7 +384,6 @@ export function computeStableCacheMarkerPlacement(
 				placed: false,
 				index: -1,
 				positionTokens: 0,
-				targetTokens: 0,
 				reason: "no-eligible-anchor",
 			};
 		}
@@ -420,10 +395,6 @@ export function computeStableCacheMarkerPlacement(
 		placed: true,
 		index: insertAt,
 		positionTokens,
-		// `targetTokens` is now `positionTokens` — there's no separate
-		// bucket-aligned target. Kept in the response shape for backward
-		// compatibility with the web debugger marker rendering.
-		targetTokens: positionTokens,
 	};
 }
 
@@ -432,7 +403,7 @@ export function computeStableCacheMarkerPlacement(
  * `computeStableCacheMarkerPlacement`. Mutates `messages` in place when a
  * marker is placed; leaves it untouched otherwise.
  */
-export function placeStableCacheMarker(
+function placeStableCacheMarker(
 	messages: LLMMessage[],
 	params: Omit<StableCacheMarkerParams, "messages">,
 	caps: CacheMarkerCaps | undefined,

@@ -1,6 +1,5 @@
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
-import type { McpAppBinding } from "@bound/sandbox";
-import type { WsStreamChunk } from "@bound/shared";
+import type { McpAppBinding, WsStreamChunk } from "@bound/shared";
 import type { Context } from "@opentelemetry/api";
 
 export type BuiltInToolResult = string | ContentBlock[];

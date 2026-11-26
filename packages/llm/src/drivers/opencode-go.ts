@@ -24,7 +24,9 @@ import { NamespaceLineupReadiness, type NamespaceModelOverride } from "./namespa
 import {
 	type OpenCodeGoCatalogEntry,
 	type OpenCodeGoProtocol,
+	fallbackOpenCodeGoProtocol,
 	parseOpenCodeGoModels,
+	stripOpenCodeGoModelPrefix,
 } from "./opencode-go-catalog";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
@@ -45,18 +47,6 @@ export const MAX_OPENCODE_SESSION_ID_LENGTH = 256;
 
 export function deriveOpenCodeGoBaseUrl(override?: string): string {
 	return override ?? DEFAULT_OPENCODE_GO_BASE_URL;
-}
-
-export function stripOpenCodeGoModelPrefix(modelId: string): string {
-	return modelId.startsWith("opencode-go/") ? modelId.slice("opencode-go/".length) : modelId;
-}
-
-export function classifyOpenCodeGoProtocol(modelId: string): "openai-compatible" | "anthropic" {
-	const normalized = stripOpenCodeGoModelPrefix(modelId).toLowerCase();
-	if (normalized.startsWith("minimax-") || normalized.startsWith("qwen")) {
-		return "anthropic";
-	}
-	return "openai-compatible";
 }
 
 type ModelOverride = NamespaceModelOverride;
@@ -222,7 +212,7 @@ export class OpenCodeGoDriver implements LLMBackend, SupportsModelDiscovery {
 
 	private resolveProtocol(modelId: string): OpenCodeGoProtocol {
 		if (this.protocol) return this.protocol;
-		return classifyOpenCodeGoProtocol(modelId) === "anthropic" ? "messages" : "chat-completions";
+		return fallbackOpenCodeGoProtocol(modelId);
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
@@ -252,6 +242,7 @@ export class OpenCodeGoDriver implements LLMBackend, SupportsModelDiscovery {
 			isAborted: () => params.signal?.aborted ?? false,
 			providerName: PROVIDER_NAME,
 			modelId,
+			logger: this.logger,
 		};
 
 		yield { type: "heartbeat" };

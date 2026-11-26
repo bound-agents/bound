@@ -30,11 +30,7 @@
 
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import {
-	DISABLED_SANDBOX,
-	type ResolvedSandboxConfig,
-	type SandboxOnUnavailable,
-} from "./sandbox-policy";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig } from "./sandbox-policy";
 
 /**
  * A thread's deviation from the configured sandbox default:
@@ -171,14 +167,4 @@ export class SandboxOverrideStore {
 		return (base: ResolvedSandboxConfig) =>
 			applySandboxOverride(base, this.overrides.get(threadId));
 	}
-}
-
-/**
- * The passthrough posture a host reports when the sandbox is enabled in config
- * but unavailable on this platform. Surfaced by the `/sandbox` status readout so
- * `/sandbox allow` on such a host can explain it has no effect (the writable set
- * only gates a sandbox that is actually containing).
- */
-export function isPassthroughPosture(onUnavailable: SandboxOnUnavailable): boolean {
-	return onUnavailable === "passthrough";
 }

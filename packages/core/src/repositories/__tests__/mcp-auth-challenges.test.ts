@@ -12,7 +12,6 @@ import {
 	markFailed,
 	markResolved,
 	raiseChallenge,
-	reRaise,
 } from "../mcp-auth-challenges";
 
 const OWNER = "site-owner-1";
@@ -130,35 +129,6 @@ describe("mcp-auth-challenges repository", () => {
 			markFailed(db, id, "invalid_scope", OWNER);
 			markFailed(db, id, "access_denied", OWNER);
 			expect(findChallengeById(db, id)?.failure_reason).toBe("access_denied");
-		});
-	});
-
-	describe("reRaise (failed/resolved → pending, R-MO8a/R-MO12/R-MO21)", () => {
-		it("re-raises a failed row back to pending and refreshes demand fields (R-MO6)", () => {
-			const id = raiseChallenge(db, demand({ scopeDemand: "read" }), OWNER);
-			markFailed(db, id, "access_denied", OWNER);
-			const res = reRaise(db, demand({ scopeDemand: "read write", grantedScopes: "read" }), OWNER);
-			expect(res.ok).toBe(true);
-			const row = findChallengeById(db, id);
-			expect(row?.status).toBe("pending");
-			expect(row?.scope_demand).toBe("read write");
-			expect(row?.granted_scopes).toBe("read");
-			// failure_reason cleared on the failed → pending edge.
-			expect(row?.failure_reason).toBeNull();
-		});
-
-		it("re-raises a resolved row back to pending (owner grant-death, R-MO12)", () => {
-			const id = raiseChallenge(db, demand(), OWNER);
-			markResolved(db, id, OWNER);
-			const res = reRaise(db, demand(), OWNER);
-			expect(res.ok).toBe(true);
-			expect(findChallengeById(db, id)?.status).toBe("pending");
-		});
-
-		it("refuses to re-raise a row that does not exist", () => {
-			const res = reRaise(db, demand({ serverName: "ghost" }), OWNER);
-			expect(res.ok).toBe(false);
-			if (!res.ok) expect(res.error.kind).toBe("illegal_transition");
 		});
 	});
 

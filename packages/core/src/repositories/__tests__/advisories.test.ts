@@ -5,22 +5,15 @@ import { createCoreTestDb } from "../../__tests__/test-database";
 import { insertRow, softDelete } from "../../index";
 import {
 	countProposedAdvisories,
-	countProposedAdvisoriesByCreator,
 	findActiveAdvisoryById,
 	findAdvisoryById,
 	findAdvisoryIdsByPrefix,
-	listActionableAdvisories,
 	listActiveAdvisories,
 	listActiveAdvisorySummaries,
 	listAdvisoriesByStatus,
 	listAdvisoriesByType,
-	listAdvisoriesResolvedAfter,
-	listAdvisoryIdsByStatusResolvedBefore,
 	listAdvisorySummariesByStatus,
 	listAppliedAdvisoriesResolvedSince,
-	listPendingAdvisories,
-	listProposedAdvisoryTitles,
-	listResolvedAdvisoriesByCreator,
 } from "../advisories";
 
 const SITE = "site-test";
@@ -106,24 +99,6 @@ describe("advisories repository finders", () => {
 		});
 	});
 
-	describe("listPendingAdvisories (proposed + deleted=0, proposed_at DESC)", () => {
-		it("returns only non-deleted proposed rows, newest first", () => {
-			seed(db, { id: "old", status: "proposed", proposed_at: "2026-01-01T00:00:00.000Z" });
-			seed(db, { id: "new", status: "proposed", proposed_at: "2026-03-01T00:00:00.000Z" });
-			seed(db, { id: "approved", status: "approved" });
-			seed(db, { id: "deleted-proposed", status: "proposed" });
-			softDelete(db, "advisories", "deleted-proposed", SITE);
-
-			const rows = listPendingAdvisories(db);
-			expect(rows.map((r) => r.id)).toEqual(["new", "old"]);
-		});
-
-		it("returns [] when none proposed", () => {
-			seed(db, { id: "a1", status: "applied" });
-			expect(listPendingAdvisories(db)).toEqual([]);
-		});
-	});
-
 	describe("countProposedAdvisories (aggregate COUNT)", () => {
 		it("counts only non-deleted proposed rows", () => {
 			seed(db, { id: "p1", status: "proposed" });
@@ -169,188 +144,6 @@ describe("advisories repository finders", () => {
 				"deferred",
 				"approved",
 				"proposed",
-			]);
-		});
-	});
-
-	describe("listResolvedAdvisoriesByCreator (creator + IN statuses + recency)", () => {
-		it("filters by creator, resolved status, recency cutoff; newest-resolved first", () => {
-			seed(db, {
-				id: "match-new",
-				status: "applied",
-				created_by: "alice",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-				title: "T-new",
-			});
-			seed(db, {
-				id: "match-old",
-				status: "approved",
-				created_by: "alice",
-				resolved_at: "2026-05-05T00:00:00.000Z",
-				title: "T-old",
-			});
-			// too old (before cutoff)
-			seed(db, {
-				id: "stale",
-				status: "dismissed",
-				created_by: "alice",
-				resolved_at: "2026-01-01T00:00:00.000Z",
-			});
-			// wrong creator
-			seed(db, {
-				id: "other-creator",
-				status: "applied",
-				created_by: "bob",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-			});
-			// non-resolved status (proposed not in the IN list)
-			seed(db, {
-				id: "proposed",
-				status: "proposed",
-				created_by: "alice",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-			});
-			// soft-deleted
-			seed(db, {
-				id: "del",
-				status: "applied",
-				created_by: "alice",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-			});
-			softDelete(db, "advisories", "del", SITE);
-
-			const rows = listResolvedAdvisoriesByCreator(db, "alice", "2026-05-01T00:00:00.000Z");
-			expect(rows).toEqual([
-				{ title: "T-new", status: "applied", resolved_at: "2026-05-10T00:00:00.000Z" },
-				{ title: "T-old", status: "approved", resolved_at: "2026-05-05T00:00:00.000Z" },
-			]);
-		});
-
-		it("returns [] when nothing matches the creator", () => {
-			seed(db, {
-				id: "a",
-				status: "applied",
-				created_by: "bob",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-			});
-			expect(listResolvedAdvisoriesByCreator(db, "alice", "2026-01-01T00:00:00.000Z")).toEqual([]);
-		});
-	});
-
-	describe("listProposedAdvisoryTitles (proposed + deleted=0, proposed_at ASC)", () => {
-		it("returns titles oldest-proposed first", () => {
-			seed(db, {
-				id: "b",
-				status: "proposed",
-				proposed_at: "2026-02-01T00:00:00.000Z",
-				title: "B",
-			});
-			seed(db, {
-				id: "a",
-				status: "proposed",
-				proposed_at: "2026-01-01T00:00:00.000Z",
-				title: "A",
-			});
-			seed(db, { id: "applied", status: "applied", title: "X" });
-			expect(listProposedAdvisoryTitles(db)).toEqual([{ title: "A" }, { title: "B" }]);
-		});
-	});
-
-	describe("listAdvisoriesResolvedAfter (resolved_at > cutoff, deleted=0)", () => {
-		it("returns title/status of rows resolved after cutoff, newest-resolved first", () => {
-			seed(db, {
-				id: "new",
-				status: "applied",
-				resolved_at: "2026-05-10T00:00:00.000Z",
-				title: "N",
-			});
-			seed(db, {
-				id: "old",
-				status: "approved",
-				resolved_at: "2026-05-02T00:00:00.000Z",
-				title: "O",
-			});
-			// exactly at cutoff — excluded (strict >)
-			seed(db, {
-				id: "boundary",
-				status: "dismissed",
-				resolved_at: "2026-05-01T00:00:00.000Z",
-			});
-			// soft-deleted
-			seed(db, {
-				id: "del",
-				status: "applied",
-				resolved_at: "2026-05-20T00:00:00.000Z",
-			});
-			softDelete(db, "advisories", "del", SITE);
-
-			expect(listAdvisoriesResolvedAfter(db, "2026-05-01T00:00:00.000Z")).toEqual([
-				{ title: "N", status: "applied" },
-				{ title: "O", status: "approved" },
-			]);
-		});
-	});
-
-	describe("listAdvisoryIdsByStatusResolvedBefore (status + resolved_at < cutoff)", () => {
-		it("returns ids of matching status resolved before cutoff", () => {
-			seed(db, { id: "before", status: "applied", resolved_at: "2026-01-01T00:00:00.000Z" });
-			// at cutoff — excluded (strict <)
-			seed(db, { id: "boundary", status: "applied", resolved_at: "2026-05-01T00:00:00.000Z" });
-			// after cutoff — excluded
-			seed(db, { id: "after", status: "applied", resolved_at: "2026-09-01T00:00:00.000Z" });
-			// wrong status
-			seed(db, { id: "wrong", status: "dismissed", resolved_at: "2026-01-01T00:00:00.000Z" });
-			// soft-deleted
-			seed(db, { id: "del", status: "applied", resolved_at: "2026-01-01T00:00:00.000Z" });
-			softDelete(db, "advisories", "del", SITE);
-
-			expect(
-				listAdvisoryIdsByStatusResolvedBefore(db, "applied", "2026-05-01T00:00:00.000Z"),
-			).toEqual([{ id: "before" }]);
-		});
-	});
-
-	describe("listActionableAdvisories (proposed OR elapsed-defer, proposed_at ASC, rowid ASC)", () => {
-		it("includes proposed and deferred-past-window, excludes future-deferred and tombstones", () => {
-			const now = "2026-05-15T00:00:00.000Z";
-			seed(db, { id: "proposed", status: "proposed", proposed_at: "2026-02-01T00:00:00.000Z" });
-			// deferred, window elapsed (defer_until < now)
-			seed(db, {
-				id: "deferred-elapsed",
-				status: "deferred",
-				defer_until: "2026-05-01T00:00:00.000Z",
-				proposed_at: "2026-01-01T00:00:00.000Z",
-			});
-			// deferred, window not yet elapsed
-			seed(db, {
-				id: "deferred-future",
-				status: "deferred",
-				defer_until: "2026-09-01T00:00:00.000Z",
-				proposed_at: "2026-01-01T00:00:00.000Z",
-			});
-			// approved — excluded entirely
-			seed(db, { id: "approved", status: "approved" });
-			// soft-deleted proposed
-			seed(db, { id: "del", status: "proposed" });
-			softDelete(db, "advisories", "del", SITE);
-
-			// oldest proposed_at first: deferred-elapsed (Jan) then proposed (Feb)
-			expect(listActionableAdvisories(db, now).map((r) => r.id)).toEqual([
-				"deferred-elapsed",
-				"proposed",
-			]);
-		});
-
-		// rowid tiebreaker: identical proposed_at must preserve insertion order.
-		it("breaks proposed_at ties by rowid (insertion order)", () => {
-			const now = "2026-05-15T00:00:00.000Z";
-			seed(db, { id: "first", status: "proposed", proposed_at: "2026-01-01T00:00:00.000Z" });
-			seed(db, { id: "second", status: "proposed", proposed_at: "2026-01-01T00:00:00.000Z" });
-			seed(db, { id: "third", status: "proposed", proposed_at: "2026-01-01T00:00:00.000Z" });
-			expect(listActionableAdvisories(db, now).map((r) => r.id)).toEqual([
-				"first",
-				"second",
-				"third",
 			]);
 		});
 	});
@@ -408,27 +201,6 @@ describe("advisories repository finders", () => {
 			seed(db, { id: "uniq-1" });
 			seed(db, { id: "other-1" });
 			expect(findAdvisoryIdsByPrefix(db, "uniq-")).toEqual([{ id: "uniq-1" }]);
-		});
-	});
-
-	describe("countProposedAdvisoriesByCreator (GROUP BY aggregate)", () => {
-		it("returns per-creator counts of non-deleted proposed rows", () => {
-			seed(db, { id: "a1", status: "proposed", created_by: "alice" });
-			seed(db, { id: "a2", status: "proposed", created_by: "alice" });
-			seed(db, { id: "b1", status: "proposed", created_by: "bob" });
-			seed(db, { id: "a-approved", status: "approved", created_by: "alice" });
-			seed(db, { id: "a-del", status: "proposed", created_by: "alice" });
-			softDelete(db, "advisories", "a-del", SITE);
-
-			const rows = countProposedAdvisoriesByCreator(db);
-			const byCreator = new Map(rows.map((r) => [r.created_by, r.count]));
-			expect(byCreator.get("alice")).toBe(2);
-			expect(byCreator.get("bob")).toBe(1);
-			expect(rows.length).toBe(2);
-		});
-
-		it("returns [] over an empty table (no GROUP rows)", () => {
-			expect(countProposedAdvisoriesByCreator(db)).toEqual([]);
 		});
 	});
 

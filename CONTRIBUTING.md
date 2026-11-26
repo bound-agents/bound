@@ -1,6 +1,6 @@
 # Contributing to Bound
 
-Last verified: 2026-05-25
+Last verified: 2026-11-26
 
 Thanks for your interest in contributing! This document is the developer-facing companion to [README.md](README.md) — if you're running `bun test` and touching SQL, this is the file you want.
 
@@ -61,7 +61,7 @@ Top-level:
 ```
 packages/
   shared/       Types, events, Result<T,E>, Zod config schemas, HLC
-  core/         SQLite schema, DI container, change-log outbox, relay CRUD
+  core/         SQLite schema, change-log outbox, relay CRUD
   sync/         Ed25519 WS sync, XChaCha20 encryption, LWW/append reducers
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), command framework
   llm/          Driver shims (Bedrock, OpenAI-compatible) over Vercel AI SDK
@@ -81,7 +81,6 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 - **Runtime**: Bun
 - **Language**: TypeScript 6.x (strict, ES2022, bundler module resolution)
 - **Database**: `bun:sqlite` in WAL mode with STRICT tables
-- **DI**: tsyringe + reflect-metadata (decorator-based singletons, setter injection)
 - **Validation**: Zod v4
 - **Web**: Hono (server) + Svelte 5 (client, Vite build)
 - **Linting**: Biome linter (its formatter is disabled)
@@ -178,8 +177,10 @@ Accumulated the hard way — check here before writing a bug report. The list be
 6. Put reads in the repository layer (`packages/core/src/repositories/`): a per-table module for single-table finders, `repositories/queries/` for cross-table JOINs. Don't inline `db.query(...)` in feature code — `scripts/validate-read-centralization.ts` ratchets inline reads down against a baseline. (Reads of non-synced tables / arbitrary SQL stay raw and are excluded from the gate.)
 7. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
 8. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
-9. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
-10. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes joining the cluster. Omission here causes silent data loss on new spokes (that table's data will never appear in snapshots).
+9. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes. Typecheck fails until it lists every `SyncedTableName`.
+10. Decide whether the table joins `CONSISTENCY_TABLES` in `packages/core/src/change-log.ts`, which drives cross-host consistency checks, table-state digests, and auto-backfill. Every peer compares this list, so adding a table changes wire behaviour across the cluster.
+
+`SYNCED_TABLE_NAMES` (core), the row-hash invalidation triggers, `getSyncedTableSchemas()`, the outbox audit, and the outbox/FK validator scripts all derive from `TABLE_REDUCER_MAP` and need no edit.
 
 ### Adding a config field
 
@@ -216,7 +217,7 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/invariants.md](docs/invariants.md) — full explanations of the critical invariants indexed above
 - [docs/gotchas.md](docs/gotchas.md) — full writeups of the common gotchas indexed above
 - [docs/design/architecture.md](docs/design/architecture.md) — package dep graph and data flow
-- [docs/design/core-infrastructure.md](docs/design/core-infrastructure.md) — schema, DI, config, outbox internals
+- [docs/design/core-infrastructure.md](docs/design/core-infrastructure.md) — schema, config, outbox internals
 - [docs/design/sync-protocol.md](docs/design/sync-protocol.md) — Ed25519, HLC, reducers, relay
 - [docs/design/agent-system.md](docs/design/agent-system.md) — agent loop, context pipeline, native tools
 - [docs/design/sandbox.md](docs/design/sandbox.md) — VFS, command framework, boundless filesystem sandbox

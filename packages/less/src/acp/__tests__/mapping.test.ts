@@ -25,6 +25,8 @@ describe("toolNameToKind", () => {
 		expect(toolNameToKind("boundless_write")).toBe("edit");
 		expect(toolNameToKind("boundless_edit")).toBe("edit");
 		expect(toolNameToKind("boundless_copy")).toBe("move");
+		expect(toolNameToKind("boundless_search")).toBe("search");
+		expect(toolNameToKind("boundless_read_structure")).toBe("read");
 		expect(toolNameToKind("boundless_bash")).toBe("execute");
 		expect(toolNameToKind("boundless_pwsh")).toBe("execute");
 		expect(toolNameToKind("boundless_mcp_github_search")).toBe("other");

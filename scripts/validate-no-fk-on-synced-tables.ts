@@ -20,23 +20,9 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { TABLE_REDUCER_MAP } from "../packages/shared/src/types.ts";
 
-const SYNCED_TABLES = [
-	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
-	"hosts",
-	"cluster_config",
-	"advisories",
-	"skills",
-	"memory_edges",
-	"connector_handles",
-	"webhooks",
-	"turns",
-];
+const SYNCED_TABLES = Object.keys(TABLE_REDUCER_MAP);
 
 const SCHEMA_FILES = ["packages/core/src/schema.ts", "packages/core/src/metrics-schema.ts"];
 

@@ -21,23 +21,16 @@ const systemTimer: HeartbeatTimer = {
 };
 
 export interface HeartbeatOptions {
-	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
 	intervalMs?: number;
-	/** Logger for warning messages when heartbeat fails. */
 	logger?: Logger;
 	/** Timer seam for deterministic tests. */
 	timer?: HeartbeatTimer;
 }
 
 /**
- * Starts a periodic heartbeat that bumps hosts.modified_at for the local host.
- *
- * This keeps the host visible to relay routing on peers, which filters out
- * hosts whose modified_at is older than 5 minutes (STALE_THRESHOLD_MS).
- *
- * Uses the change-log outbox so freshness syncs to peers via WS transport.
- *
- * Returns a handle with stop() to clear the timer during graceful shutdown.
+ * Bumps the local `hosts.modified_at` through the change-log outbox so the
+ * freshness signal syncs to peers, keeping this host inside their
+ * `PLATFORM_HOST_STALE_THRESHOLD_MS` routing window.
  */
 export function startHostHeartbeat(
 	db: Database,
@@ -52,7 +45,6 @@ export function startHostHeartbeat(
 		if (stopped) return;
 		try {
 			const ts = new Date().toISOString();
-			// Only update if the host row exists
 			const existing = findHostSiteIdById(db, siteId);
 			if (!existing) return;
 

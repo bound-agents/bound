@@ -8,8 +8,10 @@ import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import { DEFAULT_SILENCE_TIMEOUT_MS } from "@bound/loop";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { MAX_SILENCE_RETRIES, MainAgentLoop, SILENCE_TIMEOUT_MS } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
+import { MAX_SILENCE_RETRIES } from "../bound-agent-loop";
 
 /**
  * LLM backend that throws silence timeout errors N times, then succeeds.
@@ -26,7 +28,7 @@ class SilenceTimeoutBackend implements LLMBackend {
 		this.callCount++;
 		if (this.callCount <= this.failCount) {
 			// Simulate what withSilenceTimeout throws
-			throw new Error(`LLM silence timeout: no chunk received for ${SILENCE_TIMEOUT_MS}ms`);
+			throw new Error(`LLM silence timeout: no chunk received for ${DEFAULT_SILENCE_TIMEOUT_MS}ms`);
 		}
 		yield { type: "text" as const, content: "Success after retries!" };
 		yield {

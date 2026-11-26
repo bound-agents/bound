@@ -23,9 +23,8 @@ function uniqueRunId(): string {
 	return randomBytes(6).toString("hex");
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: the Bun ServerWebSocket shim and
-// the partial transport stub are deliberately loose — we only wire the branches
-// under test, and Bun does not export these types.
+// The Bun ServerWebSocket shim and the partial transport stub are deliberately
+// loose — only the branches under test are wired, and Bun does not export these types.
 type Any = any;
 describe("createWsHandlers — full-DB seed on open over a live socket", () => {
 	let cluster: WsTestCluster;

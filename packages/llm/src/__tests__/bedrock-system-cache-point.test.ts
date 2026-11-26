@@ -25,7 +25,7 @@
  *   C2 System + cacheEnabled → system block carries cachePoint.
  *   C3 System + !cacheEnabled → system block carries NO providerOptions.
  *   C4 cache_ttl forwards to cachePoint.ttl.
- *   C5 hasBedrockMessageCachePoint detects the marker post-bridge.
+ *   C5 hasMessageCacheMarker("bedrock") detects the marker post-bridge.
  *   C6 Determinism — same inputs produce byte-equal output.
  *   C7 Invariant (the regression sentry) — given a non-empty system AND a
  *      bridge-output messages array that already carries a Bedrock
@@ -36,17 +36,17 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelMessage } from "ai";
 import fc from "fast-check";
+import { quantizeCacheTtl } from "../drivers/shared";
 import {
-	buildBedrockSystemMessage,
-	hasBedrockMessageCachePoint,
-	quantizeCacheTtl,
-	shouldEnableSystemCachePoint,
-} from "../drivers/bedrock";
+	buildCachedSystemMessage,
+	hasMessageCacheMarker,
+	shouldEnableSystemCache,
+} from "../drivers/system-cache";
 
 describe("Bedrock chat() — system anchor independence from message-level marker", () => {
 	// Regression sentry for a live issue:
 	// the bedrock-driver gated `cacheEnabled` on
-	// `hasBedrockMessageCachePoint(bridgeMessages)`. When no message-level
+	// `hasMessageCacheMarker("bedrock", bridgeMessages)`. When no message-level
 	// marker was placed (truncation drops the latest user, semantic-anchor
 	// fallback returns no-eligible-anchor, etc.), the system anchor was
 	// disabled too — even though caching was intended (cache_ttl set).
@@ -60,7 +60,7 @@ describe("Bedrock chat() — system anchor independence from message-level marke
 	it("D1 (load-bearing): system anchor enabled when cache_ttl is set, even with no message-level marker", () => {
 		// `bridgeMessages` here has NO providerOptions.bedrock.cachePoint
 		// — no message-level marker placed. The old contract (cacheEnabled
-		// = hasBedrockMessageCachePoint) would say false; system gets no
+		// = hasMessageCacheMarker("bedrock")) would say false; system gets no
 		// cachePoint; caching is fully off. The new contract says: system
 		// anchor still rides because cache_ttl was set.
 		const bridgeMessagesWithoutMarker: ModelMessage[] = [
@@ -70,13 +70,13 @@ describe("Bedrock chat() — system anchor independence from message-level marke
 		];
 		// No message-level marker is present, yet caching is intended
 		// (cache_ttl set). The old contract keyed system-anchor enablement on
-		// hasBedrockMessageCachePoint(bridgeMessages) and would disable it; the
+		// hasMessageCacheMarker("bedrock", bridgeMessages) and would disable it; the
 		// new contract keeps the system anchor whenever cache_ttl is set.
 
 		// The fix: system anchor enabled whenever `cache_ttl` is set, even
 		// if no bridge message has a cachePoint. Encoded by
-		// `shouldEnableSystemCachePoint`.
-		const shouldEnable = shouldEnableSystemCachePoint({
+		// `shouldEnableSystemCache("bedrock")`.
+		const shouldEnable = shouldEnableSystemCache("bedrock", {
 			cacheTtl: "1h",
 			bridgeMessages: bridgeMessagesWithoutMarker,
 		});
@@ -85,7 +85,7 @@ describe("Bedrock chat() — system anchor independence from message-level marke
 
 	it("D2: system anchor disabled when cache_ttl is undefined (caller signals no caching intent)", () => {
 		const bridgeMessages: ModelMessage[] = [{ role: "user", content: "hi" }];
-		const shouldEnable = shouldEnableSystemCachePoint({
+		const shouldEnable = shouldEnableSystemCache("bedrock", {
 			cacheTtl: undefined,
 			bridgeMessages,
 		});
@@ -101,7 +101,7 @@ describe("Bedrock chat() — system anchor independence from message-level marke
 				providerOptions: { bedrock: { cachePoint: { type: "default" } } },
 			},
 		];
-		const shouldEnable = shouldEnableSystemCachePoint({
+		const shouldEnable = shouldEnableSystemCache("bedrock", {
 			cacheTtl: undefined,
 			bridgeMessages,
 		});
@@ -120,15 +120,17 @@ describe("cache TTL quantization", () => {
 	});
 });
 
-describe("buildBedrockSystemMessage", () => {
+describe("buildCachedSystemMessage (bedrock)", () => {
 	it("C1: returns null when system is empty/missing", () => {
-		expect(buildBedrockSystemMessage({ cacheEnabled: true })).toBeNull();
-		expect(buildBedrockSystemMessage({ system: "", cacheEnabled: true })).toBeNull();
-		expect(buildBedrockSystemMessage({ system: undefined, cacheEnabled: true })).toBeNull();
+		expect(buildCachedSystemMessage("bedrock", { cacheEnabled: true })).toBeNull();
+		expect(buildCachedSystemMessage("bedrock", { system: "", cacheEnabled: true })).toBeNull();
+		expect(
+			buildCachedSystemMessage("bedrock", { system: undefined, cacheEnabled: true }),
+		).toBeNull();
 	});
 
 	it("C2: emits cachePoint when cacheEnabled is true", () => {
-		const block = buildBedrockSystemMessage({
+		const block = buildCachedSystemMessage("bedrock", {
 			system: "you are a helpful agent",
 			cacheEnabled: true,
 		});
@@ -141,7 +143,7 @@ describe("buildBedrockSystemMessage", () => {
 	});
 
 	it("C3: omits providerOptions when cacheEnabled is false", () => {
-		const block = buildBedrockSystemMessage({
+		const block = buildCachedSystemMessage("bedrock", {
 			system: "you are a helpful agent",
 			cacheEnabled: false,
 		});
@@ -152,7 +154,7 @@ describe("buildBedrockSystemMessage", () => {
 	});
 
 	it("C4: forwards cache_ttl to cachePoint.ttl when present", () => {
-		const block = buildBedrockSystemMessage({
+		const block = buildCachedSystemMessage("bedrock", {
 			system: "stable prefix",
 			cacheEnabled: true,
 			cacheTtl: "1h",
@@ -163,7 +165,7 @@ describe("buildBedrockSystemMessage", () => {
 	});
 
 	it("C4b: omits ttl from cachePoint when cache_ttl is absent", () => {
-		const block = buildBedrockSystemMessage({
+		const block = buildCachedSystemMessage("bedrock", {
 			system: "stable prefix",
 			cacheEnabled: true,
 		});
@@ -173,7 +175,7 @@ describe("buildBedrockSystemMessage", () => {
 	});
 });
 
-describe("hasBedrockMessageCachePoint", () => {
+describe("hasMessageCacheMarker (bedrock)", () => {
 	it("C5: detects cachePoint on a user message", () => {
 		const messages: ModelMessage[] = [
 			{ role: "user", content: "hi" },
@@ -183,7 +185,7 @@ describe("hasBedrockMessageCachePoint", () => {
 				providerOptions: { bedrock: { cachePoint: { type: "default" } } },
 			},
 		];
-		expect(hasBedrockMessageCachePoint(messages)).toBe(true);
+		expect(hasMessageCacheMarker("bedrock", messages)).toBe(true);
 	});
 
 	it("C5b: returns false when no message carries a cachePoint", () => {
@@ -191,7 +193,7 @@ describe("hasBedrockMessageCachePoint", () => {
 			{ role: "user", content: "hi" },
 			{ role: "assistant", content: "there" },
 		];
-		expect(hasBedrockMessageCachePoint(messages)).toBe(false);
+		expect(hasMessageCacheMarker("bedrock", messages)).toBe(false);
 	});
 
 	it("C5c: returns false when providerOptions exists but lacks bedrock.cachePoint", () => {
@@ -202,15 +204,15 @@ describe("hasBedrockMessageCachePoint", () => {
 				providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
 			},
 		];
-		expect(hasBedrockMessageCachePoint(messages)).toBe(false);
+		expect(hasMessageCacheMarker("bedrock", messages)).toBe(false);
 	});
 
 	it("C5d: returns false on empty array", () => {
-		expect(hasBedrockMessageCachePoint([])).toBe(false);
+		expect(hasMessageCacheMarker("bedrock", [])).toBe(false);
 	});
 });
 
-describe("buildBedrockSystemMessage — property tests", () => {
+describe("buildCachedSystemMessage (bedrock) — property tests", () => {
 	const safeText = fc.string({ minLength: 1, maxLength: 256 });
 
 	it("C6: determinism — same inputs produce byte-equal output", () => {
@@ -220,12 +222,12 @@ describe("buildBedrockSystemMessage — property tests", () => {
 				fc.boolean(),
 				fc.option(fc.constantFrom("5m" as const, "1h" as const), { nil: undefined }),
 				(system, cacheEnabled, cacheTtl) => {
-					const a = buildBedrockSystemMessage({
+					const a = buildCachedSystemMessage("bedrock", {
 						system,
 						cacheEnabled,
 						cacheTtl: cacheTtl ?? undefined,
 					});
-					const b = buildBedrockSystemMessage({
+					const b = buildCachedSystemMessage("bedrock", {
 						system,
 						cacheEnabled,
 						cacheTtl: cacheTtl ?? undefined,
@@ -248,7 +250,7 @@ describe("buildBedrockSystemMessage — property tests", () => {
 		// rate despite the R-VC25 prefix purity fix.
 		fc.assert(
 			fc.property(safeText, (system) => {
-				const block = buildBedrockSystemMessage({
+				const block = buildCachedSystemMessage("bedrock", {
 					system,
 					cacheEnabled: true,
 					cacheTtl: "1h",

@@ -13,7 +13,7 @@ import { parseJsonSafe, resultPayloadSchema } from "@bound/shared";
  * `consumed`. The token-fenced lifecycle makes delivery exactly-once even if a
  * redelivered transfer produced a second (fenced-away) copy.
  */
-export interface UnionResponseEntry {
+export interface DurableResponseEntry {
 	id: string;
 	kind: string;
 	payload: string;
@@ -21,7 +21,7 @@ export interface UnionResponseEntry {
 }
 
 /**
- * Union read for one awaiting request's scalar response. Returns the winning
+ * Read one awaiting request's scalar response. Returns the winning
  * durable_work response row targeted at self (or LOCAL_WORK_TARGET) for `refId`,
  * or null when none has landed yet.
  *
@@ -34,14 +34,14 @@ export interface UnionResponseEntry {
  * the row) returns null: that reader delivers it.
  *
  * This is the shared primitive behind {@link createRelayWait$}'s
- * `readUnionResponse` and the two CLI remotePlatformRequest awaiters — the same
+ * `readDurableResponse` and the two CLI remotePlatformRequest awaiters — the same
  * exactly-once lifecycle, so no call site hand-rolls its own poll loop.
  */
-export function readUnionResponseEntry(
+export function readDurableResponseEntry(
 	db: Database,
 	refId: string,
 	ownSiteId: string,
-): UnionResponseEntry | null {
+): DurableResponseEntry | null {
 	const durable = readDurableResponseByRefId(db, refId, ownSiteId);
 	if (!durable) return null;
 	const claimed = claimDurableWorkByIds(db, [durable.id], ownSiteId);
@@ -65,18 +65,12 @@ export interface PlatformResponseAwaitDeps {
 }
 
 /**
- * Await a scalar `platform_request` response, polling the union of legacy
- * relay_inbox and durable_work response rows until `deadline`. Resolves with
+ * Await a scalar `platform_request` response, polling durable_work response
+ * rows until `deadline`. Resolves with
  * the parsed `stdout` (the platform tool's JSON result), rejects with the
- * remote error on a `kind === "error"` row, or throws a timeout when neither
- * store produces a response before `deadline`.
- *
- * This replaces the two hand-rolled legacy-only poll loops in scheduler.ts and
- * server.ts (`createRemotePlatformRequest`) that never migrated when 4D-D
- * landed: they polled ONLY relay_inbox behind a `!hasDroppedLegacyRelayTables`
- * guard, so once slice 4E dropped the legacy tables the loop body never ran and
- * every request hung the full timeout. The exactly-once consume lifecycle
- * (claim → parse → ack) mirrors {@link readUnionResponseEntry}.
+ * remote error on a `kind === "error"` row, or throws a timeout when no
+ * response lands before `deadline`. The exactly-once consume lifecycle
+ * (claim → parse → ack) mirrors {@link readDurableResponseEntry}.
  */
 export async function awaitPlatformRequestResponse(
 	deps: PlatformResponseAwaitDeps,
@@ -85,7 +79,7 @@ export async function awaitPlatformRequestResponse(
 ): Promise<unknown> {
 	const pollIntervalMs = options.pollIntervalMs ?? 200;
 	while (Date.now() < options.deadline) {
-		const entry = readUnionResponseEntry(deps.db, refId, deps.siteId);
+		const entry = readDurableResponseEntry(deps.db, refId, deps.siteId);
 		if (entry) {
 			// Deliver BEFORE ack: extract the resolution/rejection, then settle().
 			// A throw path still settles first so the consumed row is retired

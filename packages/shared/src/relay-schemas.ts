@@ -22,10 +22,6 @@ export const promptInvokePayloadSchema = z.object({
 	timeout_ms: z.number().int().positive(),
 });
 
-export const cacheWarmPayloadSchema = z.object({
-	timeout_ms: z.number().int().positive(),
-});
-
 export const cancelPayloadSchema = z.object({
 	ref_id: z.string().min(1),
 	reason: z.string().optional(),
@@ -117,18 +113,6 @@ export const mcpAppProxyPayloadSchema = z.object({
 });
 
 /**
- * `mcp_app_proxy` RESPONSE payload the owning host relays back over the
- * `response:<requestId>` awaiter. Carries the upstream HTTP status, an
- * allow-listed response-header subset, and the base64 body. The serving host
- * replays these to the browser verbatim; the credential the owner attached is
- * NEVER echoed back (it was never in a browser-facing field).
- */
-export const mcpAppProxyResponsePayloadSchema = z.object({
-	status: z.number().int().min(100).max(599),
-	headers: z.record(z.string(), z.string()),
-	body_base64: z.string(),
-});
-/**
  * `route_health` request payload. Empty: the owner reports every route it serves.
  * Strict so an unexpected field from a newer requester fails loudly rather than
  * being silently ignored.
@@ -155,7 +139,6 @@ export const routeHealthSnapshotSchema = z.object({
 	routes: z.array(routeHealthEntrySchema),
 });
 
-export type RouteHealthEntry = z.infer<typeof routeHealthEntrySchema>;
 export type RouteHealthSnapshot = z.infer<typeof routeHealthSnapshotSchema>;
 
 export const clientResultPayloadSchema = z.object({
@@ -308,24 +291,6 @@ export const streamChunkPayloadSchema = z.object({
 	tool_use_end: z.boolean().optional(),
 });
 
-export const streamEndPayloadSchema = z.object({
-	usage: z.object({
-		input_tokens: z.number(),
-		output_tokens: z.number(),
-		cache_write_tokens: z.number().nullable().optional(),
-		cache_write_1h_tokens: z.number().nullable().optional(),
-		// Per-lifetime cache-write split keyed by the provider's own TTL vocabulary.
-		// Optional on the wire: older peers never set it and tolerate receiving it.
-		cache_write_split: z.array(z.object({ ttl: z.string(), tokens: z.number() })).optional(),
-		// The route protocol's default cache lifetime (5m Messages/Converse, 30m
-		// Responses), stamped by the executing driver so the requester prices a split
-		// entry at this lifetime as a matched rate. Optional: older peers in both
-		// directions stay valid.
-		cache_write_default_lifetime: z.string().optional(),
-		cache_read_tokens: z.number().nullable().optional(),
-	}),
-});
-
 export const statusForwardPayloadSchema = z.object({
 	thread_id: z.string(),
 	status: z.string(),
@@ -370,12 +335,8 @@ export const platformRequestPayloadSchema = z.object({
 	timeout_ms: z.number().int().positive(),
 });
 
-export const hostPlatformsSchema = z.array(z.string());
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WebSocket stream chunk schema (discriminated union matching StreamChunk from
-// @bound/llm). Heartbeats are filtered upstream and never reach the WS.
-// ─────────────────────────────────────────────────────────────────────────────
+// Discriminated union matching StreamChunk from @bound/llm. Heartbeats are
+// filtered upstream and never reach the WS.
 
 export const wsStreamChunkSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("text"), content: z.string() }),
@@ -419,23 +380,10 @@ export const wsStreamChunkSchema = z.discriminatedUnion("type", [
 
 export type WsStreamChunk = z.infer<typeof wsStreamChunkSchema>;
 
-export const RELAY_PAYLOAD_SCHEMAS = {
-	tool_call: toolCallPayloadSchema,
-	resource_read: resourceReadPayloadSchema,
-	prompt_invoke: promptInvokePayloadSchema,
-	cache_warm: cacheWarmPayloadSchema,
-	platform_request: platformRequestPayloadSchema,
-	cancel: cancelPayloadSchema,
-	inference: inferenceRequestPayloadSchema,
-	inference_part: inferenceRequestPartPayloadSchema,
-	intake: intakePayloadSchema,
-	notify_wakeup: notifyWakeupPayloadSchema,
-	mcp_auth_handoff: mcpAuthHandoffPayloadSchema,
-	client_tool: clientToolPayloadSchema,
-	result: resultPayloadSchema,
-	error: errorPayloadSchema,
-	client_result: clientResultPayloadSchema,
-	stream_chunk: streamChunkPayloadSchema,
-	stream_end: streamEndPayloadSchema,
-	status_forward: statusForwardPayloadSchema,
-} as const;
+export type ToolCallPayload = z.infer<typeof toolCallPayloadSchema>;
+export type ResourceReadPayload = z.infer<typeof resourceReadPayloadSchema>;
+export type PromptInvokePayload = z.infer<typeof promptInvokePayloadSchema>;
+export type PlatformRequestPayload = z.infer<typeof platformRequestPayloadSchema>;
+export type ResultPayload = z.infer<typeof resultPayloadSchema>;
+export type ErrorPayload = z.infer<typeof errorPayloadSchema>;
+export type StatusForwardPayload = z.infer<typeof statusForwardPayloadSchema>;

@@ -50,7 +50,6 @@
 			const data = await client.getFile(file.path);
 
 			if (data.content === null || data.size_bytes === 0) {
-				// AC2.10: Empty file
 				content = "";
 				loading = false;
 				return;

@@ -113,21 +113,18 @@ describe("buildEventWakeupContent", () => {
 		const task = makeTask({ thread_id: null });
 		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Execute scheduled task.");
-		expect(result.processedIds).toEqual([]);
 	});
 
 	test("returns task.payload when task has no inbox entries", () => {
 		const task = makeTask({ payload: "Standing instruction" });
 		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Standing instruction");
-		expect(result.processedIds).toEqual([]);
 	});
 
 	test("returns default fallback when task has no payload and no inbox entries", () => {
 		const task = makeTask({ payload: null });
 		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Execute scheduled task.");
-		expect(result.processedIds).toEqual([]);
 	});
 
 	test("includes single envelope content when one is queued", () => {
@@ -448,7 +445,6 @@ describe("buildEventWakeupContent", () => {
 		);
 		expect((result.content.match(/<event /g) || []).length).toBe(3);
 		// All three durable rows are claimed for acknowledgement.
-		expect(result.processedIds.length).toBe(0);
 		expect(result.durableClaims.length).toBe(3);
 		// The claimed durable rows are now processing under the returned token.
 		const claimed = getDurableWork(db, result.durableClaims[0].id);

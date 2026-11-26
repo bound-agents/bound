@@ -24,19 +24,12 @@ export function parseJsonSafe<T>(
 	try {
 		parsed = JSON.parse(json);
 	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
-		return {
-			ok: false,
-			error: `JSON parse failed${context ? ` (${context})` : ""}: ${msg}`,
-		};
+		return { ok: false, error: failure("JSON parse failed", context, e) };
 	}
 
 	const result = schema.safeParse(parsed);
 	if (!result.success) {
-		return {
-			ok: false,
-			error: `Validation failed${context ? ` (${context})` : ""}: ${result.error.message}`,
-		};
+		return { ok: false, error: failure("Validation failed", context, result.error) };
 	}
 
 	return { ok: true, value: result.data };
@@ -51,10 +44,11 @@ export function parseJsonUntyped(json: string, context?: string): Result<unknown
 	try {
 		return { ok: true, value: JSON.parse(json) };
 	} catch (e) {
-		const msg = e instanceof Error ? e.message : String(e);
-		return {
-			ok: false,
-			error: `JSON parse failed${context ? ` (${context})` : ""}: ${msg}`,
-		};
+		return { ok: false, error: failure("JSON parse failed", context, e) };
 	}
+}
+
+function failure(prefix: string, context: string | undefined, e: unknown): string {
+	const msg = e instanceof Error ? e.message : String(e);
+	return `${prefix}${context ? ` (${context})` : ""}: ${msg}`;
 }

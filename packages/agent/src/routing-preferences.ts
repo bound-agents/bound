@@ -1,63 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { findModelRoutingRule, findRouteDrain, listDrainedRouteIds } from "@bound/core";
+import { findModelRoutingRule, listDrainedRouteIds } from "@bound/core";
 
 /**
- * Pure composition of the synced routing preferences (model_routing_rules,
- * route_drains) over a candidate route pool, plus thread-sticky route
- * resolution and hard-pin parsing (2026-11-21-model-routing.md §5.2–5.4, §6.2).
- *
- * These helpers are deliberately pure over their explicit inputs (the DB reads
- * are isolated to thin wrappers at the top) so the ranking, stickiness, and pin
- * rules can be unit-tested without a live router or relay. The router and
- * resolveModel wire them in; see model-resolution.ts.
+ * Thread-sticky route resolution, hard-pin parsing, and the synced routing
+ * preference reads (model_routing_rules, route_drains) that resolveModel
+ * composes (2026-11-21-model-routing.md §5.3–5.4, §6.2).
  */
-
-/** A route eligible for selection, as seen by ranking. */
-export interface RankableRoute {
-	/** `RouteId` (`${siteId}:${provider}:${backendId}`). */
-	routeId: string;
-	/** True when the route is served by the local host (locality tie-breaker). */
-	local: boolean;
-}
-
-/**
- * Deterministic candidate ranking (§5.2). Input routes are assumed already
- * filtered for health, readiness, and capability — this function applies only
- * the preference-and-identity ordering and the drain exclusion:
- *
- *   1. per-model route_order (listed RouteIds in declared order) first;
- *   2. locality tie-breaker (local before remote) for unlisted routes;
- *   3. stable lexical RouteId tie-breaker.
- *
- * Heartbeat freshness never enters here (R-RT8). A drained route (§6.2) is
- * removed entirely — it is a candidate for neither normal selection nor a
- * half-open trial.
- */
-export function rankRoutes(
-	routes: RankableRoute[],
-	opts: { routeOrder?: string[] | null; drainedRouteIds?: ReadonlySet<string> },
-): RankableRoute[] {
-	const drained = opts.drainedRouteIds ?? new Set<string>();
-	const order = opts.routeOrder ?? [];
-	// Rank index within the declared route_order; Infinity for unlisted routes.
-	const orderIndex = new Map<string, number>();
-	order.forEach((id, i) => {
-		if (!orderIndex.has(id)) orderIndex.set(id, i);
-	});
-
-	return routes
-		.filter((r) => !drained.has(r.routeId))
-		.slice()
-		.sort((a, b) => {
-			const ai = orderIndex.get(a.routeId) ?? Number.POSITIVE_INFINITY;
-			const bi = orderIndex.get(b.routeId) ?? Number.POSITIVE_INFINITY;
-			if (ai !== bi) return ai - bi;
-			// Both unlisted (or impossibly equal): local before remote.
-			if (a.local !== b.local) return a.local ? -1 : 1;
-			// Stable identity tie-breaker.
-			return a.routeId < b.routeId ? -1 : a.routeId > b.routeId ? 1 : 0;
-		});
-}
 
 /** Minimum stickiness window floor (§5.3): `max(route.cache_ttl_ms, 5m)`. */
 export const STICKY_MIN_WINDOW_MS = 5 * 60 * 1000;
@@ -195,16 +143,9 @@ export function parseModelHint(hint: string | undefined): {
 	};
 }
 
-// --- Thin DB-read wrappers (the only impure surface) -----------------------
-
 /** Set of every currently-drained RouteId (deleted = 0). */
 export function loadDrainedRouteIds(db: Database): Set<string> {
 	return new Set(listDrainedRouteIds(db));
-}
-
-/** True when `routeId` is drained (§6.2). */
-export function isRouteDrained(db: Database, routeId: string): boolean {
-	return findRouteDrain(db, routeId) !== null;
 }
 
 /** The per-model `route_order` (parsed RouteId[]), or null when unset/invalid. */

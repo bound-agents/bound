@@ -2,18 +2,17 @@ import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import {
 	createWebhookBinding,
-	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
 	findWebhookIdAndTaskIdByName,
 	findWebhookIdByName,
 	findWebhookIdsByName,
-	insertRow,
 	listWebhooksForCli,
 	softDelete,
 	updateRow,
 } from "@bound/core";
 import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
+import { upsertClusterConfig } from "../lib/db";
 
 const SIGNATURE_FORMATS = new Set<SignatureFormat>(["github", "stripe", "slack", "raw", "none"]);
 
@@ -40,28 +39,13 @@ function assertUnauthenticatedWebhooksAllowed(db: Database): void {
 }
 
 /**
- * Upsert a cluster_config key through the outbox helpers. The existence probe
- * INCLUDES tombstoned rows: a soft-deleted row still occupies the `key` PK, so
- * a re-set must UPDATE (un-tombstoning via deleted=0), never INSERT a colliding
- * row. Mirrors the pattern in drain.ts / set-hub.ts.
- */
-function upsertClusterConfig(db: Database, siteId: string, key: string, value: string): void {
-	const now = new Date().toISOString();
-	if (findClusterConfigKeyByKeyIncludingDeleted(db, key)) {
-		updateRow(db, "cluster_config", key, { value, deleted: 0 }, siteId);
-	} else {
-		insertRow(db, "cluster_config", { key, value, modified_at: now, deleted: 0 }, siteId);
-	}
-}
-
-/**
  * Flip the cluster-wide unauthenticated-webhook switch (#195). `allow=true`
  * lets operators create `--format none` webhooks and lets those webhooks
  * receive deliveries; `allow=false` (the default state, row absent) blocks
  * both. This is the deliberate, visible opt-in the issue calls for.
  */
 export function webhookSetUnauthenticated(db: Database, siteId: string, allow: boolean): void {
-	upsertClusterConfig(db, siteId, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, allow ? "true" : "false");
+	upsertClusterConfig(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, allow ? "true" : "false", siteId);
 	if (allow) {
 		console.log("Unauthenticated webhooks are now ALLOWED cluster-wide.");
 		console.log("⚠ Any host that can reach POST /webhook/:name can now trigger a 'none'-format");

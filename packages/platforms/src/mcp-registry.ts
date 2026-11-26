@@ -20,6 +20,7 @@ import {
 	getConnectorHandle,
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
+import { compareCursors } from "./cursor-order.js";
 import { isSubscriptionRejected } from "./subscription-errors.js";
 
 const mcpLifecycle = counter("bound.platform.mcp.lifecycle", {
@@ -642,7 +643,7 @@ export class PlatformMcpRegistry {
 	deliverBatch(subscription: ActiveSubscription, events: McpEvent[]): void {
 		const startedAt = performance.now();
 		const platform = platformMetricName(subscription.serverName);
-		// Get the stored cursor to filter events (AC6.4 - replay cursor filtering)
+		// AC6.4 - replay cursor filtering
 		const handle = getConnectorHandle(this.deps.db, subscription.handleId);
 		const storedCursor = handle?.cursor;
 
@@ -650,7 +651,7 @@ export class PlatformMcpRegistry {
 		// This ensures replay only sends new events after the stored position
 		let filteredEvents = events;
 		if (storedCursor) {
-			filteredEvents = events.filter((e) => this.compareCursors(e.cursor, storedCursor) > 0);
+			filteredEvents = events.filter((e) => compareCursors(e.cursor, storedCursor) > 0);
 		}
 
 		// 1. Deduplicate: skip events whose eventId is in deduplicationSet (AC1.3)
@@ -815,29 +816,6 @@ export class PlatformMcpRegistry {
 		mcpLifecycle.add(1, { platform, operation: "delivery", outcome: "success" });
 		mcpDeliveryDuration.record(performance.now() - startedAt, { platform, operation: "delivery" });
 		// The scheduler.onEvent(triggerKey, payload) matches against task.trigger_spec exactly
-	}
-
-	/**
-	 * Compares two cursor values.
-	 * Returns: negative if a < b, 0 if a == b, positive if a > b
-	 *
-	 * Uses BigInt for numeric comparison so Discord snowflakes (~1.4e18 by 2026)
-	 * compare correctly without Number-precision loss above 2^53. Falls back to
-	 * lexicographic ordering when either side isn't a parseable BigInt — this
-	 * preserves correct ordering for legacy small-integer cursors and any
-	 * future MCP server that emits non-numeric opaque cursors.
-	 */
-	private compareCursors(a: string, b: string): number {
-		try {
-			const aBig = BigInt(a);
-			const bBig = BigInt(b);
-			if (aBig < bBig) return -1;
-			if (aBig > bBig) return 1;
-			return 0;
-		} catch {
-			// Lexicographic fallback for non-numeric cursors
-			return a.localeCompare(b);
-		}
 	}
 
 	/**

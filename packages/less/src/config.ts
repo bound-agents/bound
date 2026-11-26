@@ -4,6 +4,9 @@ import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import type { QuickJSWASMModule } from "quickjs-emscripten-core";
 import { z } from "zod";
+import { CONTEXT_FILE_CANDIDATES } from "./tools/context-files";
+
+export const DEFAULT_BOUND_URL = "http://localhost:3001";
 
 const JS_CONFIG_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JS_CONFIG_STACK_LIMIT_BYTES = 256 * 1024;
@@ -76,18 +79,9 @@ const sandboxConfigSchema = z
 
 const configSchema = z
 	.object({
-		url: z.string().default("http://localhost:3001"),
+		url: z.string().default(DEFAULT_BOUND_URL),
 		model: z.string().nullable().default(null),
-		contextFiles: z
-			.array(z.string())
-			.default([
-				"README.md",
-				"CONTRIBUTING.md",
-				"AGENTS.md",
-				"AGENTS.local.md",
-				"CLAUDE.md",
-				"CLAUDE.local.md",
-			]),
+		contextFiles: z.array(z.string()).default(() => [...CONTEXT_FILE_CANDIDATES]),
 		shell: z.string().optional(),
 		sandbox: z.union([z.boolean(), sandboxConfigSchema]).default(true),
 	})
@@ -151,42 +145,20 @@ function validate<T>(raw: Record<string, unknown>, schema: z.ZodType<T>, filenam
 	return result.data;
 }
 
+function defaultConfig(): Loaded<Config> {
+	return { ...configSchema.parse({}), _raw: {} };
+}
+
 export async function loadConfig(configDir: string): Promise<Loaded<Config>> {
 	try {
 		const raw = await loadLayeredRaw(configDir, "config");
 		if (Object.keys(raw).length === 0) {
-			return {
-				url: "http://localhost:3001",
-				model: null,
-				contextFiles: [
-					"README.md",
-					"CONTRIBUTING.md",
-					"AGENTS.md",
-					"AGENTS.local.md",
-					"CLAUDE.md",
-					"CLAUDE.local.md",
-				],
-				sandbox: true,
-				_raw: {},
-			};
+			return defaultConfig();
 		}
 		return { ...validate(raw, configSchema, "config.js/config.json"), _raw: raw };
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-			return {
-				url: "http://localhost:3001",
-				model: null,
-				contextFiles: [
-					"README.md",
-					"CONTRIBUTING.md",
-					"AGENTS.md",
-					"AGENTS.local.md",
-					"CLAUDE.md",
-					"CLAUDE.local.md",
-				],
-				sandbox: true,
-				_raw: {},
-			};
+			return defaultConfig();
 		}
 		throw error;
 	}

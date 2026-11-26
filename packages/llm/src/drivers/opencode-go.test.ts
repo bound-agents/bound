@@ -1,17 +1,12 @@
 ﻿import { describe, expect, it } from "bun:test";
+import { DEEPSEEK_ROW, OPENCODE_GO_LISTING } from "../__tests__/opencode-go-fixtures";
 import type { LLMBackend, ModelDescriptor, StreamChunk } from "../types";
-import {
-	OpenCodeGoDriver,
-	classifyOpenCodeGoProtocol,
-	deriveOpenCodeGoBaseUrl,
-	stripOpenCodeGoModelPrefix,
-} from "./opencode-go";
-import { DEEPSEEK_ROW, OPENCODE_GO_LISTING } from "./opencode-go-fixtures";
+import { OpenCodeGoDriver, deriveOpenCodeGoBaseUrl } from "./opencode-go";
+import { stripOpenCodeGoModelPrefix } from "./opencode-go-catalog";
 
 /**
  * Pure helpers for the OpenCode Go driver: base-URL derivation, model-prefix
- * stripping, and protocol classification (the subscription exposes two protocol
- * surfaces behind one key, selected by model family).
+ * stripping.
  */
 
 describe("deriveOpenCodeGoBaseUrl", () => {
@@ -33,27 +28,6 @@ describe("stripOpenCodeGoModelPrefix", () => {
 		expect(stripOpenCodeGoModelPrefix("glm-4.6")).toBe("glm-4.6");
 	});
 });
-
-describe("classifyOpenCodeGoProtocol", () => {
-	it("routes minimax models to the Anthropic surface", () => {
-		expect(classifyOpenCodeGoProtocol("opencode-go/minimax-m2")).toBe("anthropic");
-	});
-
-	it("routes qwen models to the Anthropic surface", () => {
-		expect(classifyOpenCodeGoProtocol("qwen3-max")).toBe("anthropic");
-	});
-
-	it("routes everything else to the OpenAI-compatible surface", () => {
-		expect(classifyOpenCodeGoProtocol("opencode-go/glm-4.6")).toBe("openai-compatible");
-		expect(classifyOpenCodeGoProtocol("kimi-k2")).toBe("openai-compatible");
-	});
-
-	it("classifies case-insensitively", () => {
-		expect(classifyOpenCodeGoProtocol("opencode-go/MiniMax-M2")).toBe("anthropic");
-	});
-});
-
-// ─── Driver: discovery, protocols, namespace ────────────────────────────────
 
 interface Captured {
 	url: string;

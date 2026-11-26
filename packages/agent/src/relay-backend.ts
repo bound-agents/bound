@@ -1,15 +1,16 @@
-import type {
-	BackendCapabilities,
-	ChatParams,
-	DriverFallbackSupport,
-	InferenceRequestPayload,
-	LLMBackend,
-	StreamChunk,
+import {
+	type BackendCapabilities,
+	type ChatParams,
+	DEFAULT_BACKEND_CAPABILITIES,
+	type DriverFallbackSupport,
+	type InferenceRequestPayload,
+	type LLMBackend,
+	type StreamChunk,
 } from "@bound/llm";
 import { NEVER, Observable } from "rxjs";
 import type { EligibleHost } from "./relay-router";
-import { createRelayStream$ } from "./relay-stream$";
-import type { RelayStreamDeps } from "./relay-stream$";
+import { type RelayStreamDeps, createRelayStream$ } from "./relay-stream$";
+import { observableToAsyncIterable } from "./rx-async-iterable";
 
 export type RelayBackendDeps = RelayStreamDeps;
 
@@ -29,53 +30,6 @@ function abortSignalToObservable(signal?: AbortSignal): Observable<unknown> {
 		signal.addEventListener("abort", onAbort, { once: true });
 		return () => signal.removeEventListener("abort", onAbort);
 	});
-}
-
-/**
- * Bridges an RxJS Observable into an AsyncIterable, buffering values that
- * arrive between `next()` pulls. Errors surface on the awaiting pull;
- * completion ends iteration. Unsubscribes on early break / throw.
- */
-async function* observableToAsyncIterable<T>(source: Observable<T>): AsyncIterable<T> {
-	const queue: T[] = [];
-	let wake: (() => void) | null = null;
-	let done = false;
-	let error: unknown = null;
-
-	const sub = source.subscribe({
-		next: (value) => {
-			queue.push(value);
-			wake?.();
-			wake = null;
-		},
-		error: (err) => {
-			error = err;
-			done = true;
-			wake?.();
-			wake = null;
-		},
-		complete: () => {
-			done = true;
-			wake?.();
-			wake = null;
-		},
-	});
-
-	try {
-		while (true) {
-			if (queue.length > 0) {
-				yield queue.shift() as T;
-				continue;
-			}
-			if (error) throw error;
-			if (done) return;
-			await new Promise<void>((resolve) => {
-				wake = resolve;
-			});
-		}
-	} finally {
-		sub.unsubscribe();
-	}
 }
 
 /**
@@ -138,17 +92,9 @@ export function createRelayBackend(
 			return observableToAsyncIterable(stream$);
 		},
 		capabilities(): BackendCapabilities {
-			// Permissive stub: the real capability surface belongs to whichever
-			// remote backend services the request. We only assert that we stream.
-			return {
-				streaming: true,
-				tool_use: false,
-				system_prompt: true,
-				prompt_caching: false,
-				vision: false,
-				extended_thinking: false,
-				max_context: 0,
-			};
+			// The real capability surface belongs to whichever remote backend
+			// services the request; the carrier only asserts that it streams.
+			return { ...DEFAULT_BACKEND_CAPABILITIES, streaming: true, system_prompt: true };
 		},
 		fallbackSupport(): DriverFallbackSupport {
 			// Permissive stub: the relay carrier itself does no server-side fallback

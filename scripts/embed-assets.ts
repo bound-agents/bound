@@ -8,10 +8,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	EMBEDDED_ASSETS_ENCODING,
-	encodeAssetContent,
-} from "../packages/web/src/server/embedded-assets-codec";
+import { encodeAssetContent } from "../packages/web/src/server/embedded-assets-codec";
 
 // Resolve paths relative to this script, not cwd
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -67,8 +64,6 @@ const lines = [
 	"\tcontent: string;",
 	"\tcontentType: string;",
 	"}",
-	"",
-	`export const embeddedAssetsEncoding = ${JSON.stringify(EMBEDDED_ASSETS_ENCODING)} as const;`,
 	"",
 	"export const embeddedAssets = new Map<string, EmbeddedAsset>([",
 ];

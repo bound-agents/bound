@@ -12,6 +12,7 @@
 		},
 		"./test-utils": "./src/test-utils.ts",
 		"./strings": "./src/strings.ts",
+		"./syntax": "./src/syntax.ts",
 		"./message-sender": "./src/message-sender.ts",
 		"./yard-format": "./src/yard-format.ts",
 		"./trace-collector": "./src/trace-collector.ts",

@@ -7,13 +7,11 @@ export function randomUUID(): string {
 }
 
 export function deterministicUUID(namespace: string, name: string): string {
-	// Create SHA-1 hash of namespace string + name string
 	const encoder = new TextEncoder();
 	const input = new Uint8Array([...encoder.encode(namespace), ...encoder.encode(name)]);
 	const digest = sha1(input);
 
-	// Format as UUID v5 per RFC 4122
-	// Set version bits (5) and variant bits (RFC 4122)
+	// RFC 4122 v5: version nibble 5, variant bits 10.
 	digest[6] = (digest[6] & 0x0f) | 0x50;
 	digest[8] = (digest[8] & 0x3f) | 0x80;
 

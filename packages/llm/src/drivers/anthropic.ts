@@ -22,10 +22,8 @@
  *     (usageProvider: "anthropic").
  *
  * We keep ownership of the same things the Bedrock driver owns:
- *   - Message shape → ModelMessage conversion (ai-sdk-bridge.ts)
- *   - System-block cache anchoring (mirrors `buildBedrockSystemMessage`; the
- *     AI SDK normalizes a top-level `system: string` WITHOUT providerOptions,
- *     so a `cache_control` would never reach the wire — see below)
+ *   - Message shape → ModelMessage conversion (../bridge)
+ *   - System-block cache anchoring (`./system-cache`)
  *   - Stream chunk translation back to our StreamChunk type
  *   - Extended-thinking / effort config construction from ChatParams
  */
@@ -34,10 +32,10 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { AnthropicProvider } from "@ai-sdk/anthropic";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import type { ModelMessage } from "ai";
 import { ANTHROPIC_ENVELOPE, mapChunks, mapError, toModelMessages, toToolSet } from "../bridge";
 import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discovery";
 import { parseAnthropicModelsList } from "../catalog/discovery-fetch";
+import type { CreditStep } from "../fallback-credit";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import { createLoggingFetch } from "../fetch-logger";
 import type {
@@ -48,13 +46,12 @@ import type {
 	StreamChunk,
 } from "../types";
 import { LLMError } from "../types";
-import { quantizeCacheTtl } from "./bedrock";
 import {
 	type CacheFieldDecision,
 	CacheFieldRecoveryState,
 	withCacheFieldRecovery,
 } from "./cache-field-recovery";
-import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
+import { redeemFallbackCredit } from "./credit-redemption";
 import {
 	resolveFallbackTargetFromParams,
 	serverToolsRanInChunks,
@@ -64,6 +61,9 @@ import {
 	type NamespaceModelOverride,
 	lineupFromDiscovered,
 } from "./namespace-readiness";
+import { quantizeCacheTtl } from "./shared";
+import { buildCachedSystemMessage, shouldEnableSystemCache } from "./system-cache";
+
 /**
  * The `providerOptions.anthropic` reasoning payload. Mirrors the subset of
  * `AnthropicLanguageModelOptions` (in `@ai-sdk/anthropic`) that controls
@@ -77,95 +77,6 @@ interface AnthropicReasoningOptions {
 		| { type: "enabled"; budgetTokens?: number }
 		| { type: "adaptive"; display?: "omitted" | "summarized" };
 	effort?: "low" | "medium" | "high" | "xhigh" | "max";
-}
-
-export interface BuildAnthropicSystemMessageParams {
-	/** The system prompt text. When falsy/empty, no system block is produced. */
-	system?: string;
-	/**
-	 * Whether to attach `providerOptions.anthropic.cacheControl` to the system
-	 * block. Should mirror the agent-loop's caching decision for this turn.
-	 */
-	cacheEnabled: boolean;
-	/** Optional TTL forwarded to `cacheControl.ttl`. */
-	cacheTtl?: "5m" | "1h";
-}
-
-/**
- * Builds the Anthropic system message that opens the messages array.
- *
- * Returns `null` when `system` is empty/missing — the caller passes the
- * messages array unchanged in that case. Otherwise returns a `role: "system"`
- * `ModelMessage`; `providerOptions.anthropic.cacheControl` is present iff
- * `cacheEnabled` is true.
- *
- * Why a system MESSAGE and not `streamText({system: <string>})`: the AI SDK
- * normalizes the top-level `system` string into a system block WITHOUT
- * `providerOptions`, so a `cache_control` marker would never reach the wire and
- * the byte-stable system prefix would have no cache anchor — the exact failure
- * mode `buildBedrockSystemMessage` exists to avoid on the Bedrock path.
- * `@ai-sdk/anthropic`'s prompt converter reads `cacheControl` from a system
- * message's `providerOptions` (`convert-to-anthropic-prompt.ts`, the
- * `case "system"` branch), so routing the system block through the messages
- * array preserves the anchor.
- *
- * Pure: depends only on its arguments; byte-stable for the same inputs.
- */
-export function buildAnthropicSystemMessage(
-	params: BuildAnthropicSystemMessageParams,
-): ModelMessage | null {
-	if (!params.system) return null;
-	const message: ModelMessage = {
-		role: "system",
-		content: params.system,
-	};
-	if (params.cacheEnabled) {
-		const cacheControl: { type: "ephemeral"; ttl?: "5m" | "1h" } = { type: "ephemeral" };
-		if (params.cacheTtl) cacheControl.ttl = params.cacheTtl;
-		message.providerOptions = { anthropic: { cacheControl } };
-	}
-	return message;
-}
-
-/**
- * Detects whether any non-system message in the post-bridge `ModelMessage[]`
- * carries an Anthropic `cacheControl`. Used as a fallback caching-intent signal
- * for the system anchor when the caller didn't pass `cache_ttl`. Mirrors
- * `hasBedrockMessageCachePoint` for the `providerOptions.anthropic` bucket.
- *
- * Exported for unit-test use only.
- */
-export function hasAnthropicMessageCacheControl(messages: ModelMessage[]): boolean {
-	return messages.some((m) => {
-		const opts = m.providerOptions as { anthropic?: { cacheControl?: unknown } } | undefined;
-		return opts?.anthropic?.cacheControl !== undefined;
-	});
-}
-
-export interface ShouldEnableAnthropicSystemCacheControlParams {
-	/** From `ChatParams.cache_ttl`. Caller signals caching intent. */
-	cacheTtl: "5m" | "1h" | undefined;
-	/** Post-bridge messages — fallback signal for caching intent. */
-	bridgeMessages: ModelMessage[];
-}
-
-/**
- * Decide whether the SYSTEM block should carry an Anthropic `cacheControl`.
- *
- * The SYSTEM anchor is INDEPENDENT of any message-level marker, matching the
- * contract `shouldEnableSystemCachePoint` established for Bedrock after the
- * cr=0 regression (a missing message-level marker silently disabled the system
- * anchor too, killing caching for the whole turn):
- *   - If the caller passed `cache_ttl`, they intend caching → enable.
- *   - Otherwise fall back to message-level marker presence (preserves behavior
- *     for callers that don't pass `cache_ttl`).
- *   - Otherwise disable.
- */
-export function shouldEnableAnthropicSystemCacheControl(
-	params: ShouldEnableAnthropicSystemCacheControlParams,
-): boolean {
-	if (params.cacheTtl !== undefined) return true;
-	return hasAnthropicMessageCacheControl(params.bridgeMessages);
 }
 
 /**
@@ -208,9 +119,9 @@ export class AnthropicDriver implements LLMBackend, SupportsModelDiscovery {
 	private model: string;
 	private contextWindow: number;
 	// Endpoint identity for the inline credit-redemption co-location check
-	// (slice 5, R-RT18). Empty string when the host didn't configure a site id.
+	// (R-RT18). Empty string when the host didn't configure a site id.
 	private readonly reasoningOrigin: string;
-	// Discovery (slice 6, R-MC3): the raw credentials/endpoint needed to query
+	// Discovery (R-MC3): the raw credentials/endpoint needed to query
 	// `/v1/models` on demand. Stored so `discoverModels()` can hit the inventory
 	// endpoint with this host's own key without reaching into the AI SDK provider.
 	private readonly discoveryApiKey: string;
@@ -321,7 +232,7 @@ export class AnthropicDriver implements LLMBackend, SupportsModelDiscovery {
 	}
 
 	/**
-	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): query Anthropic
+	 * Live provider discovery (R-MC3, catalog §4.1): query Anthropic
 	 * `/v1/models` with this host's own key. Sends the fallback beta header so
 	 * each row may carry `allowed_fallback_models`. Total: a non-OK response or
 	 * transport failure throws so the caller falls back to config + `models.dev`
@@ -387,15 +298,11 @@ export class AnthropicDriver implements LLMBackend, SupportsModelDiscovery {
 				reasoningProviderOptions: "anthropic",
 				targetEnvelope: ANTHROPIC_ENVELOPE,
 			});
-			// Inject the system prompt as a `role: "system"` ModelMessage at index 0
-			// so its `cache_control` survives AI SDK normalization. The top-level
-			// `system: string` parameter would strip providerOptions and orphan the
-			// cache anchor. See `buildAnthropicSystemMessage`.
-			const systemMessage = buildAnthropicSystemMessage({
+			const systemMessage = buildCachedSystemMessage("anthropic", {
 				system: params.system,
 				cacheEnabled:
 					!cachingDropped &&
-					shouldEnableAnthropicSystemCacheControl({
+					shouldEnableSystemCache("anthropic", {
 						cacheTtl: effectiveTtl,
 						bridgeMessages,
 					}),
@@ -423,7 +330,7 @@ export class AnthropicDriver implements LLMBackend, SupportsModelDiscovery {
 				model: this.provider.languageModel(modelId),
 				messages,
 				// The system prompt rides as a role:"system" ModelMessage at index 0 (see
-				// buildAnthropicSystemMessage); ai@7 streamText rejects it unless we opt in.
+				// buildCachedSystemMessage); ai@7 streamText rejects it unless we opt in.
 				allowSystemInMessages: true,
 				...(tools && { tools }),
 				...(params.max_tokens && { maxOutputTokens: params.max_tokens }),

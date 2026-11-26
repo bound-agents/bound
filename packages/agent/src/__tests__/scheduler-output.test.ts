@@ -8,6 +8,7 @@ import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { MainAgentLoop } from "../agent-loop";
 import { Scheduler } from "../scheduler";
+import { waitFor } from "./helpers";
 
 describe("R-O3: Task output delivered to original scheduling thread", () => {
 	let dbPath: string;
@@ -158,14 +159,22 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		const scheduler = new Scheduler(ctx, mockAgentLoopFactory);
 		const handle = scheduler.start(50);
 
-		// Give the scheduler time to process the claimed task
-		await new Promise<void>((resolve) => {
-			setTimeout(() => {
-				resolve();
-			}, 200);
-		});
-
+		// Wait for the run itself, not a fixed window: under host load the first
+		// tick can land after any fixed sleep. Then drain the in-flight run so
+		// afterEach never closes the DB under a pending setImmediate body.
+		await waitFor(
+			() =>
+				db
+					.query("SELECT 1 FROM messages WHERE thread_id = ? AND content = ?")
+					.get(threadId, "Task output message") !== null,
+			{ timeoutMs: 10_000, message: "task output message persisted" },
+		);
 		handle.stop();
+		await waitFor(
+			() =>
+				(scheduler as unknown as { runningTasks: Map<string, unknown> }).runningTasks.size === 0,
+			{ timeoutMs: 10_000, message: "in-flight run drained" },
+		);
 
 		// Verify the agent loop was called with the correct thread_id
 		expect(capturedThreadId).toBe(threadId);
@@ -228,13 +237,19 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 		const scheduler = new Scheduler(ctx, mockAgentLoopFactory);
 		const handle = scheduler.start(50);
 
-		await new Promise<void>((resolve) => {
-			setTimeout(() => {
-				resolve();
-			}, 200);
-		});
-
+		await waitFor(
+			() =>
+				db
+					.query("SELECT 1 FROM messages WHERE thread_id = ? AND content = ?")
+					.get(threadId, "Another task output") !== null,
+			{ timeoutMs: 10_000, message: "task output message persisted" },
+		);
 		handle.stop();
+		await waitFor(
+			() =>
+				(scheduler as unknown as { runningTasks: Map<string, unknown> }).runningTasks.size === 0,
+			{ timeoutMs: 10_000, message: "in-flight run drained" },
+		);
 
 		// Count threads after
 		const threadsAfter = db.query("SELECT COUNT(*) as count FROM threads").get() as {

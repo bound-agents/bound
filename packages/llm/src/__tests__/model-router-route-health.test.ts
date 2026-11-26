@@ -6,9 +6,8 @@ import type { BackendCapabilities, LLMBackend } from "../types";
 /**
  * Coverage for the #285 route-health methods the `ModelRouter` exposes over its
  * internal {@link RouteHealth} registry: the classified failure/success seams,
- * the half-open trial gate, the sticky-reuse predicate, the `markRateLimited` /
- * `isRateLimited` compatibility shims, and the capability-filtered recovery
- * lookup. The registry itself is unit-tested in `route-health.test.ts`; this
+ * the half-open trial gate, the sticky-reuse predicate, the `isRateLimited`
+ * predicate, and the capability-filtered recovery lookup. The registry itself is unit-tested in `route-health.test.ts`; this
  * file exercises the router wiring the loop actually calls.
  */
 
@@ -72,28 +71,6 @@ describe("ModelRouter route health — recordRouteFailure / isRateLimited (#285)
 		router.recordRouteSuccess("a");
 		expect(router.isRateLimited("a")).toBe(false);
 		expect(router.getRouteHealthState("a").status).toBe("healthy");
-	});
-});
-
-describe("ModelRouter route health — markRateLimited compatibility shim (#285)", () => {
-	it("an explicit Retry-After is honored exactly", () => {
-		const now = 1_000;
-		const router = routerWith([{ id: "a" }], () => now);
-		router.markRateLimited("a", 90_000);
-		const state = router.getRouteHealthState("a");
-		if (state.status !== "backoff") throw new Error(`expected backoff, got ${state.status}`);
-		expect(state.next_trial_at).toBe(now + 90_000);
-		expect(state.last_error_kind).toBe("rate_limit");
-	});
-
-	it("the legacy 60s default sentinel defers to the exponential schedule", () => {
-		const now = 1_000;
-		const router = routerWith([{ id: "a" }], () => now);
-		router.markRateLimited("a", 60_000);
-		const state = router.getRouteHealthState("a");
-		if (state.status !== "backoff") throw new Error(`expected backoff, got ${state.status}`);
-		// First failure → 30s floor, NOT the 60s sentinel.
-		expect(state.next_trial_at).toBe(now + BACKOFF_BASE_MS);
 	});
 });
 
@@ -163,9 +140,9 @@ describe("ModelRouter route health — getEarliestCapableRecovery (#285)", () =>
 			() => now,
 		);
 		// plain backs off first (earlier next_trial_at), vision second.
-		router.markRateLimited("plain", 30_000); // next_trial_at = 31_000
+		router.recordRouteFailure("plain", { errorKind: "rate_limit", retryAfterMs: 30_000 }); // next_trial_at = 31_000
 		now += 1;
-		router.markRateLimited("vision", 30_000); // next_trial_at = 31_001
+		router.recordRouteFailure("vision", { errorKind: "rate_limit", retryAfterMs: 30_000 }); // next_trial_at = 31_001
 
 		// No requirement: earliest overall is plain's.
 		expect(router.getEarliestCapableRecovery()).toBe(31_000);
@@ -176,7 +153,7 @@ describe("ModelRouter route health — getEarliestCapableRecovery (#285)", () =>
 	it("returns null when no capable route is backing off", () => {
 		const now = 1_000;
 		const router = routerWith([{ id: "a", caps: { vision: false } }], () => now);
-		router.markRateLimited("a", 30_000);
+		router.recordRouteFailure("a", { errorKind: "rate_limit", retryAfterMs: 30_000 });
 		// The only backed-off route lacks vision → no capable recovery.
 		expect(router.getEarliestCapableRecovery({ vision: true })).toBeNull();
 	});

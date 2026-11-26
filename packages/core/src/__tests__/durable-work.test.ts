@@ -23,13 +23,7 @@ import {
 	resetTransferringLocalDurableWork,
 	sweepStaleTransferringDurableWork,
 } from "../durable-work";
-import {
-	countPendingIntakeDurableWork,
-	countPendingPeerTargetedDurableWork,
-	findDurableWorkByKindAndIdempotencyKeys,
-	listPendingIntakeDurableWork,
-	listPendingIntakeDurableWorkForRef,
-} from "../repositories/durable-work";
+import { countPendingPeerTargetedDurableWork } from "../repositories/durable-work";
 import { applySchema } from "../schema";
 import { createCoreTestDb } from "./test-database";
 
@@ -423,40 +417,6 @@ describe("durable_work intake reads", () => {
 				.query("SELECT ref_id, source_site, received_at FROM durable_work WHERE id = 'dispatch'")
 				.get(),
 		).toEqual({ ref_id: null, source_site: null, received_at: null });
-	});
-
-	it("orders pending intake by received_at with created_at fallback", () => {
-		insertDurableWork(db, {
-			...row("late"),
-			kind: "webhook_intake",
-			ref_id: "thread-1",
-			received_at: "2026-01-03T00:00:00.000Z",
-		});
-		insertDurableWork(db, { ...row("fallback"), kind: "rss_intake", ref_id: "thread-1" });
-		db.run("UPDATE durable_work SET created_at = ? WHERE id = 'fallback'", [
-			"2026-01-01T00:00:00.000Z",
-		]);
-		insertDurableWork(db, {
-			...row("early"),
-			kind: "webhook_intake",
-			ref_id: "thread-1",
-			received_at: "2026-01-02T00:00:00.000Z",
-		});
-		expect(
-			listPendingIntakeDurableWork(db, "webhook_intake", "thread-1").map((entry) => entry.id),
-		).toEqual(["early", "late"]);
-		expect(listPendingIntakeDurableWorkForRef(db, "thread-1").map((entry) => entry.id)).toEqual([
-			"fallback",
-			"early",
-			"late",
-		]);
-		expect(
-			findDurableWorkByKindAndIdempotencyKeys(db, [
-				["webhook_intake", "key:late"],
-				["rss_intake", "missing"],
-			]).map((entry) => entry.id),
-		).toEqual(["late"]);
-		expect(countPendingIntakeDurableWork(db, "thread-1")).toBe(3);
 	});
 
 	it("claims specific pending rows by id, fencing each with a fresh token", () => {

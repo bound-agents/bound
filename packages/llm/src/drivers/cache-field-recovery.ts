@@ -40,6 +40,21 @@ export interface CacheFieldRejection {
 }
 
 /**
+ * Yield each node of an AI SDK error chain (RetryError → `lastError`, wrapped
+ * errors → `cause`), at most 4 deep and never revisiting a node.
+ */
+export function* walkErrorChain(err: unknown): Generator<object> {
+	const seen = new Set<unknown>();
+	let node: unknown = err;
+	for (let depth = 0; depth < 4 && node && typeof node === "object" && !seen.has(node); depth++) {
+		seen.add(node);
+		yield node;
+		const e = node as { lastError?: unknown; cause?: unknown };
+		node = e.lastError ?? e.cause;
+	}
+}
+
+/**
  * Walk the common AI SDK error shape (RetryError → lastError, APICallError with
  * `.responseBody`, InvalidArgumentError → cause) collecting status codes, body
  * text, and whether a node is a LOCAL SDK argument-validation failure, mirroring
@@ -64,10 +79,7 @@ function collectError(err: unknown): {
 	let param: string | undefined;
 	let localArgRejection = false;
 	const bodyTexts: string[] = [];
-	const seen = new Set<unknown>();
-	let node: unknown = err;
-	for (let depth = 0; depth < 4 && node && !seen.has(node); depth++) {
-		seen.add(node);
+	for (const node of walkErrorChain(err)) {
 		const e = node as {
 			name?: unknown;
 			statusCode?: number;
@@ -95,7 +107,6 @@ function collectError(err: unknown): {
 				// Not JSON — the field name is matched from the body text below.
 			}
 		}
-		node = e.lastError ?? e.cause;
 	}
 	return { statusCode, bodyText: bodyTexts.join(" "), param, localArgRejection };
 }

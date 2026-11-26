@@ -574,7 +574,7 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 			const costByModelTimelineWithComponents = (costByModelTimelineRows || []).map((row) => {
 				const pricing = pricingById.get(row.model_id);
 
-				// --- Part 2: the legacy (no-breakdown) subset ---
+				// Part 2: the legacy (no-breakdown) subset.
 				let legacyInput: number;
 				let legacyOutput: number;
 				let legacyCacheRead: number;
@@ -620,7 +620,7 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 					}
 				}
 
-				// --- Combine: recorded parts + legacy fallback ---
+				// Combine recorded parts with the legacy fallback.
 				const costInput = row.rec_input + legacyInput;
 				const costOutput = row.rec_output + legacyOutput;
 				const costCacheRead = row.rec_cache_read + legacyCacheRead;

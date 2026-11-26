@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { SyncedTableName } from "@bound/shared";
+import { CONSISTENCY_TABLES, getPkColumn } from "../change-log.js";
 import {
 	type ConsistencyEntry,
 	compareAllTables,
@@ -9,16 +10,16 @@ import {
 	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
 	getLocalPksSorted,
-	hashRow,
 	isTableStateDigest,
 	mergeDiffEntries,
 	mergeDiffPks,
 	syncableRowPredicate,
 	syncableWhereClause,
 } from "../consistency.js";
+import { computeRowStateHash } from "../row-hash-cache.js";
 import { createCoreTestDb } from "./test-database.js";
 
-describe("hashRow", () => {
+describe("computeRowStateHash", () => {
 	test("produces deterministic hashes regardless of key insertion order", () => {
 		const a = {
 			id: "1",
@@ -34,13 +35,13 @@ describe("hashRow", () => {
 			value: "x",
 			id: "1",
 		};
-		expect(hashRow(a)).toBe(hashRow(b));
+		expect(computeRowStateHash(a)).toBe(computeRowStateHash(b));
 	});
 
 	test("excludes modified_at from hash (else perpetual mismatches on apply)", () => {
 		const a = { id: "1", value: "x", modified_at: "2026-01-01T00:00:00Z" };
 		const b = { id: "1", value: "x", modified_at: "2026-12-31T23:59:59Z" };
-		expect(hashRow(a)).toBe(hashRow(b));
+		expect(computeRowStateHash(a)).toBe(computeRowStateHash(b));
 	});
 
 	test("includes deleted flag in hash (soft-delete tombstone detection)", () => {
@@ -56,7 +57,7 @@ describe("hashRow", () => {
 			deleted: 1,
 			modified_at: "2026-01-01T00:00:00Z",
 		};
-		expect(hashRow(live)).not.toBe(hashRow(tombstoned));
+		expect(computeRowStateHash(live)).not.toBe(computeRowStateHash(tombstoned));
 	});
 
 	test("includes tier in hash (tier-flip detection)", () => {
@@ -72,30 +73,30 @@ describe("hashRow", () => {
 			tier: "default",
 			modified_at: "2026-01-01T00:00:00Z",
 		};
-		expect(hashRow(pinned)).not.toBe(hashRow(def));
+		expect(computeRowStateHash(pinned)).not.toBe(computeRowStateHash(def));
 	});
 
 	test("includes value mutations", () => {
 		const before = { id: "1", value: "old", modified_at: "2026-01-01T00:00:00Z" };
 		const after = { id: "1", value: "new", modified_at: "2026-01-01T00:00:00Z" };
-		expect(hashRow(before)).not.toBe(hashRow(after));
+		expect(computeRowStateHash(before)).not.toBe(computeRowStateHash(after));
 	});
 
 	test("treats null and undefined as equivalent (both serialize to null)", () => {
 		const withNull = { id: "1", source: null };
 		const withUndefined = { id: "1", source: undefined };
-		expect(hashRow(withNull)).toBe(hashRow(withUndefined));
+		expect(computeRowStateHash(withNull)).toBe(computeRowStateHash(withUndefined));
 	});
 
 	test("produces 64-char hex strings (SHA-256)", () => {
-		const h = hashRow({ id: "1", value: "x" });
+		const h = computeRowStateHash({ id: "1", value: "x" });
 		expect(h).toMatch(/^[0-9a-f]{64}$/);
 	});
 
 	test("different rows produce different hashes (no collision on common shapes)", () => {
 		const seen = new Set<string>();
 		for (let i = 0; i < 1000; i++) {
-			seen.add(hashRow({ id: String(i), value: `v${i}` }));
+			seen.add(computeRowStateHash({ id: String(i), value: `v${i}` }));
 		}
 		expect(seen.size).toBe(1000);
 	});
@@ -514,24 +515,11 @@ describe("compareAllTables", () => {
 
 	test("defaults to the full synced-table list when no subset is given", () => {
 		const db = new Database(":memory:");
-		// Create every table compareAllTables enumerates so getLocalPksSorted can query each.
-		const tables = [
-			"users",
-			"threads",
-			"messages",
-			"semantic_memory",
-			"tasks",
-			"files",
-			"hosts",
-			"cluster_config",
-			"advisories",
-			"skills",
-			"memory_edges",
-			"turns",
-		];
+		const tables = CONSISTENCY_TABLES;
 		for (const t of tables) {
-			const pk = t === "hosts" ? "site_id" : t === "cluster_config" ? "key" : "id";
-			db.exec(`CREATE TABLE ${t} (${pk} TEXT PRIMARY KEY, role TEXT, modified_at TEXT);`);
+			db.exec(
+				`CREATE TABLE ${t} (${getPkColumn(t)} TEXT PRIMARY KEY, role TEXT, modified_at TEXT);`,
+			);
 		}
 		const diffs = compareAllTables(db, new Map());
 		expect(diffs.map((d) => d.table)).toEqual(tables);

@@ -41,8 +41,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 		db.close();
 	});
 
-	// ---------- define ----------
-
 	describe("define", () => {
 		it("creates a new identity and persists the row", async () => {
 			const exec = getExecute(createAuxTool(ctx));
@@ -123,8 +121,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 		});
 	});
 
-	// ---------- update ----------
-
 	describe("update", () => {
 		it("changes persona in place, preserving identity", async () => {
 			const exec = getExecute(createAuxTool(ctx));
@@ -171,8 +167,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 		});
 	});
 
-	// ---------- retire ----------
-
 	describe("retire", () => {
 		it("sets retired_at without deleting the row (namespace stays readable)", async () => {
 			const exec = getExecute(createAuxTool(ctx));
@@ -202,8 +196,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 		});
 	});
 
-	// ---------- list ----------
-
 	describe("list", () => {
 		it("returns a message when no identities are defined", async () => {
 			const exec = getExecute(createAuxTool(ctx));
@@ -224,8 +216,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 		});
 	});
 
-	// ---------- discriminated-union dispatch (branch-shadowing guard) ----------
-
 	describe("strict action dispatch", () => {
 		it("rejects an unknown action via schema validation", async () => {
 			const exec = getExecute(createAuxTool(ctx));
@@ -244,8 +234,6 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 			expect(row.retired_at).toBeNull();
 		});
 	});
-
-	// ---------- annotations ----------
 
 	describe("resolveAnnotations", () => {
 		it("marks list read-only and mutating actions not read-only", () => {

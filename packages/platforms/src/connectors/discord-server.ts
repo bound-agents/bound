@@ -4,6 +4,7 @@ import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { McpServer } from "@modelcontextprotocol/server";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
+import { compareCursors } from "../cursor-order.js";
 import type { PlatformCommandSpec } from "../platform-commands.js";
 import { CHANNEL_ACCESS_DENIED_CODE } from "../subscription-errors.js";
 
@@ -19,25 +20,6 @@ type EventAttachment =
 
 /** Attachment threshold: >= 1 MB is file_ref, < 1 MB is base64 */
 const ATTACHMENT_FILE_REF_THRESHOLD = 1024 * 1024;
-
-/**
- * Compare two snowflake-string cursors. Returns negative if a < b, 0 if equal,
- * positive if a > b. Uses BigInt to avoid Number precision loss above 2^53;
- * Discord snowflakes routinely exceed that range (~1.4e18 by 2026). Falls back
- * to lexicographic comparison if either input isn't parseable as a BigInt, so
- * legacy non-numeric cursors keep working.
- */
-function compareSnowflakeCursors(a: string, b: string): number {
-	try {
-		const aBig = BigInt(a);
-		const bBig = BigInt(b);
-		if (aBig < bBig) return -1;
-		if (aBig > bBig) return 1;
-		return 0;
-	} catch {
-		return a.localeCompare(b);
-	}
-}
 
 /**
  * Throws a subscription-rejection error if the bot definitively cannot view the
@@ -216,10 +198,8 @@ export function createDiscordServer(
 			eventBuffer.shift();
 		}
 
-		// Emit to matching subscriptions
 		for (const subscription of subscriptions.values()) {
 			if (subscription.eventName === eventName) {
-				// Check if params match (channel_id filter, etc.)
 				let matches = true;
 				for (const [key, value] of Object.entries(subscription.params)) {
 					if (eventData[key] !== value) {
@@ -309,7 +289,7 @@ export function createDiscordServer(
 		if (cursor) {
 			const matchingEvents = eventBuffer.filter(
 				(e) =>
-					compareSnowflakeCursors(e.cursor, cursor) > 0 &&
+					compareCursors(e.cursor, cursor) > 0 &&
 					e.name === eventName &&
 					Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
 			);
@@ -351,7 +331,7 @@ export function createDiscordServer(
 		// when absent we treat as "from the beginning of the buffer."
 		const matchingEvents = eventBuffer.filter(
 			(e) =>
-				(cursorStr === undefined || compareSnowflakeCursors(e.cursor, cursorStr) > 0) &&
+				(cursorStr === undefined || compareCursors(e.cursor, cursorStr) > 0) &&
 				e.name === eventName &&
 				Object.entries(eventParams).every(([key, value]) => e.data[key] === value),
 		);
@@ -701,7 +681,6 @@ function setupDiscordListeners(
 				if (first) recentMessageIds.delete(first);
 			}
 
-			// Build attachment content blocks
 			const attachments: EventAttachment[] = [];
 			const attachmentCount = msg.attachments?.size ?? 0;
 			if (attachmentCount > 0) {
@@ -756,7 +735,6 @@ function setupDiscordListeners(
 			// shape lacks `name`.
 			const channelName = (msg.channel as { name?: string | null }).name ?? undefined;
 
-			// Emit event
 			emitEvent(msg.id, "message.received", {
 				author: {
 					id: msg.author.id,
@@ -853,7 +831,6 @@ function setupDiscordListeners(
 				createdAt: Date.now(),
 			});
 
-			// Build event data
 			const eventData: Record<string, unknown> = {
 				callback_id: callbackId,
 				interaction_type: interaction.isChatInputCommand() ? "slash_command" : "context_menu",

@@ -29,10 +29,6 @@ export interface LowboxFailure {
 	message: string;
 }
 
-export function lowboxHelperSourcePath(): string {
-	return join(import.meta.dir, "..", "native", "bound-lowbox.cpp");
-}
-
 let helperMaterialized = false;
 
 /**
@@ -123,9 +119,10 @@ export function buildLowboxArgs(
 		"--network",
 		cfg.network,
 		...(testNamespace ? ["--test-namespace", testNamespace] : []),
-		// Linked worktrees keep index/refs/logs under external gitdir/commondir;
-		// grant them like computeWritableRoots does on POSIX. The config/hooks
-		// --git-protected DACLs below still apply after these grants.
+		// Grant the policy cwd, the per-call spawn cwd, the temp root, and the
+		// operator's writablePaths verbatim. Linked worktrees keep index/refs/logs
+		// under an external gitdir/commondir, so those are granted too. The
+		// config/hooks --git-protected DACLs below still apply after these grants.
 		...[
 			policyCwd,
 			cwd,

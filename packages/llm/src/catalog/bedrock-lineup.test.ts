@@ -1,6 +1,5 @@
 /**
- * Bedrock namespace lineup filter (2026-11-21-model-catalog.md §2.1, requirement
- * 1/2). Pure: given the two control-plane fixtures (foundation models +
+ * Bedrock namespace lineup filter (2026-11-21-model-catalog.md §2.1). Pure: given the two control-plane fixtures (foundation models +
  * inference profiles) parsed into `DiscoveredModel[]` and a `cross_region`
  * preference, it decides which models are in the namespace lineup, the callable
  * id each uses (bare model id for ON_DEMAND, else a SYSTEM_DEFINED profile), and
@@ -9,11 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import {
-	selectBedrockLineup,
-	selectMantleLineup,
-	selectMantleLineupWithExclusions,
-} from "./bedrock-lineup";
+import { selectBedrockLineup, selectMantleLineupWithExclusions } from "./bedrock-lineup";
 import type { DiscoveredModel } from "./discovery";
 
 // A foundation-model row for `region`, with the lineup-filter fields the filter
@@ -205,11 +200,11 @@ function fmRow(
 	};
 }
 
-describe("selectMantleLineup", () => {
+describe("selectMantleLineupWithExclusions", () => {
 	it("includes a Mantle model that joins a foundation model, protocol from the join", () => {
 		const mantle = [mantleRow("openai.gpt-5.6-sol")];
 		const foundation = [fmRow("openai.gpt-5.6-sol", { openAiResponses: true })];
-		const out = selectMantleLineup(mantle, foundation);
+		const out = selectMantleLineupWithExclusions(mantle, foundation).lineup;
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({
 			providerModelId: "openai.gpt-5.6-sol",
@@ -228,7 +223,7 @@ describe("selectMantleLineup", () => {
 				explicitPromptCaching: false,
 			}),
 		];
-		const out = selectMantleLineup(mantle, foundation);
+		const out = selectMantleLineupWithExclusions(mantle, foundation).lineup;
 		expect(out[0]).toMatchObject({ protocol: "converse", promptCaching: false });
 	});
 
@@ -239,7 +234,7 @@ describe("selectMantleLineup", () => {
 			mantleRow("anthropic.claude-haiku-4-5"),
 		];
 		const foundation = [fmRow("openai.gpt-5.5", { openAiResponses: true })];
-		expect(selectMantleLineup(mantle, foundation)).toEqual([]);
+		expect(selectMantleLineupWithExclusions(mantle, foundation).lineup).toEqual([]);
 	});
 
 	it("EXCLUDES a joined model whose protocol signal is neither responses nor converse-streaming", () => {
@@ -247,7 +242,7 @@ describe("selectMantleLineup", () => {
 		const foundation = [
 			fmRow("some.async-only", { openAiResponses: false, converseStreaming: false }),
 		];
-		expect(selectMantleLineup(mantle, foundation)).toEqual([]);
+		expect(selectMantleLineupWithExclusions(mantle, foundation).lineup).toEqual([]);
 	});
 
 	it("returns the list of excluded ids for the operator report", () => {

@@ -1,5 +1,5 @@
 import type { EventMap, TypedEventEmitter } from "@bound/shared";
-import { Observable, type SchedulerLike, filter, interval, map, merge } from "rxjs";
+import { Observable } from "rxjs";
 
 export function fromEventBus<K extends keyof EventMap>(
 	eventBus: TypedEventEmitter,
@@ -14,24 +14,4 @@ export function fromEventBus<K extends keyof EventMap>(
 			eventBus.off(event, listener);
 		};
 	});
-}
-
-export function pollDb<T>(
-	query: () => T | null,
-	opts: {
-		intervalMs: number;
-		wakeup$?: Observable<unknown>;
-		scheduler?: SchedulerLike;
-	},
-): Observable<T> {
-	const tick$ = opts.scheduler
-		? interval(opts.intervalMs, opts.scheduler)
-		: interval(opts.intervalMs);
-
-	const source$ = opts.wakeup$ ? merge(tick$, opts.wakeup$) : tick$;
-
-	return source$.pipe(
-		map(() => query()),
-		filter((v): v is T => v !== null),
-	);
 }

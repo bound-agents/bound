@@ -58,17 +58,17 @@ import {
 } from "../bridge";
 import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discovery";
 import { parseOpenAIModelsList } from "../catalog/discovery-fetch";
+import type { CreditStep } from "../fallback-credit";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-// Re-exported for the driver test suite; canonical definition lives in ./shared.
-import { quantizeCacheTtl } from "./bedrock";
 import {
 	CacheFieldRecoveryState,
 	classifyCacheFieldRejection,
 	isDurationTtl,
+	walkErrorChain,
 } from "./cache-field-recovery";
-import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
+import { redeemFallbackCredit } from "./credit-redemption";
 import {
 	creditTokenOf,
 	resolveFallbackTargetFromParams,
@@ -79,18 +79,12 @@ import {
 	bindAsyncIterable,
 	buildReasoningOrigin,
 	mapProviderStream,
+	quantizeCacheTtl,
 	resolveProviderFetch,
 	withEmptyRetry,
 	withEncryptedReasoningRetry,
 } from "./shared";
 import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
-export { withEmptyRetry } from "./shared";
-
-// Prompt-cache breakpoint support is no longer a model-ID gate (#292). The
-// GPT-5.6 family accepts explicit `prompt_cache_breakpoint` markers and the
-// 5.4/5.5 generation rejects them, but which is which is discovered per route
-// through cache-field rejection recovery (R-MC14, see the Responses dispatch),
-// not an `includes("gpt-5.6")` string match.
 
 /** SigV4 service name for the Bedrock mantle endpoint. */
 const MANTLE_SIGV4_SERVICE = "bedrock";
@@ -98,13 +92,6 @@ const MANTLE_SIGV4_SERVICE = "bedrock";
 const PROVIDER_NAME = "bedrock-mantle";
 
 export type BedrockMantleProviderMode = "anthropic" | "openai_responses";
-
-// Empty-completion retry bound. Mantle GPT-5.x intermittently returns empty
-// turns (~12% observed at the bare endpoint under store:false); store:true —
-// the one lever that might reduce it — is forbidden by the zero-retention
-// requirement, so the driver retries instead. At ~12% independent, 2 retries
-// drives the user-visible empty rate to ~0.2%. The retry mechanism is shared
-// across drivers; see withEmptyRetry.
 
 /**
  * Derives the region-scoped mantle Responses base URL. The native OpenAI
@@ -149,8 +136,8 @@ function stripPlaceholderAnthropicApiKeyFetch(baseFetch: typeof fetch): typeof f
 }
 
 /**
- * Classify a Mantle "model <id> isn't supported on this route" rejection
- * (requirement 4). The mantle host serves most models under `/v1` and some under
+ * Classify a Mantle "model <id> isn't supported on this route" rejection.
+ * The mantle host serves most models under `/v1` and some under
  * `/openai/v1`; a request on the wrong prefix is rejected with this documented
  * message. Duck-types the AI SDK error shape the way the cache-field classifier
  * does — walking `message` / `responseBody` / wrapped `lastError`/`cause` — and
@@ -158,20 +145,11 @@ function stripPlaceholderAnthropicApiKeyFetch(baseFetch: typeof fetch): typeof f
  * route-prefix rejection.
  */
 function isRoutePrefixRejection(err: unknown): boolean {
-	const seen = new Set<unknown>();
-	let node: unknown = err;
-	for (let depth = 0; depth < 4 && node && !seen.has(node); depth++) {
-		seen.add(node);
-		const e = node as {
-			message?: unknown;
-			responseBody?: unknown;
-			lastError?: unknown;
-			cause?: unknown;
-		};
+	for (const node of walkErrorChain(err)) {
+		const e = node as { message?: unknown; responseBody?: unknown };
 		for (const text of [e.message, e.responseBody]) {
 			if (typeof text === "string" && /isn't supported on this route/i.test(text)) return true;
 		}
-		node = e.lastError ?? e.cause;
 	}
 	return false;
 }
@@ -289,7 +267,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	 * deployments whose encrypted blobs don't cross-decrypt.
 	 */
 	private readonly reasoningOrigin?: string;
-	// Discovery (slice 6, R-MC3): region + the SigV4-signing fetch, so
+	// Discovery (R-MC3): region + the SigV4-signing fetch, so
 	// `discoverModels()` can enumerate this host's entitled Mantle lineup via the
 	// region-root `/v1/models` endpoint without reaching into the AI SDK provider.
 	private readonly discoveryRegion: string;
@@ -299,7 +277,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	// never keyed across models. Remembers which cache fields this provider
 	// rejected so later turns skip the doomed field instead of re-failing.
 	private readonly cacheRecovery = new CacheFieldRecoveryState();
-	// Mantle route-prefix recovery (R-MC-adjacent, requirement 4). The correct
+	// Mantle route-prefix recovery . The correct
 	// path prefix (`/v1` vs `/openai/v1`) for a model is only on its model card; a
 	// request on the wrong prefix is rejected with "model <id> isn't supported on
 	// this route". The openai_responses provider is built on the documented default
@@ -381,7 +359,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 		} else {
 			// Build the openai Responses provider on the documented default prefix. A
 			// rebuild closure (retained below) lets route-prefix recovery swap the
-			// prefix on an "isn't supported on this route" rejection (requirement 4)
+			// prefix on an "isn't supported on this route" rejection
 			// WITHOUT re-signing credentials or rebuilding the fetch chain.
 			const defaultBaseUrl = deriveMantleBaseUrlForMode(
 				config.region,
@@ -481,11 +459,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 					isAborted: () => params.signal?.aborted ?? false,
 					providerName: PROVIDER_NAME,
 					modelId: effectiveModel,
-					onRetry: (attempt) =>
-						this.logger?.warn?.(
-							`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-							{ model: effectiveModel },
-						),
+					logger: this.logger,
 				});
 			};
 
@@ -512,7 +486,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 		}
 
 		// Apply the remembered route-prefix decision for this model before building the
-		// provider reference (requirement 4): a route that learned the alternate prefix
+		// provider reference: a route that learned the alternate prefix
 		// on an earlier turn starts there, so a second turn never re-triggers the
 		// "isn't supported on this route" rejection. A fresh route uses the ctor default.
 		const rememberedPrefix = this.routePrefixByModel.get(modelId);
@@ -658,11 +632,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 						isAborted: () => params.signal?.aborted ?? false,
 						providerName: PROVIDER_NAME,
 						modelId,
-						onRetry: (attempt) =>
-							this.logger?.warn?.(
-								`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-								{ model: modelId },
-							),
+						logger: this.logger,
 					}),
 				onStrip: () =>
 					this.logger?.warn?.(
@@ -705,7 +675,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 				yield* this.chatStream(params);
 				return;
 			}
-			// Route-prefix rejection (requirement 4): the mantle host rejects a request
+			// Route-prefix rejection: the mantle host rejects a request
 			// on the wrong path prefix with "model <id> isn't supported on this route".
 			// Flip `/openai/v1` <-> `/v1`, remember the working prefix for this route, and
 			// reissue ONCE. Never a route failure. Skipped when an explicit baseUrl pins
@@ -758,7 +728,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	}
 
 	/**
-	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): enumerate this
+	 * Live provider discovery (R-MC3, catalog §4.1): enumerate this
 	 * host's entitled Mantle lineup via the region-root `/v1/models` endpoint
 	 * (`https://bedrock-mantle.<region>.api.aws/v1/models`), signed with the same
 	 * SigV4 credentials as the data plane. The `/openai/v1` and `/anthropic/v1`

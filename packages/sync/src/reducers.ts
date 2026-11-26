@@ -16,6 +16,13 @@ export interface ReducerOptions {
 	diagnosticSamples?: Set<string>;
 }
 
+/** A failed ROLLBACK must not mask the error that aborted the transaction. */
+export function rollbackKeepingOriginalError(db: Database): void {
+	try {
+		db.exec("ROLLBACK");
+	} catch {}
+}
+
 /**
  * Invariant #19: role='system' is forbidden in the `messages` table.
  * insertRow() enforces this at the write boundary, but sync reducers
@@ -170,7 +177,6 @@ export function applyAppendOnlyReducer(
 			return { applied: false };
 		}
 
-		// Update only the columns provided in the event
 		const updateClauses = columns.filter((k) => k !== "id").map((k) => `${k} = ?`);
 		const updateValues = columns.filter((k) => k !== "id").map((k) => rowData[k]);
 		updateValues.push(rowData.id);
@@ -186,7 +192,6 @@ export function applyAppendOnlyReducer(
 		);
 	}
 
-	// Check if the operation actually happened
 	const changes = db.query("SELECT changes() as count").get() as Record<string, number>;
 	return { applied: changes.count > 0 };
 }
@@ -228,7 +233,6 @@ export function applyLWWReducer(
 	const pkColumn = getPkColumn(event.table_name);
 	const pkValue = rowData[pkColumn] ?? event.row_id;
 
-	// Check if row already exists
 	const existing = db
 		.query(`SELECT * FROM ${event.table_name} WHERE ${pkColumn} = ?`)
 		.get(pkValue) as Record<string, unknown> | null;
@@ -271,7 +275,6 @@ export function applyLWWReducer(
 		}
 	}
 
-	// Update only columns that are in both the event and the schema (except the PK)
 	const columnsToUpdate = Object.keys(rowData).filter(
 		(col) => validateColumnName(col) && schemaColumns.includes(col) && col !== pkColumn,
 	);
@@ -384,11 +387,7 @@ export function replayEvents(
 		}
 		db.exec("COMMIT");
 	} catch (error) {
-		try {
-			db.exec("ROLLBACK");
-		} catch {
-			// ROLLBACK failed, original error takes priority
-		}
+		rollbackKeepingOriginalError(db);
 		throw error;
 	}
 
@@ -563,11 +562,7 @@ export function applySnapshotRows(
 		stmt.finalize();
 		db.exec("COMMIT");
 	} catch (err) {
-		try {
-			db.exec("ROLLBACK");
-		} catch {
-			// ROLLBACK failure — original error takes priority.
-		}
+		rollbackKeepingOriginalError(db);
 		logger?.warn("[snapshot] Batch apply failed, retrying per-row", {
 			tableName,
 			rowCount: applicableRows.length,

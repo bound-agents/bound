@@ -31,7 +31,7 @@ Bound is a distributed, model-agnostic personal agent system built as a Bun mono
                                           |               |
                               +-----------v---------------v-----------+
                               |            @bound/core                 |
-                              |  SQLite  |  DI Container  |  Config   |
+                              |      SQLite      |       Config       |
                               +-----------+---------------+-----------+
                                           |
                               +-----------v-----------+
@@ -208,7 +208,7 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 
 ## Further Reading
 
-- [Core Infrastructure](core-infrastructure.md) -- shared types, SQLite schema, DI container, config
+- [Core Infrastructure](core-infrastructure.md) -- shared types, SQLite schema, config
 - [Sync Protocol](sync-protocol.md) -- Ed25519 signing, reducers, three-phase sync
 - [Sandbox](sandbox.md) -- virtual filesystem, command framework, boundless filesystem sandbox
 - [Inference Backends](inference-backends.md) -- LLM driver shims, capabilities, model routing

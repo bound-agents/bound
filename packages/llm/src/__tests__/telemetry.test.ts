@@ -67,6 +67,8 @@ describe("LLM driver metrics", () => {
 		for await (const chunk of withEmptyRetry(run, {
 			maxRetries: 1,
 			isAborted: () => false,
+			providerName: "test-provider",
+			modelId: "test-model",
 		})) {
 			chunks.push(chunk);
 		}
@@ -106,6 +108,7 @@ describe("LLM driver metrics", () => {
 			maxRetries: 1,
 			isAborted: () => false,
 			providerName: "test-provider",
+			modelId: "test-model",
 		})) {
 			// Consume the terminal response.
 		}
@@ -140,6 +143,7 @@ describe("LLM driver metrics", () => {
 			maxRetries: 0,
 			isAborted: () => false,
 			providerName: "test-provider",
+			modelId: "test-model",
 		})) {
 			// Advance the wrapped provider iterator through all chunks.
 		}
@@ -160,7 +164,12 @@ describe("LLM driver metrics", () => {
 					yield textChunk("first");
 					yield emptyDone();
 				},
-				{ maxRetries: 0, isAborted: () => false, providerName: "test-provider" },
+				{
+					maxRetries: 0,
+					isAborted: () => false,
+					providerName: "test-provider",
+					modelId: "test-model",
+				},
 			),
 		);
 
@@ -187,7 +196,12 @@ describe("LLM driver metrics", () => {
 							yield textChunk("first");
 							yield emptyDone();
 						},
-						{ maxRetries: 0, isAborted: () => false, providerName: "test-provider" },
+						{
+							maxRetries: 0,
+							isAborted: () => false,
+							providerName: "test-provider",
+							modelId: "test-model",
+						},
 					);
 				})(),
 			),
@@ -223,6 +237,7 @@ describe("LLM driver metrics", () => {
 			maxRetries: 0,
 			isAborted: () => aborted,
 			providerName: "test-provider",
+			modelId: "test-model",
 		})) {
 			// Consume the partial response.
 		}
@@ -234,7 +249,7 @@ describe("LLM driver metrics", () => {
 		expect(records).toContainEqual({
 			name: "attempt",
 			value: 1,
-			attributes: { provider: "test-provider", model: "unknown", outcome: "aborted" },
+			attributes: { provider: "test-provider", model: "test-model", outcome: "aborted" },
 		});
 	});
 

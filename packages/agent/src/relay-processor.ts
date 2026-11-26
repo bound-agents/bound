@@ -39,6 +39,7 @@ import type {
 	TypedEventEmitter,
 } from "@bound/shared";
 import {
+	PASSIVE_INTAKE_KINDS,
 	RELAY_KIND_REGISTRY,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
@@ -71,11 +72,7 @@ import {
 	merge,
 	tap,
 } from "rxjs";
-import {
-	clampMaxOutputTokens,
-	createFileRefResolver,
-	resolveTurnCost,
-} from "./agent-loop-utils.js";
+import { clampMaxOutputTokens, createFileRefResolver } from "./agent-loop-utils.js";
 import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
@@ -93,6 +90,7 @@ import {
 	serializeRelayTraceCarrier,
 	shouldRouteRelayDurable,
 } from "./relay-router.js";
+import { resolveTurnCost } from "./turn-pricing.js";
 
 /** Parse a serialized relay carrier without trusting its shape. */
 function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
@@ -111,7 +109,6 @@ function parseTraceCarrier(raw: string | null | undefined): Record<string, strin
 	}
 	return null;
 }
-import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry.js";
 import { buildMCPDispatchRegistry, formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { reconcileModelReferenceAdvisories } from "./model-reference-reconciler.js";
@@ -138,7 +135,7 @@ type RelayEntryHandler = (entry: RelayInboxEntry) => Promise<string | null>;
 /**
  * All request kinds that processEntry dispatches to handlers.
  * - `cancel` is excluded because it is handled in the first pass of
- *   processPendingEntries (needs to run before other entries to abort in-flight
+ *   processPendingDurableWork (needs to run before other entries to abort in-flight
  *   work).
  * - `RelayPassiveKind` (currently `webhook_intake`) is excluded because passive
  *   kinds are durable mailbox rows owned by another consumer; the
@@ -163,12 +160,11 @@ class PayloadParseError extends Error {
 }
 
 /**
- * Objection 3 (#253): a typed routing failure. When {@link routeRelayRequest} or
+ * A typed routing failure. When {@link routeRelayRequest} or
  * {@link routeRelayResponse} returns `path: "error"` (the target/requester no longer
- * advertises `work_spool_capable`), the message cannot be delivered and there is no
- * legacy fallback after release N+1. A silent consume of the claimed request row
- * would strand the sender's awaiter forever with no signal — the exact silent-drop
- * class the incident was about. Throwing this from a response writer or the intake
+ * advertises `work_spool_capable`), the message cannot be delivered. A silent consume
+ * of the claimed request row would strand the sender's awaiter forever with no
+ * signal. Throwing this from a response writer or the intake
  * forward propagates the failure out of {@link dispatchActiveEntry} to
  * {@link processPendingDurableWork}, which dead-letters the claimed row
  * (workspool-redrivable) with {@link RelayResponseRoutingError.message} in
@@ -207,13 +203,13 @@ export class RelayProcessor {
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly completedInferenceParts = new Set<string>();
-	// Objection 1 round-3 (#253): the durable lane records the claim token of the part
+	// The durable lane records the claim token of the part
 	// row it is currently dispatching here, keyed by durable-work id, so
 	// handleInferencePart can retire the WHOLE sibling set (current part + pending
 	// siblings) in one transaction before launching inference. Cleared by the lane after
 	// dispatch returns.
 	private readonly inflightPartClaimTokens = new Map<string, string>();
-	// Objection 1 round-4 (#253): when a multipart reassembly ABORTS (a concurrent
+	// When a multipart reassembly ABORTS (a concurrent
 	// claimant took a sibling), handleInferencePart releases the current part's claim
 	// back to `pending` and records its id here so the durable lane skips its normal
 	// consume-ack — the current part must stay recoverable, not be consumed while the
@@ -374,7 +370,7 @@ export class RelayProcessor {
 			exhaustMap(() =>
 				from(
 					(async () => {
-						await this.processPendingEntries();
+						await this.processPendingDurableWork();
 						this.pruneIdempotencyCache();
 					})(),
 				).pipe(
@@ -391,23 +387,18 @@ export class RelayProcessor {
 
 		const prune$ = pruneInterval$.pipe(
 			tap(() => {
-				// Catch-of-last-resort for the webhook intake pipeline. Runs against
-				// the LOCAL relay_inbox (invariant #3), so it sees intake on the host
-				// that received the POST. Raises a deduplicated dead-letter advisory
-				// for any webhook_intake left undrained by a dark handler — turning a
-				// silent multi-hour outage into something the operator can act on.
+				// Catch-of-last-resort for passive intake (webhook, RSS, connector) in
+				// the local durable_work spool (invariant #3): re-emit a wakeup for each
+				// live binding with a stale backlog and dead-letter rows whose binding
+				// is gone.
 				if (this.now() >= this.intakeReconciliationNotBeforeMs) {
 					try {
-						const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
-							this.db,
-							this.siteId,
-							{ logger: this.logger, eventBus: this.eventBus },
-						);
-						if (advisoriesRaised > 0 || deadLettered > 0) {
-							this.logger.warn("[relay] Webhook intake reconcile acted", {
-								advisoriesRaised,
-								deadLettered,
-							});
+						const { deadLettered } = reconcileStaleWebhookIntake(this.db, {
+							logger: this.logger,
+							eventBus: this.eventBus,
+						});
+						if (deadLettered > 0) {
+							this.logger.warn("[relay] Webhook intake reconcile acted", { deadLettered });
 						}
 					} catch (error) {
 						this.logger.error("Webhook intake reconcile failed", { error });
@@ -470,17 +461,10 @@ export class RelayProcessor {
 		};
 	}
 
-	private async processPendingEntries(): Promise<void> {
-		// Post-N+1: the legacy relay_outbox/relay_inbox loopback and inbox scan are
-		// gone — the durable_work spool is the sole store. Self-targeted requests
-		// loop back as LOCAL_WORK_TARGET rows claimed by processPendingDurableWork.
-		await this.processPendingDurableWork();
-	}
-
 	/**
-	 * 4D-A consumer lane. The registry supplies the eligible relay kinds; rows
-	 * remain local workspool entries until their handler outcome is durably
-	 * reflected in the existing relay_outbox response path.
+	 * Durable-work relay consumer lane. The registry supplies the eligible relay
+	 * kinds; rows remain local workspool entries until their handler outcome is
+	 * durably acknowledged.
 	 */
 	private async processPendingDurableWork(): Promise<void> {
 		for (const registration of DURABLE_WORK_REGISTRY) {
@@ -502,13 +486,11 @@ export class RelayProcessor {
 					: claimLocalDurableWork(this.db, LOCAL_WORK_TARGET, registration.kind));
 			if (!claimed) continue;
 
-			// Cancel is deliberately excluded from HandledRequestKind (its abort logic
-			// runs in the first pass of processPendingEntries, not via a handler). A
-			// cancel routed durable (4D-D) arrives here as a claimed row, so it must
-			// fire the same abort the legacy relay_inbox first pass fires — otherwise
-			// the row falls through to the `!handler` branch below and dead-letters
-			// without ever stopping the running stream. Mirror the legacy abort, then
-			// consume the row (token-fenced ack) since the cancel is fully handled.
+			// Cancel is deliberately excluded from HandledRequestKind: it arrives here
+			// as a claimed row and must fire the abort directly — otherwise the row
+			// falls through to the `!handler` branch below and dead-letters without
+			// ever stopping the running stream. Abort, then consume the row
+			// (token-fenced ack) since the cancel is fully handled.
 			if (claimed.kind === "cancel") {
 				if (claimed.ref_id) {
 					this.pendingCancels.add(claimed.ref_id);
@@ -539,7 +521,7 @@ export class RelayProcessor {
 				continue;
 			}
 
-			// Objection 4: a kind whose handler writes a response over the outbox
+			// A kind whose handler writes a response over the outbox
 			// (sync dispatch) requires a source_site to address that response. A row
 			// missing it is malformed producer input, not an infrastructure failure —
 			// token-fenced dead-letter it immediately (workspool-redrivable after a
@@ -575,10 +557,9 @@ export class RelayProcessor {
 			try {
 				// dispatchActiveEntry is the shared core: it owns handler dispatch,
 				// idempotency-cache fencing, error responses, and result correlation.
-				// Unlike processActiveEntry (the legacy wrapper), it PROPAGATES
-				// pre/post-dispatch infrastructure failures — handler error-outcomes
-				// are still written and consumed inside it.
-				// Objection 1 round-3 (#253): expose the current part's claim token so
+				// It PROPAGATES pre/post-dispatch infrastructure failures — handler
+				// error-outcomes are still written and consumed inside it.
+				// Expose the current part's claim token so
 				// handleInferencePart can retire the whole sibling set atomically before
 				// launching inference. Only inference_part uses this; cleared after dispatch.
 				if (claimed.kind === "inference_part" && claimed.claim_token) {
@@ -589,7 +570,7 @@ export class RelayProcessor {
 				} finally {
 					this.inflightPartClaimTokens.delete(claimed.id);
 				}
-				// Objection 1 round-4 (#253): a multipart reassembly that ABORTED on
+				// A multipart reassembly that ABORTED on
 				// concurrent-claim contention already released this part back to `pending`
 				// (handleInferencePart, so the full set stays recoverable). Acking it here
 				// would flip that just-released row to `consumed`, permanently shortening the
@@ -607,9 +588,9 @@ export class RelayProcessor {
 					});
 				}
 			} catch (error) {
-				// Objection 3 (#253): a typed routing failure means the response (or intake
-				// forward) could not be addressed — the target/requester no longer advertises
-				// capability and there is no legacy fallback after release N+1. Consuming the
+				// A typed routing failure means the response (or intake forward) could not
+				// be addressed — the target/requester no longer advertises capability.
+				// Consuming the
 				// row would strand the sender's awaiter silently; dead-letter it IMMEDIATELY
 				// (workspool-redrivable) with the routing reason in last_error so an operator
 				// sees it and the sender's timeout tells the truth. This is a terminal address
@@ -875,7 +856,7 @@ export class RelayProcessor {
 			);
 			throw new PayloadParseError();
 		}
-		// Objection 2 round-3 (#253): PRE-FLIGHT the response route before acking/executing.
+		// PRE-FLIGHT the response route before acking/executing.
 		// executeInference is fire-and-forget (below): once it launches, the durable lane
 		// acks this request row. If a later stream write throws RelayResponseRoutingError it
 		// lands in the .catch logger, NEVER the typed dead-letter catch in
@@ -964,7 +945,7 @@ export class RelayProcessor {
 		if (serialized === null) return null;
 		if (this.pendingCancels.delete(part.request_id)) return null;
 
-		// Objection 1 round-3 (#253): consume ALL sibling part rows atomically BEFORE
+		// Consume ALL sibling part rows atomically BEFORE
 		// launching inference (claim-all-then-execute). This inverts the deliver-before-ack
 		// principle the RESPONSE path uses, and deliberately so: parts are REQUEST
 		// fragments, and the deliverable is the LAUNCHED INFERENCE, not the row content.
@@ -1014,7 +995,7 @@ export class RelayProcessor {
 
 	/**
 	 * Retire every sibling `inference_part` row for a completed multipart request in a
-	 * SINGLE transaction (Objection 1 round-4, #253). The currently-claimed part already
+	 * SINGLE transaction. The currently-claimed part already
 	 * sits in `processing` under the durable lane's own claim token (passed in via
 	 * `preClaimed`); its siblings are `pending`. `claimAndConsumeDurableWorkByIds` claims
 	 * the pending siblings by id AND flips the whole set — the current part included — to
@@ -1115,7 +1096,7 @@ export class RelayProcessor {
 				traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
 				topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 			});
-			// Objection 3 (#253): an unroutable intake forward must NOT ack the claimed
+			// An unroutable intake forward must NOT ack the claimed
 			// intake row consumed — that silently drops the platform event. Propagate so
 			// the durable lane dead-letters the row with the routing reason.
 			if (routed.path === "error") {
@@ -1562,7 +1543,7 @@ export class RelayProcessor {
 			return;
 		}
 		const resultPayload: ClientResultPayload = { call_id: callId, content, is_error: isError };
-		// 4D-D: client_result rides the same response transport. Key `response:<reqId>`.
+		// client_result rides the same response transport. Key `response:<reqId>`.
 		const routed = routeRelayResponse(this.db, {
 			targetSiteId,
 			sourceSiteId: this.siteId,
@@ -1805,10 +1786,7 @@ export class RelayProcessor {
 		if (!targetSiteId) {
 			throw new Error("Request entry has no source_site_id");
 		}
-		// 4D-D: responses ride the same RPC transport as requests. routeRelayResponse
-		// flips to the durable spool when the toggle is on AND every hop to the
-		// requester advertises capability; otherwise legacy relay_outbox, byte-
-		// identical to before. The durable dedup key is `response:<requestId>` — one
+		// Responses ride the same durable transport as requests. The durable dedup key is `response:<requestId>` — one
 		// request yields exactly one response outcome (result XOR error), so a
 		// redelivered transfer of the SAME row is fenced by (kind, idempotency_key).
 		const routed = routeRelayResponse(this.db, {
@@ -1838,10 +1816,10 @@ export class RelayProcessor {
 	): void {
 		if (!requestEntry.source_site_id) return;
 		const chunkPayload: StreamChunkPayload = { chunks, seq };
-		// 4D-D: chunk rows are seq-scoped (stream:<streamId>:<seq>) so distinct seqs
+		// Chunk rows are seq-scoped (stream:<streamId>:<seq>) so distinct seqs
 		// coexist while a redelivered chunk transfer dedupes on the fence. Chunk rows
 		// are kind-scoped short-TTL (5min registry class); the consumer
-		// (relay-stream$) folds the durable union into its seq-dedup loop.
+		// (relay-stream$) folds the durable rows into its seq-dedup loop.
 		const routed = routeRelayResponse(this.db, {
 			targetSiteId: requestEntry.source_site_id,
 			sourceSiteId: this.siteId,
@@ -2008,8 +1986,7 @@ export class RelayProcessor {
 			if (bestHost) return bestHost;
 		}
 
-		// Tier 4: fallback to the first live host. Post-N+1 there is no relay_outbox
-		// to rank pending depth by, so the load-ranked JOIN is gone.
+		// Tier 4: fallback to the first live host.
 		const anyHost = this.db
 			.query<{ site_id: string }, []>(
 				"SELECT site_id FROM hosts WHERE deleted = 0 ORDER BY site_id ASC LIMIT 1",
@@ -2394,7 +2371,7 @@ export class RelayProcessor {
 			// Write trace_data response if spans were collected (AC5.3)
 			if (collectedSpans.length > 0) {
 				if (entry.source_site_id) {
-					// 4D-D: trace_data rides the same response transport. Key `response:<reqId>`
+					// trace_data rides the same response transport. Key `response:<reqId>`
 					// — one trace_data per request, redelivered transfer fenced.
 					routeRelayResponse(this.db, {
 						targetSiteId: entry.source_site_id,

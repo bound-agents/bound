@@ -43,8 +43,12 @@ import type { StableVolatileInputs } from "./types";
  * Version 2: the compared output hash covers only the stable volatile
  * subsection (not the whole system prompt), and cached bytes are paired
  * with the fingerprint of the inputs that rendered them (#303).
+ *
+ * Version 3: the per-thread cache and the cold path render through one
+ * renderer (stripped `_summary:` cluster names, skill index from the live
+ * skills table, no empty `<available_skills>` block).
  */
-export const STABLE_PREFIX_DRIFT_VERSION = 2;
+export const STABLE_PREFIX_DRIFT_VERSION = 3;
 
 /**
  * Length of the truncated hex digest stored on `context_debug`.

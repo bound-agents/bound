@@ -210,7 +210,7 @@ describe("client_result durable-response awaiting (client-tool-dispatch.ts)", ()
  * risky uncovered awaiter. These tests reach it through the narrowest real
  * entry: a minimal `BoundAgentLoop` subclass that surfaces the private method
  * without stubbing its body, driving the exact production Observable
- * (readUnionResponseEntry union read + relay:inbox wakeups + timeout).
+ * (readDurableResponseEntry union read + relay:inbox wakeups + timeout).
  */
 
 // Enough of an LLMBackend to construct a ModelRouter; never invoked — the

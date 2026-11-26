@@ -1,5 +1,5 @@
 /**
- * Structural model-ID normalization (slice 6, R-MC8, 2026-11-21-model-catalog.md
+ * Structural model-ID normalization (R-MC8, 2026-11-21-model-catalog.md
  * §5.2 + §6.1).
  *
  * ONE shared rule set drives both `models.dev` matching (§5.2) and logical-model

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { UrlFilter, createUrlFilter } from "../url-filter";
+import { UrlFilter } from "../url-filter";
 
 describe("UrlFilter", () => {
 	it("should allow all URLs when allowlist is empty", () => {
@@ -63,12 +63,5 @@ describe("UrlFilter", () => {
 			expect(message).toContain("https://cdn.example.com");
 			expect(message).toContain("http://localhost");
 		}
-	});
-
-	it("should create UrlFilter using factory function", () => {
-		const filter = createUrlFilter(["https://api.example.com"]);
-		expect(filter).toBeInstanceOf(UrlFilter);
-		expect(filter.isAllowed("https://api.example.com/data")).toBe(true);
-		expect(filter.isAllowed("https://evil.com")).toBe(false);
 	});
 });

@@ -4,13 +4,20 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, findMemoryValueByKey } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { MainAgentLoop } from "../agent-loop";
-import { getLastThreadForFile, trackFilePath } from "../file-thread-tracker";
+import { normalizeFilePathForKey, trackFilePath } from "../file-thread-tracker";
+
+function getLastThreadForFile(db: Database, filePath: string): string | null {
+	return (
+		findMemoryValueByKey(db, `_internal.file_thread.${normalizeFilePathForKey(filePath)}`)?.value ||
+		null
+	);
+}
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();

@@ -1,8 +1,4 @@
-/**
- * Scheduler subsystem: cron task seeding, heartbeat seeding, and scheduler
- * start. Graceful shutdown now lives in the single NodeHandle.stop() teardown
- * built in index.ts; this module no longer owns signal handlers.
- */
+/** Scheduler subsystem: heartbeat/consolidation seeding and scheduler start. */
 
 import {
 	Scheduler,
@@ -11,22 +7,17 @@ import {
 	seedConsolidation,
 	seedHeartbeat,
 } from "@bound/agent";
-import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
-import { resolveTopologyRole, routeRelayRequest, serializeRelayTraceCarrier } from "@bound/agent";
-import { awaitPlatformRequestResponse } from "@bound/agent";
-import { type AppContext, findFreshPlatformHost } from "@bound/core";
+import type { AppContext } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
-	type ConnectorToolContext,
 	type PlatformMcpRegistry,
 	type PlatformRegisteredTool,
-	createConnectorTool,
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
-import { formatError, injectTraceContext } from "@bound/shared";
-import { resolvePlatformToolsForThread } from "./platform-tools.js";
-
-export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
+import { formatError } from "@bound/shared";
+import type { AgentLoopFactory } from "./agent-factory.js";
+import { createPlatformConnectorTool, resolvePlatformToolsForThread } from "./platform-tools.js";
+import { createRemotePlatformRequest } from "./server.js";
 
 export interface SchedulerResult {
 	schedulerHandle: { stop: () => void } | null;
@@ -84,81 +75,19 @@ export function initScheduler(
 		});
 	}
 
-	// 17. Scheduler
 	appContext.logger.info("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
-	// Create unified connector tool (replaces 4 dispatcher-specific tools). Hoisted
-	// to function scope so it can be returned for callers/tests that drive its
-	// remotePlatformRequest-backed actions; null when no platform registry exists.
 	let connectorTool: PlatformRegisteredTool | null = null;
-	// Hoisted to function scope alongside connectorTool so the built resolver
-	// closures can be returned for callers/tests that drive them directly; null
-	// until the scheduler is wired, and all fields undefined with no modelRouter.
 	let resolvers: SchedulerResult["resolvers"] = null;
 	try {
 		if (platformMcpRegistry) {
-			const connectorCtx: ConnectorToolContext = {
+			connectorTool = createPlatformConnectorTool({
 				registry: platformMcpRegistry,
 				db: appContext.db,
 				siteId: appContext.siteId,
-				remotePlatformRequest: async (
-					serverName: string,
-					method: string,
-					params: Record<string, unknown>,
-				): Promise<unknown> => {
-					// Pick a fresh remote host advertising this platform. See
-					// `findFreshPlatformHost` for why we filter on heartbeat freshness
-					// rather than just "platforms IS NOT NULL". Mirrors the identical
-					// callback factory in `server.ts`.
-					const targetSiteId = findFreshPlatformHost(appContext.db, serverName, appContext.siteId);
-					if (!targetSiteId) {
-						throw new Error(
-							`No fresh remote host found for platform server '${serverName}' (no advertising peer has heart-beated within the stale threshold)`,
-						);
-					}
-
-					// platform_request relay request (durable-or-legacy per toggle+capability)
-					const routed = routeRelayRequest(appContext.db, {
-						targetSiteId,
-						sourceSiteId: appContext.siteId,
-						kind: "platform_request",
-						payload: JSON.stringify({
-							server_name: serverName,
-							method,
-							params,
-							timeout_ms: 15_000,
-						}),
-						timeoutMs: 15_000,
-						// Legacy carried no key here; the minted row id is a deterministic,
-						// redelivery-stable key (R-DW5/6).
-						traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
-						topologyRole: resolveTopologyRole(appContext.optionalConfig),
-					});
-					if (routed.path === "error") throw new Error(routed.reason);
-					const entry = { id: routed.id };
-
-					// Poll for response (synchronous context — tool execute awaits result).
-					// 4D-D union await: resolves whether the response arrived over the
-					// legacy relay_inbox (pre-drop) or the durable spool (post-4E). The
-					// shared helper consumes a durable row exactly-once via the
-					// token-fenced claim → deliver → ack lifecycle.
-					return await awaitPlatformRequestResponse(
-						{ db: appContext.db, siteId: appContext.siteId },
-						entry.id,
-						{ deadline: Date.now() + 15_000, targetSiteId },
-					);
-				},
-			};
-			const rawConnectorTool = createConnectorTool(connectorCtx);
-			// Adapt ConnectorToolDef (kind: "builtin") to PlatformRegisteredTool (kind: "platform") for the platform tools array
-			connectorTool = {
-				kind: "platform" as const,
-				toolDefinition: rawConnectorTool.toolDefinition,
-				execute: rawConnectorTool.execute,
-				idempotent: rawConnectorTool.idempotent,
-				readOnly: rawConnectorTool.readOnly,
-				resolveAnnotations: rawConnectorTool.resolveAnnotations,
-			};
+				remotePlatformRequest: createRemotePlatformRequest(appContext),
+				logger: appContext.logger,
+			});
 		}
 
 		resolvers = {

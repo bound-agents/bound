@@ -9,10 +9,7 @@ import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import {
-	DEFAULT_CONSOLIDATION_INTERVAL_MS,
-	buildConsolidationContext,
-} from "../consolidation-context";
+import { buildConsolidationContext } from "../consolidation-context";
 
 const SITE = "00000000-0000-0000-0000-00000000c0de";
 
@@ -78,10 +75,6 @@ describe("buildConsolidationContext", () => {
 
 	afterAll(() => {
 		db.close();
-	});
-
-	it("exports a 4-hour default interval", () => {
-		expect(DEFAULT_CONSOLIDATION_INTERVAL_MS).toBe(14_400_000);
 	});
 
 	it("uses the default instruction text when no custom policy is stored", () => {

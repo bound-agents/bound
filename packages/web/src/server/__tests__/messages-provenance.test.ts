@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, insertRow } from "@bound/core";
-import { TypedEventEmitter } from "@bound/shared";
 import { createMessagesRoutes } from "../routes/messages";
 
 // Exercises GET /:threadId/provenance on the messages route (2026-11-21-model-
@@ -119,7 +118,7 @@ describe("GET /:threadId/provenance", () => {
 			}),
 		});
 
-		const app = createMessagesRoutes(db, new TypedEventEmitter());
+		const app = createMessagesRoutes(db);
 		const res = await app.fetch(new Request("http://localhost/th1/provenance"));
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -141,7 +140,7 @@ describe("GET /:threadId/provenance", () => {
 	});
 
 	it("returns 404 for an unknown thread", async () => {
-		const app = createMessagesRoutes(db, new TypedEventEmitter());
+		const app = createMessagesRoutes(db);
 		const res = await app.fetch(new Request("http://localhost/missing/provenance"));
 		expect(res.status).toBe(404);
 	});
@@ -153,7 +152,7 @@ describe("GET /:threadId/provenance", () => {
 			thread_id: "th2",
 			cost_breakdown: "{not valid json",
 		});
-		const app = createMessagesRoutes(db, new TypedEventEmitter());
+		const app = createMessagesRoutes(db);
 		const res = await app.fetch(new Request("http://localhost/th2/provenance"));
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { turns: Array<{ attempts: unknown }> };

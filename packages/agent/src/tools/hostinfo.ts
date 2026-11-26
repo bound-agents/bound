@@ -146,7 +146,6 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 					.all() as { created_by: string; count: number }[];
 				const advisoriesByNode = new Map(advisoryStats.map((a) => [a.created_by, a]));
 
-				// --- Phase 3: Cluster topology summary ---
 				const clusterModels = new Map<string, string[]>();
 				const clusterTools = new Map<string, string[]>();
 				let onlineCount = 0;
@@ -276,7 +275,6 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 					lines.push("");
 				}
 
-				// --- Per-node details ---
 				for (const host of hosts) {
 					const isLocal = host.site_id === localSiteId;
 					const isHub = hubSiteId !== undefined && host.site_id === hubSiteId;

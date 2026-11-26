@@ -8,6 +8,9 @@ import {
 	ROUTING_MODEL_ROLES_KEY,
 	hintMatchesAnyLogicalModel,
 } from "@bound/shared";
+import { findClusterConfigValueByKey } from "../cluster-config";
+import { listAllHostModels } from "../hosts";
+import { listDrainedRouteIds } from "../model-routing";
 
 /**
  * Dangling- and stale-reference analysis for the route/model removal lifecycle
@@ -124,9 +127,7 @@ function entryLogicalModel(entry: HostModelEntry): string {
  * scan captures both local and remote supply without a router handle.
  */
 function liveAdvertisedSets(db: Database): { models: Set<string>; routes: Set<string> } {
-	const rows = db.query("SELECT models FROM hosts WHERE deleted = 0").all() as Array<{
-		models: string | null;
-	}>;
+	const rows = listAllHostModels(db);
 	const models = new Set<string>();
 	const routes = new Set<string>();
 	for (const row of rows) {
@@ -194,11 +195,8 @@ export function analyzeModelReferences(
 
 	// Stale drains: a live drain on a RouteId advertised nowhere.
 	const staleRouteDrains: string[] = [];
-	const drainRows = db.query("SELECT route_id FROM route_drains WHERE deleted = 0").all() as Array<{
-		route_id: string;
-	}>;
-	for (const drain of drainRows) {
-		if (!liveRoutes.has(drain.route_id)) staleRouteDrains.push(drain.route_id);
+	for (const routeId of listDrainedRouteIds(db)) {
+		if (!liveRoutes.has(routeId)) staleRouteDrains.push(routeId);
 	}
 
 	// Stale aliases: a live alias mapping to a logical model advertised nowhere.
@@ -219,9 +217,7 @@ export function analyzeModelReferences(
 
 	// Stale default-fallback entries: a listed logical model advertised nowhere.
 	const staleFallbackModels: string[] = [];
-	const fallbackRow = db
-		.query("SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1")
-		.get(ROUTING_DEFAULT_FALLBACK_MODELS_KEY) as { value: string } | null;
+	const fallbackRow = findClusterConfigValueByKey(db, ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
 	if (fallbackRow) {
 		let parsed: unknown;
 		try {
@@ -251,9 +247,7 @@ export function analyzeModelReferences(
 	// agent/task hint naming one is never dangling on its own. Aliases are added
 	// below only when actually present in the map.
 	const roleNames = new Set<string>(RESERVED_MODEL_ROLES);
-	const rolesRow = db
-		.query("SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1")
-		.get(ROUTING_MODEL_ROLES_KEY) as { value: string } | null;
+	const rolesRow = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
 	if (rolesRow) {
 		let roles: ClusterModelRoles | null = null;
 		try {
@@ -299,7 +293,6 @@ export function analyzeModelReferences(
 	// Dangling scheduled tasks: a live (non-finished, non-deleted) task whose
 	// model_hint names a decommissioned logical model literally. Heartbeats are
 	// never poison-pill parked (they must always re-arm), so their advisory is the
-	// only operator signal that a model_hint has gone dead. A task targeting a
 	// only operator signal that a model_hint has gone dead. A task targeting a
 	// cluster role or alias follows the mapping's current assignment, so it is never
 	// dangling by itself. Finished tasks (completed/failed/cancelled) never re-run,

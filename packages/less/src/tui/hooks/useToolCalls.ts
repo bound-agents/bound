@@ -1,8 +1,8 @@
 import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
 import { useEffect, useRef, useState } from "react";
 import { bashToolWithStreaming } from "../../tools/bash";
-import type { ResolvedSandboxConfig } from "../../tools/sandbox";
 import type { SandboxResolver } from "../../tools/sandbox-override";
+import type { ResolvedSandboxConfig } from "../../tools/sandbox-policy";
 import type { ResolvedShell } from "../../tools/shell";
 import type { ToolHandler } from "../../tools/types";
 
@@ -135,27 +135,22 @@ export function useToolCalls(
 				const effectiveSandbox = sandboxResolver ? sandboxResolver(sandbox) : sandbox;
 				const result =
 					toolName === shell.toolName
-						? await bashToolWithStreaming(
-								args,
-								controller.signal,
-								cwd,
-								{
-									onStdoutChunk: (chunk: string) => {
-										setInFlightTools((prev) => {
-											const updated = new Map(prev);
-											const tool = updated.get(callId);
-											if (tool) {
-												tool.stdout = (tool.stdout || "") + chunk;
-												updated.set(callId, tool);
-											}
-											return updated;
-										});
-									},
+						? await bashToolWithStreaming(args, controller.signal, cwd, {
+								onStdoutChunk: (chunk: string) => {
+									setInFlightTools((prev) => {
+										const updated = new Map(prev);
+										const tool = updated.get(callId);
+										if (tool) {
+											tool.stdout = (tool.stdout || "") + chunk;
+											updated.set(callId, tool);
+										}
+										return updated;
+									});
 								},
 								hostname,
 								shell,
-								effectiveSandbox,
-							)
+								sandbox: effectiveSandbox,
+							})
 						: await handler(args, controller.signal, cwd);
 
 				// Return result to client

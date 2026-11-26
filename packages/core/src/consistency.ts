@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
 import { CryptoHasher } from "bun";
-import { getPkColumn, validateColumnName } from "./change-log.js";
-import { computeRowStateHash, getCachedRowStateHashes } from "./row-hash-cache.js";
+import { CONSISTENCY_TABLES, getPkColumn, validateColumnName } from "./change-log.js";
+import { getCachedRowStateHashes } from "./row-hash-cache.js";
 
 export interface TableDiff {
 	table: SyncedTableName;
@@ -120,21 +120,7 @@ export function compareAllTables(
 	remoteTables: Map<string, { count: number; pks: string[] }>,
 	tables?: SyncedTableName[],
 ): TableDiff[] {
-	const allSyncedTables: SyncedTableName[] = [
-		"users",
-		"threads",
-		"messages",
-		"semantic_memory",
-		"tasks",
-		"files",
-		"hosts",
-		"cluster_config",
-		"advisories",
-		"skills",
-		"memory_edges",
-		"turns",
-	];
-	const tablesToCheck = tables ?? allSyncedTables;
+	const tablesToCheck = tables ?? CONSISTENCY_TABLES;
 	const results: TableDiff[] = [];
 
 	for (const table of tablesToCheck) {
@@ -164,19 +150,6 @@ export function compareAllTables(
 
 	return results;
 }
-
-// ── A1: per-row state hashing for state-aware backfill ──────────────────────
-
-/**
- * Columns excluded from row hashing. The sync apply path bumps `modified_at`
- * on the receiving side, so including it would cause perpetual hash mismatches
- * between peers that have semantically identical rows. All other columns
- * participate, including `deleted`, `tier`, `value`, etc. — which is precisely
- * how this protocol detects tier flips, soft-delete tombstones, and value
- * mutations that PK-set diff misses.
- */
-/** Compute the canonical state hash shared with the local row-hash cache. */
-export const hashRow = computeRowStateHash;
 
 /**
  * Per-row entry in the consistency check protocol. `modified_at` is included
@@ -288,8 +261,6 @@ export function mergeDiffEntries(
 
 	return { localOnly, remoteOnly, localNewerMismatch, remoteNewerMismatch, matching };
 }
-
-// ── #248: per-table state digests for the consistency short-circuit ─────────
 
 /** Wire format of a table state digest: version tag plus a hex SHA-256. */
 const TABLE_STATE_DIGEST_PATTERN = /^v1:[0-9a-f]{64}$/;

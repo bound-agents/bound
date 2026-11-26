@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { SILENCE_HEARTBEAT_INTERVAL_MS, withSilenceTimeout } from "../agent-loop";
+import { SILENCE_HEARTBEAT_INTERVAL_MS, withSilenceTimeout } from "@bound/loop";
 
 /**
  * Creates an async iterable that delays `delayMs` before each yield.

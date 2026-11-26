@@ -1,289 +1,102 @@
-// Export types
 export type {
 	AgentLoopState,
 	AgentLoopConfig,
 	AgentLoopResult,
-	ClientToolCallRequest,
 	RegisteredTool,
 	ToolContext,
 } from "./types";
-export { isClientToolCallRequest } from "./types";
-export { compileDynamicPricing } from "./dynamic-pricing";
 export { loadModelBackendsConfig } from "./model-backends-config";
-export type { LoadedModelBackendsConfig } from "./model-backends-config";
 export type { ContextParams, AssemblyClock, AssemblyContext } from "./context-assembly";
 export { realTimeClock, frozenClock } from "./context-assembly";
-export type { ModelResolution } from "./model-resolution";
-
-// Export RxJS utilities
-export { fromEventBus, pollDb } from "./rx-utils.js";
-export {
-	createRelayStream$,
-	type RelayStreamDeps,
-	type RelayStreamOptions,
-} from "./relay-stream$.js";
 export { createRelayInferenceStream } from "./relay-inference-stream.js";
-export {
-	createRelayWait$,
-	type RelayWaitDeps,
-	type RelayWaitParams,
-	type RelayWaitOptions,
-} from "./relay-wait$.js";
-export {
-	awaitPlatformRequestResponse,
-	readUnionResponseEntry,
-	type PlatformResponseAwaitDeps,
-	type UnionResponseEntry,
-} from "./relay-await-helpers.js";
-
-// Export model resolution
-export {
-	MAX_MODEL_RECONNECT_WAIT_MS,
-	resolveDefaultModelId,
-	resolveModel,
-	waitForModelResolution,
-} from "./model-resolution";
+export { awaitPlatformRequestResponse } from "./relay-await-helpers.js";
+export { resolveDefaultModelId, resolveModel } from "./model-resolution";
 export { createModelCommandSpec } from "./platform-command-handlers";
-export type { PlatformCommandHandlerDeps } from "./platform-command-handlers";
-
-// Export delegation / client-session helpers. Whole-loop delegation
-// (getDelegationTarget / getClientSessionDelegationTarget / hasLocalClientSession)
-// is gone under the single delegation path (R-UD1); what remains are the
-// client-session liveness helpers used by hostinfo + notify/introspect warnings.
-export {
-	clientSessionWakeupWarning,
-	getClientSessions,
-	isClientSessionLive,
-	resolveClientSessionHost,
-} from "./delegation";
-export { routeNotificationWakeup, deliverNotificationWakeup } from "./wakeup-routing";
+export { getClientSessions, resolveClientSessionHost } from "./delegation";
+export { routeNotificationWakeup } from "./wakeup-routing";
 export { dispatchAwaitableClientTool } from "./client-tool-dispatch";
-
-// Export agent loop
 export { MainAgentLoop } from "./agent-loop";
-export { BoundAgentLoop } from "./bound-agent-loop";
 export { AuxAgentLoop } from "./aux-agent-loop";
 export { ConcurrentCap } from "./concurrent-cap";
-export type { BoundPreparedFrame, BashLike } from "./bound-agent-loop";
-export { persistImageBlocksAsFileRefs, persistBinaryResource } from "./tool-result-images";
-export {
-	findPendingUserMessage,
-	insertThreadMessage,
-	calculateTurnCost,
-	estimateMaxTurnCost,
-	createFileRefResolver,
-	extractAssistantText,
-} from "./agent-loop-utils";
-export {
-	HandleMessageTracker,
-	DEFAULT_WATCHDOG_TIMEOUT_MS,
-	DEFAULT_WATCHDOG_INTERVAL_MS,
-} from "./handle-message-tracker";
-export type { HandleMessageTrackerOptions } from "./handle-message-tracker";
-
-// Export context assembly
+export { persistImageBlocksAsFileRefs } from "./tool-result-images";
+export { createFileRefResolver, extractAssistantText } from "./agent-loop-utils";
+export { calculateTurnCost } from "./turn-pricing";
+export { HandleMessageTracker } from "./handle-message-tracker";
 export { assembleContext } from "./context-assembly";
-
-// Export cache prediction
-export { predictCacheState, selectCacheTtl, CACHE_TTL_MS } from "./cache-prediction";
-
-// Export cache warm-poke (issue #10)
+export { predictCacheState } from "./cache-prediction";
 export {
 	selectWarmPokeTargets,
 	isWarmPokeNotificationPayload,
 	WARM_POKE_MARKER,
 	WARM_POKE_MAX_OUTPUT_TOKENS,
-	type WarmPokeSelectionOptions,
 } from "./cache-warm-poke";
 export { formatNotification, injectNotificationMessage } from "./notification-injection";
-export {
-	isAuxLoopRunning,
-	listRunningAuxLoopThreadIds,
-	registerRunningAuxLoop,
-} from "./aux-agent-loop";
-
-// Export scheduler
+export { listRunningAuxLoopThreadIds, registerRunningAuxLoop } from "./aux-agent-loop";
 export { Scheduler } from "./scheduler";
-
-// Export relay processor
 export { RelayProcessor } from "./relay-processor";
 export type { ClientToolResolver } from "./relay-processor";
-export {
-	serializeRelayTraceCarrier,
-	routeRelayRequest,
-	shouldRouteRelayDurable,
-} from "./relay-router";
-export type {
-	RouteRelayRequestParams,
-	RouteRelayRequestResult,
-	RelayDurableRoutingContext,
-} from "./relay-router";
-export { resolveHubSiteId, resolveTopologyRole } from "./topology";
-export type { TopologyRole } from "./topology";
-
-// Export native tools
+export { serializeRelayTraceCarrier, routeRelayRequest } from "./relay-router";
+export { resolveTopologyRole } from "./topology";
 export { createAgentTools } from "./tools/index";
 export { createSkillTool } from "./tools/skill";
-
-// Export MCP client and bridge
 export { MCPClient } from "./mcp-client";
-export type {
-	MCPServerConfig,
-	Tool,
-	Resource,
-	Prompt,
-	ToolResult,
-	ResourceContent,
-	PromptResult,
-} from "./mcp-client";
+export type { MCPServerConfig, Tool, Prompt } from "./mcp-client";
 export {
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
 	isRelayRequest,
 	updateHostMCPInfo,
 } from "./mcp-bridge";
-
-// Export advisories
 export {
 	createAdvisory,
 	approveAdvisory,
 	dismissAdvisory,
 	deferAdvisory,
 	applyAdvisory,
-	getPendingAdvisories,
 } from "./advisories";
-
-// Export redaction
-export { redactMessage, redactThread, type RedactionResult } from "./redaction";
-
-// Export title generation
+export { redactMessage, redactThread } from "./redaction";
 export { generateThreadTitle } from "./title-generation";
-
-// Export summary extraction
-export type { ExtractionResult } from "./summary-extraction";
-export {
-	extractSummaryAndMemories,
-	buildCrossThreadDigest,
-	renderCrossThreadSummaries,
-	shouldInjectCrossThreadSummaries,
-} from "./summary-extraction";
-
-// Export file-thread tracker
-export {
-	trackFilePath,
-	getLastThreadForFile,
-	getFileThreadNotificationMessage,
-} from "./file-thread-tracker";
-
-// Export task resolution
-export {
-	seedHeartbeat,
-	seedConsolidation,
-	DEFAULT_CONSOLIDATION_INTERVAL_MS,
-	computeNextRunAt,
-	canRunHere,
-	isDependencySatisfied,
-} from "./task-resolution";
-
-// Export skill seeding
+export { extractSummaryAndMemories } from "./summary-extraction";
+export { seedHeartbeat, seedConsolidation } from "./task-resolution";
 export { seedBundledSkills } from "./seed-skills";
 export { isBuiltinSkillId } from "./builtin-skill-ids";
-
-// Export skill utilities
 export {
 	parseFrontmatter,
 	importSkillFromFiles,
 	deleteSkill,
-	type DeleteSkillOptions,
-	type DeleteSkillResult,
 	MAX_SKILL_BODY_LINES,
 	MAX_FILE_SIZE_BYTES,
 	MAX_DESCRIPTION_LENGTH,
 	SKILL_NAME_REGEX,
 	MAX_SKILL_NAME_LENGTH,
 } from "./tools/skill-utils";
-
-// Export built-in tools
 export { createBuiltInTools } from "./built-in-tools";
-export type { BuiltInTool, BuiltInToolResult } from "./built-in-tools";
-
-// Export introspect post-loop hook
+export type { BuiltInTool } from "./built-in-tools";
 export { runIntrospectResponseStamp } from "./tools/introspect";
-export {
-	DURABLE_WORK_REGISTRY,
-	DURABLE_WORK_KINDS,
-	type DurableWorkRegistration,
-} from "./durable-work-registry";
 export { createWorkspoolCommand } from "./workspool-command";
-
-// MCP OAuth slice 3 — resolver flow, handoff, owner exchange, settle-and-wake.
-// (Slices 1+2: challenge repo in @bound/core; token store + provider + raise here.)
 export {
 	McpChallengeResolver,
 	type ResolverAttempt,
 	type ResolverServerConfig,
-	type ResolverError,
-	resolverCallbackUrl,
-	canonicalResource,
-	unionAttemptScopes,
 } from "./mcp-auth/resolver";
-export { writeHandoff, handoffIdempotencyKey, type HandoffOutcome } from "./mcp-auth/handoff";
+export { writeHandoff } from "./mcp-auth/handoff";
 export {
 	consumeHandoff,
-	classifyAuthorizeError,
-	extractOAuthErrorCode,
 	type OwnerServerConfig,
 	type ExchangeOutcome,
-	type McpAuthHandoffPayload,
 } from "./mcp-auth/owner-exchange";
 export {
-	buildOwnerRefreshFn,
 	getCoLocationAccessToken,
 	handleOwnerMcpAppProxy,
 	type CoLocationServerConfig,
 	type CoLocationTokenResult,
 } from "./mcp-auth/co-location";
-export {
-	upsertWaiter,
-	consumeWaiter,
-	findUnconsumedWaiters,
-	findAllUnconsumedWaiters,
-	type McpAuthWaiter,
-} from "./mcp-auth/waiters";
-export {
-	wakeWaitersForChallenge,
-	reconcileWaitersOnBoot,
-	formatWakeText,
-	type McpAuthWakePayload,
-} from "./mcp-auth/wake";
+export { upsertWaiter } from "./mcp-auth/waiters";
+export { wakeWaitersForChallenge, reconcileWaitersOnBoot } from "./mcp-auth/wake";
 export {
 	McpOAuthProvider,
 	AuthChallengeRaisedError,
-	MCP_OAUTH_CALLBACK_PATH,
-	MCP_OAUTH_CALLBACK_URL,
-	type McpOAuthServerConfig,
-	type McpOAuthLogger,
-	type ObservedChallenge,
-	type TokenEndpointFailure,
-	endpointForLog,
 	oauthLogFields,
 } from "./mcp-auth/oauth-provider";
-export {
-	McpTokenStore,
-	defaultMcpAuthPath,
-	classifyTokenEndpointError,
-	bundleFromStoredTokens,
-	type McpTokenBundle,
-	type RefreshError,
-	type RefreshFn,
-} from "./mcp-auth/token-store";
-export {
-	RaiseDebouncer,
-	raiseAuthChallenge,
-	parseWwwAuthenticate,
-	formatAuthChallengeRaised,
-	writeSettleWaiter,
-	RAISE_DEBOUNCE_MS,
-	type RaiseOutcome,
-	type ParsedAuthChallenge,
-} from "./mcp-auth/raise";
+export { McpTokenStore, defaultMcpAuthPath } from "./mcp-auth/token-store";
+export { RaiseDebouncer, raiseAuthChallenge } from "./mcp-auth/raise";

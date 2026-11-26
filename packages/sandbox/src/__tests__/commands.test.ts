@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDatabase } from "@bound/core";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import type { CommandDefinition } from "../commands";
-import { createDefineCommands, formatHelp, loopContextStorage } from "../commands";
+import { createDefineCommands, loopContextStorage } from "../commands";
 
 // Mock logger and event bus for testing
 const mockLogger: Logger = {
@@ -667,8 +667,7 @@ describe("--help and missing-arg hint", () => {
 		expect(result.stderr).toContain("(run 'schedule --help' for usage)");
 	});
 
-	// Test formatHelp function directly
-	test("formatHelp generates correct usage text for command with required args", () => {
+	test("--help generates usage text for command with required args", async () => {
 		const def: CommandDefinition = {
 			name: "mycommand",
 			description: "Does something useful",
@@ -679,7 +678,13 @@ describe("--help and missing-arg hint", () => {
 			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
-		const result = formatHelp(def);
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+		const result = await createDefineCommands([def], context)[0].handler(["--help"]);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("mycommand — Does something useful");
@@ -688,8 +693,7 @@ describe("--help and missing-arg hint", () => {
 		expect(result.stdout).toContain("arg2 (optional) — Second argument");
 	});
 
-	// Test formatHelp with custom helpText
-	test("formatHelp uses custom helpText when provided", () => {
+	test("--help uses custom helpText when provided", async () => {
 		const def: CommandDefinition = {
 			name: "special",
 			description: "Special command",
@@ -698,7 +702,13 @@ describe("--help and missing-arg hint", () => {
 			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
-		const result = formatHelp(def);
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+		const result = await createDefineCommands([def], context)[0].handler(["--help"]);
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("special — Special command");

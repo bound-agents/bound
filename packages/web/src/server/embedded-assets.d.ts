@@ -8,5 +8,4 @@ export interface EmbeddedAsset {
 	contentType: string;
 }
 
-export declare const embeddedAssetsEncoding: string | undefined;
 export declare const embeddedAssets: Map<string, EmbeddedAsset> | undefined;

@@ -63,14 +63,8 @@ export const CACHE_TTL_MS: Record<"5m" | "1h", number> = {
 };
 
 /**
- * Selects the cache TTL for warm/cold path prediction.
- *
- * All interfaces use 1h. The 5m TTL was previously used for web/MCP under the
- * assumption that messages arrive frequently, but agent tool-use turns routinely
- * take 30-130+ seconds — a 5m TTL between separate user messages forced
- * unnecessary cold reassembly and prefix reshuffling, guaranteeing provider-side
- * cache misses on subsequent turns.
+ * Cache TTL for warm/cold path prediction, uniform across interfaces. Agent
+ * tool-use turns routinely take 30-130+ seconds, so a 5m TTL between user
+ * messages would force cold reassembly and provider-side cache misses.
  */
-export function selectCacheTtl(_threadInterface: string): "5m" | "1h" {
-	return "1h";
-}
+export const CACHE_TTL = "1h" as const;

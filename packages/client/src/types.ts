@@ -1,8 +1,14 @@
 import type { ContentBlock } from "@bound/llm";
-import type { YardExecutionEvent } from "@bound/shared";
-import type { AgentFile, MemoryTier, Message, Task, Thread, WsStreamChunk } from "@bound/shared";
-
-// ---- Thread responses ----
+import type {
+	AgentFile,
+	ContextDebugInfo,
+	MemoryTier,
+	Message,
+	Task,
+	Thread,
+	WsStreamChunk,
+	YardExecutionEvent,
+} from "@bound/shared";
 
 /** Thread with computed fields from GET /api/threads listing. */
 export interface ThreadListEntry extends Thread {
@@ -32,8 +38,6 @@ export interface ThreadStatus {
 	model: string | null;
 }
 
-// ---- Threads ----
-
 export interface CreateThreadOptions {
 	/**
 	 * Optional interface/surface tag for the new thread. Must match
@@ -42,8 +46,6 @@ export interface CreateThreadOptions {
 	 */
 	interface?: string;
 }
-
-// ---- Messages ----
 
 export interface SendMessageOptions {
 	modelId?: string;
@@ -72,12 +74,8 @@ export interface RedactThreadResult {
 	memoriesAffected: number;
 }
 
-// ---- Files ----
-
 /** File metadata without content, from GET /api/files listing. */
 export type FileListEntry = Omit<AgentFile, "content">;
-
-// ---- Tasks ----
 
 /** Task with computed fields from GET /api/tasks listing. */
 export interface TaskListEntry extends Task {
@@ -87,13 +85,9 @@ export interface TaskListEntry extends Task {
 	lastDurationMs: number | null;
 }
 
-// ---- Advisories ----
-
 export interface AdvisoryCount {
 	count: number;
 }
-
-// ---- Status ----
 
 export interface HostStatus {
 	host_info: {
@@ -131,8 +125,6 @@ export interface ModelsResponse {
 	models: ClusterModelInfo[];
 	default: string;
 }
-
-// ---- Model routing (Settings › Models) ----
 
 /** One advertised route for a logical model, with supply + drain + health. */
 export interface RouteSupplyInfo {
@@ -244,8 +236,6 @@ export interface CancelResult {
 	thread_id: string;
 }
 
-// ---- Memory ----
-
 export interface MemoryGraphNode {
 	key: string;
 	value: string;
@@ -268,124 +258,12 @@ export interface MemoryGraphResponse {
 	edges: MemoryGraphEdge[];
 }
 
-// ---- Context Debug ----
-
-export interface ContextDebugSection {
-	name: string;
-	tokens: number;
-	children?: ContextDebugSection[];
-}
-
-export interface CrossThreadSource {
-	threadId: string;
-	title: string;
-	color: number;
-	messageCount: number;
-	lastMessageAt: string;
-}
-
-export interface CacheMarker {
-	kind: "system" | "message";
-	/**
-	 * Cumulative-token offset into the breakdown bar at the breakpoint boundary.
-	 * UI converts to a bar percentage via `positionTokens / contextWindow`.
-	 */
-	positionTokens: number;
-	/** "fixed" = cold-path placement; "rolling" = warm-path re-placement. */
-	variant: "fixed" | "rolling";
-	ttl: "5m" | "1h";
-	/**
-	 * `true` when the backend's prompt_caching capability is on AND a marker
-	 * was emitted on the wire; `false` when caching was gated out.
-	 */
-	capabilityEnabled: boolean;
-}
-
-export interface ContextDebugInfo {
-	contextWindow: number;
-	totalEstimated: number;
-	/**
-	 * LLM-reported actual input tokens for this turn (raw_input + cache_read +
-	 * cache_write per AI-SDK semantics). Set after the LLM responds via
-	 * `applyActualUsageToContextDebug`; undefined until the response arrives.
-	 *
-	 * Preferred over `totalEstimated` for headline display because the local
-	 * cl100k_base estimator drifts (typically 10–15% under, sometimes 2x+ on
-	 * thinking-heavy threads) from the provider tokenizer that actually bills.
-	 */
-	actualTotalTokens?: number;
-	model: string;
-	sections: ContextDebugSection[];
-	budgetPressure: boolean;
-	truncated: number;
-	crossThreadSources?: CrossThreadSource[];
-	/**
-	 * Cache breakpoint descriptors recorded by the agent loop after marker
-	 * placement. Absent on turns persisted before this field existed and on
-	 * turns where the backend disabled caching entirely.
-	 */
-	cacheMarkers?: CacheMarker[];
-	/**
-	 * contextWindow - safetyMargin: the gate the truncation decision actually
-	 * compares against. Optional on older rows.
-	 */
-	effectiveBudget?: number;
-	/**
-	 * Which assembly path produced this turn's wire payload. `"warm"` reuses
-	 * cached state (only the volatile tail + rolling marker rebuilt); `"cold"`
-	 * ran full assembly. Optional on older rows.
-	 */
-	cachePath?: "warm" | "cold";
-	/**
-	 * Why `cachePath` resolved as it did — the same signal the agent loop logs.
-	 * Cold reasons explain a rebuild (`budget-exceeded`, `tool-change`,
-	 * `cache-expired`, `orphaned-tool-call`, `purge-message`, `no-stored-state`,
-	 * `no-history`); `warm-eligible` means the warm path completed within budget. Optional on
-	 * older rows.
-	 */
-	cachePathReason?:
-		| "no-stored-state"
-		| "cache-expired"
-		| "tool-change"
-		| "orphaned-tool-call"
-		| "purge-message"
-		| "budget-exceeded"
-		| "no-history"
-		| "warm-eligible";
-	/**
-	 * Per-thread adaptive truncation ratio used this turn: base 0.85 divided by
-	 * the inflation EMA, clamped so an over-counting estimator never loosens the
-	 * gate. Lower means the thread telescopes more aggressively. Optional on
-	 * older rows.
-	 */
-	effectiveTruncationRatio?: number;
-	/**
-	 * Raw inflation EMA (mean `actual / estimated` over recent turns) behind
-	 * `effectiveTruncationRatio`. `null` when the thread has too few samples and
-	 * the resolver fell back to the base ratio. Optional on older rows.
-	 */
-	measuredInflation?: number | null;
-	/**
-	 * Tokens reclaimed by in-place warm-path compaction this turn. `0` when
-	 * compaction did not run; `undefined` on cold turns and older rows.
-	 */
-	warmCompactionTokensSaved?: number;
-	/**
-	 * Progressive-fidelity ("telescope") tier breakdown. Present on cold turns
-	 * where tiered truncation fired and the middle tier had messages to fold.
-	 * `recentKept` messages stay at full resolution; `middleFolded` are
-	 * compressed into the action-log digest (recall preserved); `ancientDropped`
-	 * are replaced by the summary marker (full detail shed). Absent on warm
-	 * turns, non-truncating turns, and older rows.
-	 */
-	progressiveFidelity?: {
-		ancientDropped: number;
-		middleFolded: number;
-		recentKept: number;
-		tierBudgets: { ancient: number; middle: number; recent: number };
-		tierTokens: { ancient: number; middle: number; recent: number };
-	};
-}
+export type {
+	CacheMarker,
+	ContextDebugInfo,
+	ContextSection as ContextDebugSection,
+	CrossThreadSource,
+} from "@bound/shared";
 
 export interface ContextDebugTurn {
 	turn_id: string;
@@ -436,8 +314,6 @@ export interface MetricsTokenTotals {
 	error_count: number;
 }
 
-// ---- Connector bindings ----
-
 export interface ConnectorBindingEntry {
 	id: string;
 	server_name: string;
@@ -474,8 +350,6 @@ export interface UpdateConnectorBindingOptions {
 	 */
 	model_hint?: string | null;
 }
-
-// ---- Webhooks ----
 
 export interface WebhookListEntry {
 	id: string;
@@ -589,8 +463,6 @@ export interface UpdateWebhookOptions {
 	no_history?: boolean;
 }
 
-// ---- RSS feeds ----
-
 export interface RssFeedListEntry {
 	id: string;
 	name: string;
@@ -634,14 +506,10 @@ export interface UpdateRssFeedOptions {
 	no_history?: boolean;
 }
 
-// ---- Errors ----
-
 export interface ApiErrorBody {
 	error: string;
 	details?: unknown;
 }
-
-// ---- WebSocket ----
 
 export interface ToolDefinition {
 	type: "function";

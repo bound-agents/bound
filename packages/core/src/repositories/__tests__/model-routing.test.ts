@@ -4,14 +4,7 @@ import type { ChangeLogEntry } from "@bound/shared";
 import { insertRow, softDelete } from "../../change-log";
 import { applyMetricsSchema } from "../../metrics-schema";
 import { applySchema } from "../../schema";
-import {
-	findModelAlias,
-	findModelRoutingRule,
-	findRouteDrain,
-	listDrainedRouteIds,
-	listModelAliases,
-	listModelRoutingRules,
-} from "../model-routing";
+import { findModelRoutingRule, findRouteDrain, listDrainedRouteIds } from "../model-routing";
 
 const SITE_A = "site-aaaaaa";
 const SITE_B = "site-bbbbbb";
@@ -97,37 +90,6 @@ describe("model-routing repository finders", () => {
 		expect(listDrainedRouteIds(db)).toEqual(["site-b:anthropic:opus"]);
 		expect(findRouteDrain(db, "site-a:bedrock:opus")).toBeNull();
 	});
-
-	it("keeps a model_aliases row with a null logical_model (deliberately ungrouped)", () => {
-		insertRow(
-			db,
-			"model_aliases",
-			{
-				provider_key: "bedrock:anthropic.claude-opus",
-				logical_model: "opus",
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:00.000Z",
-			},
-			SITE_A,
-		);
-		insertRow(
-			db,
-			"model_aliases",
-			{
-				provider_key: "bedrock:some-experimental-model",
-				logical_model: null,
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:00.000Z",
-			},
-			SITE_A,
-		);
-
-		expect(findModelAlias(db, "bedrock:anthropic.claude-opus")?.logical_model).toBe("opus");
-		const ungrouped = findModelAlias(db, "bedrock:some-experimental-model");
-		expect(ungrouped).not.toBeNull();
-		expect(ungrouped?.logical_model).toBeNull();
-		expect(listModelAliases(db)).toHaveLength(2);
-	});
 });
 
 describe("concurrent cross-host edits converge under row-level LWW (Done-when #1)", () => {
@@ -176,73 +138,6 @@ describe("concurrent cross-host edits converge under row-level LWW (Done-when #1
 			}
 		}
 	}
-
-	it("edits to DIFFERENT models, routes, and aliases from two hosts all survive a sync", () => {
-		// Host A edits route_order for opus; host B edits route_order for a
-		// DIFFERENT logical model, plus a drain and an alias. None collide.
-		insertRow(
-			hostA,
-			"model_routing_rules",
-			{
-				logical_model: "opus",
-				route_order: JSON.stringify(["site-a:bedrock:opus"]),
-				fallback_policy: null,
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:01.000Z",
-			},
-			SITE_A,
-		);
-		insertRow(
-			hostB,
-			"model_routing_rules",
-			{
-				logical_model: "sonnet",
-				route_order: JSON.stringify(["site-b:anthropic:sonnet"]),
-				fallback_policy: null,
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:02.000Z",
-			},
-			SITE_B,
-		);
-		insertRow(
-			hostB,
-			"route_drains",
-			{
-				route_id: "site-a:bedrock:opus",
-				drained_at: "2026-01-01T00:00:02.000Z",
-				reason: "test",
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:02.000Z",
-			},
-			SITE_B,
-		);
-		insertRow(
-			hostA,
-			"model_aliases",
-			{
-				provider_key: "bedrock:anthropic.claude-opus",
-				logical_model: "opus",
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:01.000Z",
-			},
-			SITE_A,
-		);
-
-		// Exchange change-log entries both ways.
-		replayLWW(hostB, pull(hostA, "model_routing_rules"), "logical_model");
-		replayLWW(hostA, pull(hostB, "model_routing_rules"), "logical_model");
-		replayLWW(hostA, pull(hostB, "route_drains"), "route_id");
-		replayLWW(hostB, pull(hostA, "model_aliases"), "provider_key");
-
-		// Both hosts now see both models.
-		for (const db of [hostA, hostB]) {
-			const rules = listModelRoutingRules(db);
-			expect(rules.map((r) => r.logical_model).sort()).toEqual(["opus", "sonnet"]);
-		}
-		// The drain and alias crossed cleanly.
-		expect(listDrainedRouteIds(hostA)).toEqual(["site-a:bedrock:opus"]);
-		expect(findModelAlias(hostB, "bedrock:anthropic.claude-opus")?.logical_model).toBe("opus");
-	});
 
 	it("concurrent edits to the SAME model's row resolve last-full-row-write-wins", () => {
 		// Both hosts set opus route_order; the later modified_at wins the whole row.

@@ -1,6 +1,5 @@
 /**
  * Attach flow: connects to an existing thread with ordered initialization.
- * Implements AC7.1 (ordered attach sequence) and AC7.2 (pending tool calls).
  */
 
 import type { Implementation } from "@agentclientprotocol/sdk";
@@ -11,9 +10,12 @@ import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { withLessTelemetry } from "../telemetry";
 import { buildSystemPromptAddition, buildToolSet } from "../tools/registry";
-import type { ResolvedSandboxConfig } from "../tools/sandbox";
+import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import type { ResolvedShell } from "../tools/shell";
 import { collectToolCallPairing } from "./tool-call-pairing";
+
+/** Recent-message window fetched on attach/replay; bounds memory on very long threads. */
+export const HISTORY_WINDOW_MESSAGES = 200;
 
 export interface AttachParams {
 	client: BoundClient;
@@ -52,7 +54,7 @@ export interface AttachResult {
 }
 
 /**
- * Perform attach flow in strict order (AC7.1):
+ * Perform attach flow in strict order:
  * 1. listMessages
  * 2. subscribe
  * 3. ensure MCP servers
@@ -87,12 +89,9 @@ async function performAttachInner(
 		injectContextFiles,
 	} = params;
 
-	// Step 1: List recent messages and scan for pending tool calls (AC7.2)
-	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
-	const MESSAGE_LIMIT = 200;
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
 	span.addEvent("boundless.attach.messages.fetch");
-	let messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
+	let messages = await client.listMessages(threadId, { limit: HISTORY_WINDOW_MESSAGES });
 	const turns =
 		typeof client.getContextDebug === "function"
 			? await client
@@ -141,12 +140,12 @@ async function performAttachInner(
 		pendingToolCalls: pendingToolCallIds.length,
 	});
 
-	// Step 2: Subscribe to thread
+	// Subscribe to thread
 	logger.info("attach_flow_subscribe", { threadId });
 	client.subscribe(threadId);
 	span.addEvent("boundless.attach.transport.subscribed");
 
-	// Step 3: Ensure MCP servers
+	// Ensure MCP servers
 	logger.info("attach_flow_ensure_mcp", { serverCount: mcpConfigs.length });
 	const mcpFailures: Array<{ serverName: string; error: string }> = [];
 
@@ -170,28 +169,27 @@ async function performAttachInner(
 		failureCount: mcpFailures.length,
 	});
 
-	// Step 4: Build tool set
+	// Build tool set
 	logger.info("attach_flow_build_tools", { threadId });
 	const mcpTools = mcpManager.getRunningTools();
-	const toolSet = buildToolSet(
-		cwd,
+	const toolSet = buildToolSet({
 		hostname,
 		mcpTools,
 		confirmFn,
-		client.getBaseUrl(),
+		boundUrl: client.getBaseUrl(),
 		shell,
 		mcpManager,
 		sandbox,
 		logger,
-		injectContextFiles,
-	);
+		contextFiles: injectContextFiles,
+	});
 
 	logger.info("attach_flow_tools_built", {
 		threadId,
 		toolCount: toolSet.tools.length,
 	});
 
-	// Step 5: Configure tools on client
+	// Configure tools on client
 	logger.info("attach_flow_configure", { threadId });
 	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, {
 		injectContextFiles: params.injectContextFiles,

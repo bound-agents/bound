@@ -48,6 +48,8 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 import { reapStaleClientSessions } from "./client-session-reaper";
+import { formatClientSessionId } from "./lib/client-session-id";
+import type { EmitToolCancel, HandleMessageTracker } from "./lib/handler-types";
 import { storeFile } from "./routes/files";
 import {
 	recordClientToolResultReceive,
@@ -79,6 +81,13 @@ export function parseClientTools(raw: string): SyncedClientTool[] {
 			typeof (d as { function?: { name?: unknown } }).function?.name === "string",
 	);
 }
+
+const MAX_CONTENT_LENGTH = 512 * 1024;
+// Per-attachment decoded byte cap for inline image/document prompts.
+// Generous enough for editor screenshots; bounds a single malicious
+// or accidental megablob before it hits the files table.
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_IDS = 20;
 
 // Zod schemas for all client→server message types
 const sessionConfigureSchema = z.object({
@@ -259,58 +268,38 @@ export interface WebSocketHandlerConfig {
 	/** Structured logger for non-blocking telemetry failures. */
 	logger?: Pick<Logger, "warn">;
 	/**
-	 * Span tracker for cross-handler-invocation OTel spans. When provided,
-	 * `tool:result` reception closes the matching `tool.dispatch` span, and
-	 * `tool:cancel` paths close it with ERROR. When absent, dispatch spans
-	 * are not closed by the WS handler (the watchdog eventually closes them
-	 * with `watchdog_timeout` instead).
-	 *
-	 * Typed as a minimal interface to avoid pulling `@bound/agent` into
-	 * the web package's import graph; the concrete implementation lives in
-	 * `packages/agent/src/handle-message-tracker.ts`.
+	 * When provided, `tool:result` reception closes the matching `tool.dispatch`
+	 * span and `tool:cancel` paths close it with ERROR. When absent, the
+	 * watchdog closes dispatch spans with `watchdog_timeout` instead.
 	 */
-	handleMessageTracker?: {
-		closeDispatch(callId: string, status?: "ok" | "error", reason?: string): void;
-	};
+	handleMessageTracker?: HandleMessageTracker;
 }
 
-export function createWebSocketHandler(
-	config: WebSocketHandlerConfig | TypedEventEmitter,
-): WebSocketConfig & {
+export function createWebSocketHandler(config: WebSocketHandlerConfig): WebSocketConfig & {
 	cleanup: () => void;
 	reapStaleSessions: () => number;
 	sweepUnresponsiveConnections: (staleMs: number, nowMs?: number) => number;
 	registry: ConnectionRegistry;
-	emitToolCancel: (
-		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
-		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
-	) => void;
+	emitToolCancel: EmitToolCancel;
 } {
-	// Support both old (eventBus only) and new (config object) signatures for backwards compatibility
-	let eventBus: TypedEventEmitter;
-	let db: Database | undefined;
-	let siteId: string | undefined;
-	let defaultUserId: string | undefined;
-	let hostOrigin = "localhost:3000";
-	let logger: Pick<Logger, "warn"> | undefined;
-	let handleMessageTracker: WebSocketHandlerConfig["handleMessageTracker"];
-
-	if ("on" in config && "emit" in config) {
-		// Old signature: eventBus parameter
-		eventBus = config;
-	} else {
-		// New signature: config object
-		eventBus = config.eventBus;
-		db = config.db;
-		siteId = config.siteId;
-		defaultUserId = config.defaultUserId;
-		hostOrigin = config.hostOrigin ?? "localhost:3000";
-		logger = config.logger;
-		handleMessageTracker = config.handleMessageTracker;
-	}
+	const { eventBus, db, siteId, defaultUserId, logger, handleMessageTracker } = config;
+	const hostOrigin = config.hostOrigin ?? "localhost:3000";
 
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
+
+	function broadcastToThread(threadId: string, payload: unknown): void {
+		const message = JSON.stringify(payload);
+		for (const [ws, conn] of clients) {
+			if (conn.subscriptions.has(threadId) && ws.readyState === 1) ws.send(message);
+		}
+	}
+
+	function broadcastAll(payload: unknown): void {
+		const message = JSON.stringify(payload);
+		for (const [ws] of clients) {
+			if (ws.readyState === 1) ws.send(message);
+		}
+	}
 
 	/**
 	 * Helper to re-deliver pending client tool calls that match the connection's tools.
@@ -336,10 +325,8 @@ export function createWebSocketHandler(
 
 				// Check if this tool matches one of the client's registered tools
 				if (payload.tool_name && conn.clientTools.has(payload.tool_name)) {
-					// Update claimed_by to new connection (AC7.2)
 					updateClaimedBy(db, entry.message_id, conn.connectionId);
 
-					// Re-deliver tool:call
 					conn.ws.send(
 						JSON.stringify({
 							type: "tool:call",
@@ -383,67 +370,22 @@ export function createWebSocketHandler(
 				}
 			}
 		}
-		for (const [ws, conn] of clients) {
-			if (conn.subscriptions.has(data.thread_id)) {
-				const message = JSON.stringify({
-					type: "message:created",
-					data: outboundMessage,
-				});
-				if (ws.readyState === 1) {
-					ws.send(message);
-				}
-			}
-		}
+		broadcastToThread(data.thread_id, { type: "message:created", data: outboundMessage });
 	};
 
 	const handleTaskCompleted = (data: { task_id: string; result: string | null }): void => {
-		const message = JSON.stringify({
-			type: "task:updated",
-			data: {
-				taskId: data.task_id,
-				status: "completed",
-			},
-		});
-
-		for (const [ws] of clients) {
-			if (ws.readyState === 1) {
-				ws.send(message);
-			}
-		}
+		broadcastAll({ type: "task:updated", data: { taskId: data.task_id, status: "completed" } });
 	};
 
 	const handleFileChanged = (data: {
 		path: string;
 		operation: "created" | "modified" | "deleted";
 	}): void => {
-		const message = JSON.stringify({
-			type: "file:updated",
-			data: {
-				path: data.path,
-				operation: data.operation,
-			},
-		});
-
-		for (const [ws] of clients) {
-			if (ws.readyState === 1) {
-				ws.send(message);
-			}
-		}
+		broadcastAll({ type: "file:updated", data: { path: data.path, operation: data.operation } });
 	};
 
 	const handleAlertCreated = (data: { message: unknown; thread_id: string }): void => {
-		const message = JSON.stringify({
-			type: "alert",
-			data: data.message,
-		});
-
-		for (const [ws, conn] of clients) {
-			if (conn.subscriptions.has(data.thread_id)) {
-				if (ws.readyState === 1) {
-					ws.send(message);
-				}
-			}
-		}
+		broadcastToThread(data.thread_id, { type: "alert", data: data.message });
 	};
 
 	const handleContextDebug = (data: {
@@ -451,17 +393,10 @@ export function createWebSocketHandler(
 		turn_id: string;
 		debug: unknown;
 	}): void => {
-		for (const [ws, conn] of clients) {
-			if (conn.subscriptions.has(data.thread_id)) {
-				const message = JSON.stringify({
-					type: "context:debug",
-					data: { turn_id: data.turn_id, debug: data.debug, thread_id: data.thread_id },
-				});
-				if (ws.readyState === 1) {
-					ws.send(message);
-				}
-			}
-		}
+		broadcastToThread(data.thread_id, {
+			type: "context:debug",
+			data: { turn_id: data.turn_id, debug: data.debug, thread_id: data.thread_id },
+		});
 	};
 
 	/**
@@ -472,18 +407,11 @@ export function createWebSocketHandler(
 	 * drifting the way increment/decrement bookkeeping would.
 	 */
 	const handleBackgroundCount = (data: { thread_id: string; count: number }): void => {
-		for (const [ws, conn] of clients) {
-			if (conn.subscriptions.has(data.thread_id)) {
-				const message = JSON.stringify({
-					type: "background:count",
-					thread_id: data.thread_id,
-					count: data.count,
-				});
-				if (ws.readyState === 1) {
-					ws.send(message);
-				}
-			}
-		}
+		broadcastToThread(data.thread_id, {
+			type: "background:count",
+			thread_id: data.thread_id,
+			count: data.count,
+		});
 	};
 
 	function handleSessionConfigure(
@@ -495,16 +423,13 @@ export function createWebSocketHandler(
 			conn.clientTools.set(tool.function.name, tool);
 		}
 
-		// Store or clear systemPromptAddition per connection (AC2.4, AC2.6)
 		conn.systemPromptAddition = msg.systemPromptAddition;
 
-		// Update threadSystemPromptAdditions for all subscribed threads (AC2.4)
 		if (msg.systemPromptAddition !== undefined) {
 			for (const threadId of conn.subscriptions) {
 				conn.threadSystemPromptAdditions.set(threadId, msg.systemPromptAddition);
 			}
 		} else {
-			// Clear all per-thread entries when systemPromptAddition is undefined (AC2.4, AC2.6)
 			conn.threadSystemPromptAdditions.clear();
 		}
 
@@ -522,7 +447,6 @@ export function createWebSocketHandler(
 			}
 		}
 
-		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
 		for (const threadId of conn.subscriptions) {
 			redeliverPendingToolCalls(conn, threadId);
 		}
@@ -542,13 +466,11 @@ export function createWebSocketHandler(
 			recordClientSession(conn, msg.thread_id);
 		}
 
-		// Propagate systemPromptAddition to the new subscription (AC2.3)
 		if (conn.systemPromptAddition !== undefined) {
 			conn.threadSystemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
 		}
 
-		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
-		// In case session:configure happened before thread:subscribe
+		// Re-deliver in case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
 
 		// Replaying this server's in-memory trace lets a reload continue an active
@@ -579,7 +501,6 @@ export function createWebSocketHandler(
 		// Drop client-session affinity for this (connection, thread) pair.
 		clearClientSession(conn, msg.thread_id);
 
-		// Clean up systemPromptAddition for this thread (AC2.5)
 		conn.threadSystemPromptAdditions.delete(msg.thread_id);
 	}
 
@@ -644,7 +565,7 @@ export function createWebSocketHandler(
 	 */
 	function recordClientSession(conn: ClientConnection, threadId: string): void {
 		if (!db || !siteId) return;
-		const id = `${conn.connectionId}::${threadId}`;
+		const id = formatClientSessionId(conn.connectionId, threadId);
 		const now = new Date().toISOString();
 		const clientTools = serializeClientTools(conn);
 		const existing = findClientSessionIdById(db, id);
@@ -678,7 +599,7 @@ export function createWebSocketHandler(
 	/** Soft-delete the client_sessions row for one (connection, thread) pair. */
 	function clearClientSession(conn: ClientConnection, threadId: string): void {
 		if (!db || !siteId) return;
-		const id = `${conn.connectionId}::${threadId}`;
+		const id = formatClientSessionId(conn.connectionId, threadId);
 		const existing = findLiveClientSessionIdById(db, id);
 		if (existing) {
 			softDelete(db, "client_sessions", id, siteId);
@@ -710,13 +631,6 @@ export function createWebSocketHandler(
 		}
 
 		try {
-			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
-			// Per-attachment decoded byte cap for inline image/document prompts.
-			// Generous enough for editor screenshots; bounds a single malicious
-			// or accidental megablob before it hits the files table.
-			const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB
-
-			// Validate content is non-empty
 			if (typeof msg.content !== "string") {
 				if (msg.content.length === 0) {
 					conn.ws.send(
@@ -767,7 +681,6 @@ export function createWebSocketHandler(
 			}
 
 			// Resolve file_ids (text attachments) — shared by both content forms.
-			const MAX_FILE_IDS = 20;
 			const fileIds: string[] = (Array.isArray(msg.file_ids) ? msg.file_ids : [])
 				.filter((id): id is string => typeof id === "string")
 				.slice(0, MAX_FILE_IDS);
@@ -1053,7 +966,7 @@ export function createWebSocketHandler(
 		try {
 			const now = new Date().toISOString();
 
-			// First check for expired entries with this call_id (AC3.4)
+			// First check for expired entries with this call_id
 			const expiredEntry = db
 				.prepare(
 					`SELECT * FROM dispatch_queue
@@ -1069,7 +982,7 @@ export function createWebSocketHandler(
 				try {
 					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
 					if (payload.call_id === msg.call_id) {
-						// AC3.4: Late tool:result for canceled call is silently discarded
+						// Late tool:result for canceled call is silently discarded
 						// (accepted but not persisted, no error response)
 						return;
 					}
@@ -1130,21 +1043,19 @@ export function createWebSocketHandler(
 			// pre-commit hooks being the canonical case — ALWAYS came back a few
 			// kill-grace seconds past the cutoff and was silently dropped, stalling
 			// the thread one turn per bump. Late results for genuinely canceled
-			// calls are handled by the expired-status check above (AC3.4).
+			// calls are handled by the expired-status check above.
 
-			// Persist the tool_result message
 			const messageId = randomUUID();
 
 			// Handle content: normalize string to ContentBlock[], or persist array as-is
 			let persistedContent: string;
 			if (typeof msg.content === "string") {
-				// AC10.1: Normalize string to ContentBlock array
 				const contentBlocks = [{ type: "text" as const, text: msg.content }];
 				persistedContent = msg.is_error
 					? JSON.stringify([{ type: "text", text: `Error: ${msg.content}` }])
 					: JSON.stringify(contentBlocks);
 			} else {
-				// AC10.2: Persist ContentBlock array verbatim — but rewrite any
+				// Persist ContentBlock array verbatim — but rewrite any
 				// inline-base64 image block to a file_ref first (same as the
 				// native agent-loop dispatch return), so a screenshot-sized
 				// payload from a client tool (boundless_read) never hits the cap.
@@ -1179,8 +1090,8 @@ export function createWebSocketHandler(
 			// Persist, ack, and re-wake as one unit, and only while the entry is
 			// still in flight (#278). A nested aux loop that gave up on this call
 			// expired the entry and wrote the call's single result itself; a
-			// result landing after that is discarded like any canceled call
-			// (AC3.4). A crash between the insert and the ack can no longer leave
+			// result landing after that is discarded like any canceled call.
+			// A crash between the insert and the ack can no longer leave
 			// a persisted result behind an entry a reaper would answer again.
 			const entryId = matchingEntry.message_id;
 			const persisted = withTx(db, (): boolean => {
@@ -1211,7 +1122,7 @@ export function createWebSocketHandler(
 			});
 			if (!persisted) return;
 
-			// Re-export client trace_data spans if present (AC6.3)
+			// Re-export client trace_data spans if present
 			if (msg.trace_data) {
 				reExportClientTraceData(msg.trace_data);
 			}
@@ -1617,10 +1528,7 @@ export function createWebSocketHandler(
 	eventBus.on("stream:chunk", handleStreamChunk);
 	for (const type of ["aux:started", "aux:completed"] as const) {
 		eventBus.on(type, (data) => {
-			const payload = JSON.stringify({ type, data });
-			for (const [ws, conn] of clients) {
-				if (conn.subscriptions.has(data.parent_thread_id) && ws.readyState === 1) ws.send(payload);
-			}
+			broadcastToThread(data.parent_thread_id, { type, data });
 		});
 	}
 	eventBus.on("yard:execution", handleYardExecution);

@@ -28,12 +28,13 @@ import type { WsStreamChunk } from "@bound/shared";
 import type { AppLogger } from "../logging";
 import { parseContentBlocks } from "../session/tool-call-pairing";
 import { withLessTelemetry } from "../telemetry";
-import type { ResolvedShell } from "../tools/shell";
+import { BASH_OUTPUT_PATTERN } from "../tools/bash";
+import { BOUNDLESS_PROVENANCE_PREFIX } from "../tools/provenance";
+import { type ResolvedShell, isShellToolName } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import {
 	PERMISSION_OPTIONS,
 	formatDaemonNotice,
-	isShellToolName,
 	streamChunkToSessionUpdate,
 	toolCallContent,
 	toolCallLocations,
@@ -134,9 +135,9 @@ function shellTerminalOutput(
 			: content
 					.filter((block) => block.type === "text")
 					.map((block) => block.text)
-					.filter((text) => !text.startsWith("[boundless] "));
+					.filter((text) => !text.startsWith(`${BOUNDLESS_PROVENANCE_PREFIX} `));
 	const text = textBlocks.join("\n");
-	const parsed = text.match(/^Exit code: (\d+)\nstdout:\n([\s\S]*)\nstderr:\n([\s\S]*)$/);
+	const parsed = text.match(BASH_OUTPUT_PATTERN);
 	const exitCode = parsed ? Number(parsed[1]) : null;
 	const stdout = parsed?.[2] ?? text;
 	const stderr = parsed?.[3] ?? "";
@@ -560,8 +561,6 @@ export class AcpSession {
 			this.inFlightTools.delete(controller);
 		}
 	}
-
-	// ---- internals ----
 
 	/**
 	 * Resolves the permission decision for a tool call: a remembered decision

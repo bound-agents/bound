@@ -36,6 +36,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerRunningAuxLoop } from "@bound/agent";
+import { formatNotification } from "@bound/agent";
 import {
 	applyMetricsSchema,
 	applySchema,
@@ -52,7 +53,6 @@ import {
 	createMcpAppProxyRelay,
 	createRemotePlatformRequest,
 	createRouteHealthRelay,
-	formatNotification,
 } from "../server.js";
 
 // ---------------------------------------------------------------------------
@@ -1562,10 +1562,10 @@ describe("initServer — warm-poke driver", () => {
 		// active window to make the thread a candidate; (B) a `turns` row with
 		// cache activity whose age puts predictCacheState at "warm" (age < ttl 5m)
 		// AND clears the just-in-time gate (age >= ttl - scanInterval, where the
-		// selection scanInterval is the real WARM_POKE_SCAN_INTERVAL_MS = 2m). A
-		// 4-minute-old turn sits in the [3m, 5m) window that satisfies both.
+		// selection scanInterval is the overridden 2s driver interval). A turn
+		// aged ttl - 3s is ~ttl - 1s at the first 2s scan: inside [ttl - 2s, ttl).
 		const recent = new Date(Date.now() - 30 * 1000).toISOString();
-		const turnAt = new Date(Date.now() - 4 * 60 * 1000).toISOString();
+		const turnAt = new Date(Date.now() - (5 * 60 * 1000 - 3000)).toISOString();
 		insertRow(
 			db,
 			"messages",
@@ -1585,7 +1585,7 @@ describe("initServer — warm-poke driver", () => {
 			},
 			siteId,
 		);
-		// A turns row ~4m old with a cache read so predictCacheState reports warm
+		// A turns row just under 5m old with a cache read so predictCacheState reports warm
 		// (cache activity present, age < 5m TTL) and the thread is poke-eligible.
 		db.prepare(
 			`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, created_at)
@@ -1613,7 +1613,7 @@ describe("initServer — warm-poke driver", () => {
 		result = await initServer({
 			...makeDeps(appContext, agentLoopFactory, makeRelayProcessor()),
 			modelRouter,
-			scanIntervals: { warmPokeScanIntervalMs: 20 },
+			scanIntervals: { warmPokeScanIntervalMs: 2000 },
 		});
 
 		// The driver enqueues a `cache_warm_poke` notification and immediately
@@ -1622,7 +1622,7 @@ describe("initServer — warm-poke driver", () => {
 		// `[cache-warm-poke]` marker message. Assert on that persistent marker —
 		// the queue row is gone by the time we poll.
 		let pokeCount = 0;
-		for (let i = 0; i < 60; i++) {
+		for (let i = 0; i < 160; i++) {
 			await new Promise((r) => setTimeout(r, 25));
 			const row = db
 				.query(

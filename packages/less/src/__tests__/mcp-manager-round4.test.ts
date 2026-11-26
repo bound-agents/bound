@@ -140,6 +140,22 @@ describe("McpServerManager round4 uncovered branches", () => {
 			const result = await manager.reload(c2);
 			expect(result.changed).toContain("s");
 		});
+
+		it("treats changed allowTools or confirm lists as changed", async () => {
+			const manager = new McpServerManager(logger);
+			const base = { transport: "stdio" as const, command: "/nonexistent/t", enabled: true };
+			await manager.ensureAllEnabled([
+				{ ...base, name: "allow", allowTools: ["a"] },
+				{ ...base, name: "confirm", confirm: ["a"] },
+				{ ...base, name: "same", allowTools: ["a"], confirm: ["b"] },
+			]);
+			const result = await manager.reload([
+				{ ...base, name: "allow", allowTools: ["a", "b"] },
+				{ ...base, name: "confirm" },
+				{ ...base, name: "same", allowTools: ["a"], confirm: ["b"] },
+			]);
+			expect(result.changed.sort()).toEqual(["allow", "confirm"]);
+		});
 	});
 
 	describe("reload re-enable path (manager.ts 405-412)", () => {

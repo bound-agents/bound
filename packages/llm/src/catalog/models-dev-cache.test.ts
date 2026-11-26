@@ -541,32 +541,6 @@ describe("ModelsDevCache — disable flag + refresh cadence", () => {
 			cleanup();
 		}
 	});
-
-	it("shouldRefresh honors the 24h interval against an injected clock", async () => {
-		const { path, cleanup } = tmpCachePath();
-		try {
-			writeFileSync(path, JSON.stringify({ etag: "v1", fetchedAtMs: 0, payload: SAMPLE_PAYLOAD }));
-			const day = 24 * 60 * 60 * 1000;
-			const cache = new ModelsDevCache({ cachePath: path, refreshIntervalMs: day });
-			await cache.load();
-			expect(cache.shouldRefresh(day - 1)).toBe(false);
-			expect(cache.shouldRefresh(day)).toBe(true);
-			expect(cache.shouldRefresh(day + 1)).toBe(true);
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("shouldRefresh is true when nothing has been fetched yet", async () => {
-		const { path, cleanup } = tmpCachePath();
-		try {
-			const cache = new ModelsDevCache({ cachePath: path });
-			await cache.load();
-			expect(cache.shouldRefresh(0)).toBe(true);
-		} finally {
-			cleanup();
-		}
-	});
 });
 
 describe("ModelsDevCache — in-memory only (cachePath null)", () => {

@@ -8,6 +8,7 @@
 	import SkillCreateModal from "../components/SkillCreateModal.svelte";
 	import SkillEditModal from "../components/SkillEditModal.svelte";
 	import { client } from "../lib/bound";
+	import { formatBytes } from "../lib/format-time";
 	import { renderMarkdown } from "../lib/markdown";
 	import { mermaid } from "../lib/mermaid";
 	import { deleteControlsFor } from "./skills-view-logic";
@@ -98,14 +99,6 @@
 			renderedContent = newRendered;
 		}
 		loadSkills();
-	}
-
-	function formatBytes(bytes: number): string {
-		if (bytes === 0) return "0 B";
-		const k = 1024;
-		const sizes = ["B", "KB", "MB", "GB"];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return `${Math.round((bytes / k ** i) * 10) / 10} ${sizes[i]}`;
 	}
 
 	onMount(() => {

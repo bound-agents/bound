@@ -43,7 +43,6 @@ export async function persistWorkspaceChanges(
 		});
 	}
 
-	// Check individual file size limits
 	const failedPaths: string[] = [];
 	for (const change of changes) {
 		const sizeBytes = change.sizeBytes ?? 0;
@@ -58,7 +57,6 @@ export async function persistWorkspaceChanges(
 		return err(error);
 	}
 
-	// Check total size limit across workspace
 	let totalSize = 0;
 	for (const change of changes) {
 		const sizeBytes = change.sizeBytes ?? 0;
@@ -82,7 +80,6 @@ export async function persistWorkspaceChanges(
 
 	try {
 		for (const change of changes) {
-			// Read current DB state for OCC check
 			const dbRow = findFileByPath(db, change.path);
 
 			const preSnapshotHash = preSnapshot.get(change.path);
@@ -107,12 +104,10 @@ export async function persistWorkspaceChanges(
 				}
 			}
 
-			// Apply the change
 			if (change.operation === "created" || change.operation === "modified") {
 				if (change.content !== undefined) {
 					const now = new Date().toISOString();
 					if (dbRow) {
-						// Update existing file
 						updateRow(
 							db,
 							"files",

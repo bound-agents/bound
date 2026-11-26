@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
-import { LOCAL_WORK_TARGET, findHostWorkSpoolCapabilityById, insertDurableWork } from "@bound/core";
+import {
+	LOCAL_WORK_TARGET,
+	findHostWorkSpoolCapabilityById,
+	insertDurableWork,
+	isHostFresh,
+} from "@bound/core";
 import type { CapabilityRequirements } from "@bound/llm";
 import type { HostModelEntry, RelayKind } from "@bound/shared";
 import { type NormalizeKeyFn, hintMatchesLogicalModel } from "@bound/shared";
@@ -76,15 +80,6 @@ export interface RelayRoutingError {
 	error: string;
 }
 
-const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-
-/** Check staleness using modified_at (kept fresh by heartbeat), falling back to online_at. */
-function hostAge(row: { modified_at: string | null; online_at: string | null }): number | null {
-	const ts = row.modified_at ?? row.online_at;
-	if (!ts) return null;
-	return Date.now() - new Date(ts).getTime();
-}
-
 export function findEligibleHosts(
 	db: Database,
 	toolCommandName: string,
@@ -142,12 +137,6 @@ export function findEligibleHosts(
 	return { ok: true, hosts: eligible };
 }
 
-export function isHostStale(host: EligibleHost): boolean {
-	const ts = host.modified_at ?? host.online_at;
-	if (!ts) return true;
-	return Date.now() - new Date(ts).getTime() > STALE_THRESHOLD_MS;
-}
-
 export function findEligibleHostsByModel(
 	db: Database,
 	modelId: string,
@@ -202,9 +191,7 @@ export function findEligibleHostsByModel(
 
 	for (const row of rows) {
 		if (!row.models) continue;
-		// Stale hosts are excluded (modified_at or online_at older than STALE_THRESHOLD_MS)
-		const age = hostAge(row);
-		if (age === null || age > STALE_THRESHOLD_MS) continue;
+		if (!isHostFresh(row)) continue;
 
 		let rawModels: unknown;
 		try {
@@ -364,8 +351,7 @@ export function findAnyRemoteModel(
 
 	for (const row of rows) {
 		if (!row.models) continue;
-		const age = hostAge(row);
-		if (age === null || age > STALE_THRESHOLD_MS) continue;
+		if (!isHostFresh(row)) continue;
 
 		let rawModels: unknown;
 		try {
@@ -436,16 +422,6 @@ export function findAnyRemoteModel(
 	};
 }
 
-export function buildIdempotencyKey(
-	kind: string,
-	toolName: string,
-	args: Record<string, unknown>,
-): string {
-	const roundedTimestamp = Math.floor(Date.now() / 60_000) * 60_000;
-	const data = JSON.stringify({ kind, toolName, args, ts: roundedTimestamp });
-	return createHash("sha256").update(data).digest("hex").slice(0, 32);
-}
-
 /**
  * Serialize only a valid W3C trace carrier for a durable relay envelope.
  * Baggage and unrelated propagation fields must not cross a host boundary.
@@ -465,7 +441,7 @@ export function serializeRelayTraceCarrier(carrier: Record<string, string> | nul
 	return JSON.stringify(sanitized);
 }
 
-/** Inputs for the 4D-C durable-vs-legacy relay routing decision. */
+/** Inputs for the durable relay routing decision. */
 export interface RelayDurableRoutingContext {
 	/** Final destination of the request. */
 	targetSiteId: string;
@@ -485,10 +461,8 @@ export interface RelayDurableRoutingContext {
  *     (a spoke->hub->target row buffers at the hub, so the hub must be able to
  *     hold and forward it).
  *
- * Returns false when a hop does not advertise capability. After the release-N+1
- * legacy-relay demolition there is no `relay_outbox` fallback: a false result
- * means the peer is unreachable for relay, which the router surfaces as a typed
- * routing error (not a silent legacy write). This is a stale-topology /
+ * Returns false when a hop does not advertise capability: the peer is then
+ * unreachable for relay, which the router surfaces as a typed routing error. This is a stale-topology /
  * version-skew guard, not a normal path — every live host advertises the bit.
  *
  * Self-targeted requests are NOT routed here: they take the in-process
@@ -549,8 +523,7 @@ export interface RouteRelayRequestParams {
  * transfers to the target) or `"local"` (a `LOCAL_WORK_TARGET` row consumed
  * in-process — the loopback replacement for the retired single-host relay
  * pass). A destination that does not advertise `work_spool_capable` yields
- * `path: "error"` (see {@link RouteRelayError}) rather than a silent legacy
- * write — the legacy `relay_outbox` fallback is gone after release N+1.
+ * `path: "error"` (see {@link RouteRelayError}).
  */
 export type RouteRelayRequestResult =
 	| {
@@ -567,8 +540,7 @@ export type RouteRelayRequestResult =
 
 /**
  * A relay request/response could not be routed: its peer destination does not
- * advertise `work_spool_capable`, and there is no legacy fallback after release
- * N+1. This is a stale-topology / version-skew guard — every live host
+ * advertise `work_spool_capable`. This is a stale-topology / version-skew guard — every live host
  * advertises the bit — surfaced to the caller as a retriable relay failure.
  */
 export interface RouteRelayError {
@@ -677,14 +649,13 @@ export interface RouteRelayResponseParams {
  * other half of the same RPC transport as {@link routeRelayRequest}: a
  * self-targeted response (the requester is this host) rides the in-process
  * `LOCAL_WORK_TARGET` loopback; a peer requester rides the durable spool when
- * every hop advertises capability, else yields a {@link RouteRelayError} (no
- * legacy fallback after release N+1). Returns the written row's id and whether
+ * every hop advertises capability, else yields a {@link RouteRelayError}. Returns the written row's id and whether
  * it was newly inserted (false = the durable fence already held a copy — a
  * redelivered response).
  *
  * The row is inserted PENDING with `ref_id` = the request's id; the requester's
- * union-await ({@link readDurableResponseByRefId} / {@link readDurableResponsesByStreamId})
- * claims + delivers + acks it — its WHERE unions (ownSiteId, LOCAL_WORK_TARGET)
+ * awaiter ({@link readDurableResponseByRefId} / {@link readDurableResponsesByStreamId})
+ * claims + delivers + acks it — its WHERE matches both ownSiteId and LOCAL_WORK_TARGET
  * so a self-targeted response resolves by ref_id unchanged. The durable relay
  * lane deliberately does NOT claim response kinds; the awaiter is the sole
  * response consumer.

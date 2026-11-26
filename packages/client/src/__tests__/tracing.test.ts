@@ -132,13 +132,13 @@ describe("createClientTracingSession", () => {
 		expect(aChild?.traceId).not.toBe(bChild?.traceId);
 	});
 
-	it("end() is idempotent and returns [] (no trailing batch span to flush)", async () => {
+	it("end() is idempotent", async () => {
 		const session = createClientTracingSession();
 		await session.wrapToolCall(traceContext(TRACEPARENT_A), async () => "ok");
-		const first = session.end();
-		const second = session.end();
-		expect(first).toEqual([]);
-		expect(second).toEqual([]);
+		expect(() => {
+			session.end();
+			session.end();
+		}).not.toThrow();
 	});
 
 	it("after end(), wrapToolCall executes the function but emits no trace data", async () => {

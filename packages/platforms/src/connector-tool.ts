@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow, softDelete } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
+import type { Logger } from "@bound/shared";
 import { z } from "zod";
 import { connectorHandleId } from "./connector-handle-id.js";
 import {
@@ -39,6 +40,7 @@ export interface ConnectorToolContext {
 	siteId: string;
 	/** Proxies an MCP protocol request to a remote platform host via relay. */
 	remotePlatformRequest?: RemotePlatformRequest;
+	logger?: Logger;
 }
 
 /**
@@ -62,11 +64,7 @@ const connectorSchema = z.object({
 	handle_id: z.string().optional().describe("Connector handle ID to detach (required for detach)"),
 });
 
-/**
- * Handler for the "list" action — cluster-wide server discovery.
- */
 async function handleList(ctx: ConnectorToolContext): Promise<string> {
-	// Cluster-wide discovery: local registry + synced hosts.platforms column
 	const clusterServers = new Set<string>(ctx.registry.getServerNames());
 	const rows = ctx.db
 		.query("SELECT platforms FROM hosts WHERE deleted = 0 AND platforms IS NOT NULL")
@@ -78,7 +76,7 @@ async function handleList(ctx: ConnectorToolContext): Promise<string> {
 				for (const p of platforms) clusterServers.add(p);
 			}
 		} catch {
-			// Skip corrupted platforms JSON
+			ctx.logger?.warn("hosts.platforms is not valid JSON; skipping row for server discovery");
 		}
 	}
 	const servers = Array.from(clusterServers);
@@ -87,9 +85,6 @@ async function handleList(ctx: ConnectorToolContext): Promise<string> {
 		: "No platform servers connected.";
 }
 
-/**
- * Handler for the "channels" action — list available events from a server.
- */
 async function handleChannels(
 	ctx: ConnectorToolContext,
 	input: z.infer<typeof connectorSchema>,
@@ -197,7 +192,6 @@ async function handleAttach(
 	const eventName = input.event_name;
 	const eventArgs = input.event_args;
 
-	// Check if handle already exists (idempotency check)
 	const handleId = connectorHandleId(serverName, eventName, eventArgs);
 	const existing = getConnectorHandle(ctx.db, handleId);
 	if (existing) {

@@ -1,30 +1,11 @@
 /**
- * Browser-only Shiki highlighter.
- *
- * The shared package's barrel export includes server-side code intelligence
- * (including native tree-sitter bindings). Keep the web renderer on Shiki's
- * browser-compatible module graph rather than importing that barrel.
+ * Browser-only Shiki highlighter. Imports the `@bound/shared/syntax` subpath,
+ * never the barrel: the barrel pulls native tree-sitter bindings.
  */
-import {
-	type BundledLanguage,
-	type BundledTheme,
-	type Highlighter,
-	createHighlighter,
-} from "shiki";
+import { SYNTAX_LANGS, SYNTAX_THEME } from "@bound/shared/syntax";
+import { type BundledLanguage, type Highlighter, createHighlighter } from "shiki";
 
-const SYNTAX_LANGS: readonly BundledLanguage[] = [
-	"javascript",
-	"typescript",
-	"sql",
-	"python",
-	"bash",
-	"json",
-	"yaml",
-	"html",
-	"css",
-] as const;
-
-export const SYNTAX_THEME: BundledTheme = "tokyo-night";
+export { SYNTAX_THEME };
 
 const PLAINTEXT = "plaintext" as const;
 type LangTag = BundledLanguage | typeof PLAINTEXT;

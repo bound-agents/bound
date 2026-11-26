@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-	HINT_NORMALIZE_PROVIDER,
 	type NormalizeKeyFn,
 	hintMatchesAnyLogicalModel,
 	hintMatchesLogicalModel,
@@ -30,7 +29,7 @@ describe("model-hint-match", () => {
 			return { key: id };
 		};
 		normalizeHintKey("gpt-5.6-sol", spy);
-		expect(seenProvider).toBe(HINT_NORMALIZE_PROVIDER);
+		expect(seenProvider).toBe("openai-compatible");
 	});
 
 	it("matches an old hand-written id to the key an expanded backend advertises", () => {

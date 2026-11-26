@@ -9,8 +9,8 @@ import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { transitionThread } from "../session/transition";
 import { checkSandboxAvailable } from "../tools/sandbox";
-import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import { SandboxOverrideStore } from "../tools/sandbox-override";
+import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
@@ -18,18 +18,19 @@ import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
+import { CLEAR_TERMINAL } from "./util/resizeRedraw";
 import { type ModelCandidate, resolveModelName } from "./util/resolve-model";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./util/terminal-title";
 import { ChatView } from "./views/ChatView";
 import { InspectorView } from "./views/InspectorView";
 import { McpView } from "./views/McpView";
-import { PickerView, truncateLabel } from "./views/PickerView";
+import { type PickerMode, PickerView } from "./views/PickerView";
+import { truncateLabel } from "./views/picker-label";
 const NULL_TERMINAL_TITLE = new TerminalTitleController(
 	{ isTTY: false, write: () => undefined },
 	{ TERM: "dumb" },
 );
 export type AppView = "chat" | "mcp" | "picker" | "inspector";
-export type PickerMode = "thread" | "model";
 export interface AppState {
 	view: AppView;
 	pickerMode?: PickerMode;
@@ -409,11 +410,10 @@ export function App({
 				return;
 			}
 
-			// Clear terminal scrollback so the prior thread's <Static> output
-			// doesn't linger above the new thread. Standard ANSI clear+home+
-			// scrollback-clear; no-op when stdout isn't a TTY.
+			// Clear scrollback so the prior thread's <Static> output doesn't
+			// linger above the new thread.
 			if (process.stdout.isTTY) {
-				process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+				process.stdout.write(CLEAR_TERMINAL);
 			}
 
 			// performAttach already fetched the canonical message list
@@ -515,7 +515,7 @@ export function App({
 		// doesn't linger above the fresh thread. Same rationale as
 		// handleSetThread.
 		if (process.stdout.isTTY) {
-			process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+			process.stdout.write(CLEAR_TERMINAL);
 		}
 		dispatch({ type: "SET_THREAD", threadId: result.threadId });
 	}, [

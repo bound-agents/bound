@@ -189,7 +189,7 @@ describe("Model Resolution", () => {
 
 			// Rate-limit the local route; resolution must complete on the remote route
 			// serving the same model.
-			modelRouter.markRateLimited("gpt-5.6-sol", 60_000);
+			modelRouter.recordRouteFailure("gpt-5.6-sol", { errorKind: "rate_limit" });
 			const resolution = resolveModel("gpt-5.6-sol", modelRouter, db, "local-site");
 			expect(resolution.kind).toBe("remote");
 			if (resolution.kind === "remote") {
@@ -688,7 +688,7 @@ describe("Model Resolution", () => {
 			const modelRouter = new ModelRouter(backends, "primary");
 
 			// Mark the vision backend as rate-limited
-			modelRouter.markRateLimited("vision-backend", 60_000);
+			modelRouter.recordRouteFailure("vision-backend", { errorKind: "rate_limit" });
 
 			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
 			expect(resolution.kind).toBe("error");
@@ -1056,7 +1056,7 @@ describe("Model Resolution", () => {
 
 			// Mark the primary backend as rate-limited and request vision (which
 			// primary lacks). There is no same-model route elsewhere.
-			modelRouter.markRateLimited("primary", 60_000);
+			modelRouter.recordRouteFailure("primary", { errorKind: "rate_limit" });
 			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
 
 			// No substitution onto the unrelated vision-capable model.

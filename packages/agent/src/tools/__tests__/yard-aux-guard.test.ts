@@ -9,7 +9,7 @@ import { runYardProgram } from "../../yard/driver.js";
 import { createYardTool } from "../yard.js";
 
 /**
- * Nested-aux fail-fast (incident: thread 5411b76f / aux 5076d967).
+ * Nested-aux fail-fast.
  *
  * An aux agent's toolset structurally excludes `aux` (EXCLUDED_TOOLS in
  * agent-factory: nested fan-out would deadlock the shared ConcurrentCap and

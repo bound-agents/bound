@@ -1,6 +1,5 @@
 /**
- * Bedrock namespace lineup filter (2026-11-21-model-catalog.md §2.1, requirement
- * 1/2/7). Pure over the two parsed control-plane fixtures: given the foundation
+ * Bedrock namespace lineup filter (2026-11-21-model-catalog.md §2.1). Pure over the two parsed control-plane fixtures: given the foundation
  * models + inference profiles a region publishes (via `discoverModels()`) and the
  * operator's `cross_region` preference, decide which models the namespace entry
  * for this (profile, region) exposes, the callable id each uses, the wire
@@ -8,8 +7,8 @@
  *
  * Every decision traces to a published control-plane field — never a model-ID
  * string (R-MC1): modality lists, `modelLifecycle.status`,
- * `inferenceTypesSupported`, the undocumented-but-live `inferenceAPIsSupported`
- * (operator-accepted 2026-11-23), `explicitPromptCaching.isSupported`, and the
+ * `inferenceTypesSupported`, the undocumented-but-live `inferenceAPIsSupported`,
+ * `explicitPromptCaching.isSupported`, and the
  * SYSTEM_DEFINED inference profiles' covered ARNs.
  */
 
@@ -40,8 +39,8 @@ export interface BedrockLineupOptions {
 	region: string;
 	/**
 	 * Preferred cross-region inference-profile scope prefix for an
-	 * INFERENCE_PROFILE-only model (`global`, `us`, `eu`, …). Decision 3 defaults
-	 * it to `global`; when no profile with that prefix covers the model's ARN, the
+	 * INFERENCE_PROFILE-only model (`global`, `us`, `eu`, …). Defaults to
+	 * `global`; when no profile with that prefix covers the model's ARN, the
 	 * filter falls back to any covering SYSTEM_DEFINED profile (the geo profile).
 	 */
 	crossRegion?: string;
@@ -59,6 +58,16 @@ const DEFAULT_CROSS_REGION = "global";
 function normalizeArn(arn: string): string {
 	// arn:aws:bedrock:{region}::foundation-model/{id} → arn:aws:bedrock::foundation-model/{id}
 	return arn.replace(/^(arn:aws:bedrock:)[^:]*(::foundation-model\/)/, "$1$2");
+}
+
+/**
+ * The wire protocol from `inferenceAPIsSupported` only: Responses wins when
+ * advertised, else Converse when streaming is advertised, else none (excluded).
+ */
+function protocolFor(b: DiscoveredModel["bedrock"]): BedrockProtocol | undefined {
+	if (b?.openAiResponses === true) return "responses";
+	if (b?.converseStreaming === true) return "converse";
+	return undefined;
 }
 
 /** The scope prefix of a profile id (`global.openai.gpt-6.1-sol` → `global`). */
@@ -103,14 +112,7 @@ export function selectBedrockLineup(
 		if (b.lifecycleStatus !== "ACTIVE") continue;
 		if (b.inputText !== true || b.outputTextOnly !== true) continue;
 
-		// Protocol from inferenceAPIsSupported ONLY (requirement 2): Responses wins
-		// when advertised, else Converse when streaming is advertised, else excluded.
-		const protocol: BedrockProtocol | undefined =
-			b.openAiResponses === true
-				? "responses"
-				: b.converseStreaming === true
-					? "converse"
-					: undefined;
+		const protocol = protocolFor(b);
 		if (!protocol) continue;
 
 		// Callability: a bare model id when ON_DEMAND, else a SYSTEM_DEFINED profile
@@ -138,7 +140,7 @@ export function selectBedrockLineup(
 }
 
 /**
- * Select the Mantle namespace lineup for one (profile, region) (requirement 4).
+ * Select the Mantle namespace lineup for one (profile, region).
  * Mantle's `GET /v1/models` returns bare vendor-prefixed ids (`openai.gpt-5.6-sol`,
  * `zai.glm-4.6`); the protocol signal lives on the SAME control plane's
  * `ListFoundationModels` join. A Mantle id is included only when it exactly joins
@@ -146,20 +148,8 @@ export function selectBedrockLineup(
  * foundation-model id) AND that model advertises a usable wire protocol; its
  * callable id on Mantle is the bare model id. A Mantle id with no foundation-model
  * join (versioned snapshots like `openai.gpt-5.5-2026-04-23`, Anthropic Messages
- * ids with no `openAiResponses`/`converse` flag) is EXCLUDED and never guessed —
- * see {@link selectMantleLineupWithExclusions} for the operator report.
- */
-export function selectMantleLineup(
-	mantleModels: readonly DiscoveredModel[],
-	foundationModels: readonly DiscoveredModel[],
-): BedrockLineupEntry[] {
-	return selectMantleLineupWithExclusions(mantleModels, foundationModels).lineup;
-}
-
-/**
- * As {@link selectMantleLineup}, also returning the Mantle ids that were
- * excluded for lack of a protocol-bearing foundation-model join — the
- * requirement-4 report's "excluded, never guessed" list.
+ * ids with no `openAiResponses`/`converse` flag) is returned in `excluded` and
+ * never guessed.
  */
 export function selectMantleLineupWithExclusions(
 	mantleModels: readonly DiscoveredModel[],
@@ -173,12 +163,7 @@ export function selectMantleLineupWithExclusions(
 	const excluded: string[] = [];
 	for (const model of mantleModels) {
 		const joined = byId.get(model.providerModelId)?.bedrock;
-		const protocol: BedrockProtocol | undefined =
-			joined?.openAiResponses === true
-				? "responses"
-				: joined?.converseStreaming === true
-					? "converse"
-					: undefined;
+		const protocol = protocolFor(joined);
 		if (!protocol) {
 			excluded.push(model.providerModelId);
 			continue;

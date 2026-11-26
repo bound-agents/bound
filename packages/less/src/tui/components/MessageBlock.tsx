@@ -5,14 +5,31 @@ import { type Message, applyHashlineEdits } from "@bound/shared";
 import { resolveUserMessageSender } from "@bound/shared/message-sender";
 import { Box, Text } from "ink";
 import type React from "react";
-import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tokens } from "../theme";
 import { parseAuthChallengeNotice } from "../util/auth-challenge";
 import { getImageGraphics, getImagePreview, parseImageDescription } from "../util/image-preview";
+import { parseMessageContent } from "../util/message-text";
 import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
+import {
+	classifyTool,
+	displayToolName,
+	isCompactToolName,
+	toolTargetPath,
+} from "../util/tool-names";
+import {
+	SLOW_TOOL_MS,
+	analyzeToolCallContent,
+	exitCodeHint,
+	formatDuration,
+	parseQuerySummary,
+	parseSearchSummary,
+	summarizeToolArgs,
+	textContentLines,
+	withoutBoundlessProvenance,
+} from "../util/transcript";
 import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
 import { GraphicsImage } from "./GraphicsImage";
 import { HighlightedWrappedLine, langFromPath } from "./HighlightedCode";
@@ -49,158 +66,6 @@ const EDIT_DIFF_MAX_LINES = 24;
 /** Preview lines shown under a `boundless_write` call. */
 const WRITE_PREVIEW_MAX_LINES = 8;
 
-/** Strip the "boundless_" prefix from local tool names for cleaner display. */
-function displayToolName(name: string): string {
-	if (name.startsWith("boundless_")) return name.slice("boundless_".length);
-	if (name.startsWith("bms_")) return name.slice("bms_".length);
-	return name;
-}
-
-/** One parsed tool_use block from a tool_call message's content JSON. */
-export type ToolUseBlockLite = { name: string; input: Record<string, unknown> };
-type MessageContent = string | ContentBlock[];
-
-/** Decode persisted block-array transport without treating ordinary JSON text as content. */
-export function parseMessageContent(content: string): MessageContent {
-	if (!content.startsWith("[")) return content;
-	try {
-		const parsed: unknown = JSON.parse(content);
-		return Array.isArray(parsed) ? (parsed as ContentBlock[]) : content;
-	} catch {
-		return content;
-	}
-}
-
-/** Hide provenance only when doing so leaves an operator-visible result. */
-export function withoutBoundlessProvenance(content: MessageContent): MessageContent {
-	if (!Array.isArray(content)) return content;
-	const visible = content.filter(
-		(block) => block.type !== "text" || !(block as { text: string }).text.startsWith("[boundless]"),
-	);
-	return visible.length > 0 ? visible : content;
-}
-
-/** Flatten text result blocks and remove terminal control plus exterior blank rows. */
-export function textContentLines(content: MessageContent): string[] {
-	const text = stripTerminalControlSequences(
-		typeof content === "string"
-			? content
-			: content
-					.filter((block) => block.type === "text")
-					.map((block) => (block as { text: string }).text)
-					.join("\n"),
-	);
-	const lines = text.split("\n");
-	const first = lines.findIndex((line) => line.trim().length > 0);
-	if (first < 0) return lines;
-	let last = lines.length - 1;
-	while (last > first && lines[last].trim().length === 0) last--;
-	return lines.slice(first, last + 1);
-}
-
-/**
- * Compact tools (read/search/query) collapse to one committed line per
- * invocation — the result row — instead of a ⏵ call row plus a multi-line
- * result body. These calls dominate coding sessions, so halving their vertical
- * cost keeps the transcript scannable. Read/search match by suffix so
- * boundless_read / bms_read / boundless_search / bms_search are covered; query
- * is the built-in database tool's exact name.
- */
-export function isCompactToolName(name: string): boolean {
-	return name === "query" || name.endsWith("_read") || name.endsWith("_search");
-}
-
-/**
- * Parse a tool_call message's content into tool_use blocks + inline text, and
- * classify whether the whole call row is suppressed (commits nothing). Two
- * suppression cases:
- * - every use is a compact read/search (each invocation renders as one line
- *   on its result instead), or
- * - the call is a PARALLEL group (2+ uses): its ⏵ request rows render atop
- *   each result so request/result pairs read adjacently — <Static> commits
- *   the call row before any result exists, so pairing can only be achieved
- *   by moving the request line onto the result message.
- * Either way inline text still renders. Shared between MessageBlock
- * (rendering) and ChatView (margin layout) — the two must agree on
- * suppression or a zero-height row would still carry a 1-row margin.
- */
-export function analyzeToolCallContent(content: string): {
-	toolUses: ToolUseBlockLite[];
-	inlineText: string;
-	suppressed: boolean;
-} {
-	let toolUses: ToolUseBlockLite[] = [];
-	let inlineText = "";
-	try {
-		const blocks = JSON.parse(content);
-		if (Array.isArray(blocks)) {
-			toolUses = blocks.filter((b: { type?: string }) => b.type === "tool_use");
-			const textBlocks = blocks.filter((b: { type?: string }) => b.type === "text") as Array<{
-				type: "text";
-				text: string;
-			}>;
-			inlineText = textBlocks
-				.map((b) => stripTerminalControlSequences(b.text))
-				.filter(Boolean)
-				.join("\n\n");
-		}
-	} catch {
-		// Non-parseable content — caller falls back to raw display.
-	}
-	const suppressed =
-		toolUses.length > 0 &&
-		inlineText === "" &&
-		(toolUses.length > 1 ||
-			// A lone yard invocation renders as the Yard execution card (live
-			// while running, committed at the result row) which now carries the
-			// program and input itself — a separate request card above it showed
-			// the same payload twice (thread 2b372dca).
-			toolUses.every((b) => isCompactToolName(b.name) || b.name === "yard"));
-	return { toolUses, inlineText, suppressed };
-}
-
-/**
- * Parse the shared search-result footer ("N matches in M files (K files
- * searched)" / "No matches found (K files searched).") into the compact
- * summary fragment. Returns null when the line isn't the shared footer
- * (an error result or a differently-shaped remote tool) so the caller can
- * fall back to a plain line count.
- */
-function parseSearchSummary(lastLine: string): string | null {
-	if (/^No matches found \(\d+ files? searched\)\.?/.test(lastLine)) return "no matches";
-	const m = lastLine.match(/^(\d+ match(?:es)? in \d+ files?) \(\d+ files? searched\)/);
-	return m ? m[1] : null;
-}
-
-/** Summarize the tab-separated table emitted by the read-only `query` tool. */
-function parseQuerySummary(lines: string[]): string {
-	const header = lines[0] ?? "";
-	if (header.trim() === "") return "no rows";
-	const columns = header.split("\t").length;
-	const rows = Math.max(0, lines.length - 1);
-	const columnLabel = `${columns} ${columns === 1 ? "column" : "columns"}`;
-	return rows === 0
-		? `no rows · ${columnLabel}`
-		: `${rows} ${rows === 1 ? "row" : "rows"} · ${columnLabel}`;
-}
-
-/**
- * Threshold for showing a duration fragment on committed result rows. The
- * spinner already shows elapsed time while a tool runs; the committed row
- * used to forget it. Fast calls stay unannotated — a duration on every row
- * would be noise — but slow ones carry the "where did this turn's time go"
- * signal into scrollback.
- */
-const SLOW_TOOL_MS = 2000;
-
-/** Format a tool duration for display: `2.4s` under a minute, `1m 12s` above. */
-export function formatDuration(ms: number): string {
-	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-	const m = Math.floor(ms / 60_000);
-	const s = Math.round((ms % 60_000) / 1000);
-	return `${m}m ${s}s`;
-}
-
 /**
  * Duration fragment with magnitude color-grading: dim under 10s, yellow to a
  * minute, red beyond. The thresholds are terminal-scale, not SLA-scale — the
@@ -214,71 +79,6 @@ function DurationFragment({ ms }: { ms: number }): React.ReactElement {
 		<Text color={color}> · {formatDuration(ms)}</Text>
 	) : (
 		<Text dimColor> · {formatDuration(ms)}</Text>
-	);
-}
-
-/**
- * Human names for conventional shell exit codes. `exit 127` is trivia;
- * `exit 127 (not found)` is diagnosis. Covers the POSIX shell conventions
- * (126/127/2), GNU timeout (124), and the 128+n killed-by-signal family for
- * the signals that actually show up in tool output (INT/KILL/SEGV/TERM).
- * Returns null for everything else — an unmapped code renders bare rather
- * than with a guessed name.
- */
-function exitCodeHint(code: number): string | null {
-	switch (code) {
-		case 2:
-			return "usage error";
-		case 124:
-			return "timeout";
-		case 126:
-			return "not executable";
-		case 127:
-			return "not found";
-		case 130:
-			return "interrupted";
-		case 137:
-			return "killed";
-		case 139:
-			return "segfault";
-		case 143:
-			return "terminated";
-		default:
-			return null;
-	}
-}
-
-/** Summarize tool arguments for display, showing the most relevant arg value IN FULL.
- * Rendered args are never character-capped: the ⏵ row's Text wraps inside the stripe,
- * so a long command renders complete across rows instead of vanishing behind `...` —
- * a truncated command line hides exactly the part that distinguishes this call from
- * the last one. Also used by ChatView for the in-flight tool cards, where the CARD
- * (not this summary) truncates to one line to respect the live viewport budget. */
-export function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
-	// For common tools, show the primary argument. The shell tool is named for
-	// its shell (boundless_bash / _pwsh / _cmd via resolveShell), so match the
-	// canonical predicate, not a bare `_bash` suffix — which missed PowerShell
-	// and cmd.exe. The extra `_bash` suffix keeps the VFS sandbox shell
-	// (bms_bash), which the predicate's `boundless_`-anchor doesn't cover.
-	if (
-		(isShellToolName(toolName) || toolName.endsWith("_bash")) &&
-		typeof input.command === "string"
-	) {
-		return expandTabs(input.command);
-	}
-	// File tools summarize as their file. Two gauges: boundless_* tools carry
-	// `file_path`, the sandbox bms_* tools carry `path`. Without the second,
-	// bms_edit/bms_write fall through to the generic branch and dump their
-	// full edits/content JSON as the "summary".
-	if (toolName.endsWith("_read") || toolName.endsWith("_write") || toolName.endsWith("_edit")) {
-		if (typeof input.file_path === "string") return tildifyPath(input.file_path);
-		if (typeof input.path === "string") return tildifyPath(input.path);
-	}
-	// For MCP/other tools, show every arg as key=value, values in full.
-	const entries = Object.entries(input);
-	if (entries.length === 0) return "";
-	return expandTabs(
-		entries.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" "),
 	);
 }
 
@@ -545,7 +345,7 @@ function ToolCallRow({
 	const bodyWidth = width !== undefined ? Math.max(10, width - 2) : undefined;
 	const isRemote = !block.name.startsWith("boundless_");
 	const name = displayToolName(block.name);
-	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
+	const filePath = toolTargetPath(block.input) ?? null;
 	// `displayPath` is the tildified version for header rendering; we keep the
 	// original `filePath` for HashlineEditsBody / WritePreviewBody, which use it for
 	// syntax-highlighting language detection. `linkedPath` wraps the display
@@ -802,7 +602,7 @@ export function MessageBlock({
 		return <Box flexDirection="column">{parts}</Box>;
 	};
 
-	const parsedContent = parseMessageContent(message.content);
+	const parsedContent = parseMessageContent<ContentBlock>(message.content);
 
 	// Render based on role
 	if (message.role === "user") {
@@ -1013,8 +813,8 @@ export function MessageBlock({
 		// of a body preview. Errors skip this branch and keep the full rendering
 		// below so failures stay visible.
 		if (resolvedToolName && isCompactToolName(resolvedToolName) && !isError) {
-			const isSearch = resolvedToolName.endsWith("_search");
-			const isQuery = resolvedToolName === "query";
+			const isSearch = classifyTool(resolvedToolName) === "search";
+			const isQuery = classifyTool(resolvedToolName) === "query";
 			const lineCount = `${allLines.length} ${allLines.length === 1 ? "line" : "lines"}`;
 			const target = isSearch
 				? typeof toolInput?.pattern === "string"
@@ -1068,13 +868,13 @@ export function MessageBlock({
 		// skip this branch and keep the full rendering below.
 		if (
 			resolvedToolName &&
-			(resolvedToolName.endsWith("_edit") || resolvedToolName.endsWith("_write")) &&
+			(classifyTool(resolvedToolName) === "edit" || classifyTool(resolvedToolName) === "write") &&
 			!isError
 		) {
-			const isEdit = resolvedToolName.endsWith("_edit");
+			const isEdit = classifyTool(resolvedToolName) === "edit";
 			const editCount = Array.isArray(toolInput?.edits) ? toolInput.edits.length : null;
 			const hashEdits = isEdit ? asHashlineEdits(toolInput?.edits) : [];
-			const editPath = typeof toolInput?.file_path === "string" ? toolInput.file_path : filePath;
+			const editPath = toolTargetPath(toolInput) ?? filePath;
 			const diffStat = hashEdits.length > 0 ? measureEditDiff(editPath, hashEdits, cwd) : null;
 			const writeLines =
 				typeof toolInput?.content === "string"

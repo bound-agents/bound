@@ -25,36 +25,22 @@ export interface EventWakeupContent {
 	 */
 	content: string;
 	/**
-	 * Legacy relay_inbox entry IDs that were folded into `content` (including
-	 * the relay-side id of any twin also present in durable_work). Caller MUST
-	 * pass these to `markProcessed(db, ids)` once the wakeup messages have been
-	 * durably persisted, so the same envelopes don't reappear on the next
-	 * wakeup. Marking is left to the caller (rather than done eagerly here) so a
-	 * mid-write failure leaves the inbox unprocessed — a redundant event on a
-	 * later run is strictly better than silently losing the payload.
-	 */
-	processedIds: string[];
-	/**
-	 * durable_work rows CLAIMED (pending -> processing) for this wakeup, each
-	 * with its own fence token. Caller acknowledges these (-> consumed) after
-	 * the same persistence point that gates `processedIds`. Empty when the
-	 * durable store held no pending intake rows for the thread.
+	 * durable_work rows claimed (pending -> processing) for this wakeup, each
+	 * with its own fence token. The caller acknowledges these (-> consumed)
+	 * once the wakeup messages have been durably persisted, so a mid-write
+	 * failure leaves the rows unconsumed: a redundant event on a later run is
+	 * strictly better than silently losing the payload. Empty when the spool
+	 * held no pending intake rows for the thread.
 	 */
 	durableClaims: DurableWakeupClaim[];
 }
 
-/**
- * A merged intake entry drawn from either store, carrying the fields the
- * envelope renderer needs plus a discriminant so the caller can split the
- * folded set back into relay ids to mark and durable claims to acknowledge.
- */
-interface MergedIntakeEntry {
+interface IntakeEntry {
 	received_at: string;
 	kind: string;
 	source_site_id: string;
 	payload: string;
-	/** Durable row id, present only for a durable row. */
-	durableId: string | null;
+	durableId: string;
 }
 
 const DEFAULT_FALLBACK = "Execute scheduled task.";
@@ -105,36 +91,19 @@ function inlineWebhookEnvelopeBody(rawPayload: string): string {
 }
 
 /**
- * Builds wakeup content for an event task, folding in pending passive-intake
- * rows for the task's thread from BOTH durable stores: the legacy `relay_inbox`
- * (webhook intake pipeline in packages/web/src/server/webhook-handler.ts and
- * the connector/RSS pollers, which write envelopes keyed by
- * `ref_id = thread_id` and emit a `connector:event`) and the new `durable_work`
- * intake rows (4C-1). This is slice 4C-2: producers still write only to
- * relay_inbox today, but the fold reads the union so 4C-3 can flip producers to
- * durable_work without a scheduler change.
+ * Builds wakeup content for an event task, folding in the pending passive-intake
+ * durable_work rows for the task's thread. Producers (the webhook handler and
+ * the connector/RSS pollers) write intake rows keyed by `ref_id = thread_id`
+ * and emit a `connector:event`.
  *
- * Without this helper, scheduler.ts falls back to
- * `task.payload ?? "Execute scheduled task."`, which for webhook-
- * triggered tasks is just the default — leaving the agent with no idea
- * what fired the webhook and forcing it to do context archaeology over
- * GitHub / MCP to reconstruct the event. Observed in production: a
- * GitHub issue webhook fired and the agent had to guess what triggered it.
+ * Non-event task types (cron, deferred, heartbeat) do not consume intake: they
+ * have their own wakeup paths and must not be hijacked by stray intake rows that
+ * happen to share a thread_id.
  *
- * Non-event task types (cron, deferred, heartbeat) do NOT consume the
- * inbox — they have their own wakeup paths and shouldn't be hijacked
- * by stray intake entries that happen to share a thread_id.
- *
- * Both reads scope to the passive intake kinds (webhook_intake,
- * connector_intake, rss_intake) owned by this consumer. Without the kind
- * filter, stray rows of other intake-shaped kinds sharing a `ref_id` could be
- * opaquely folded into the wakeup as if they were event envelopes — the
- * payload schemas are not interchangeable.
- *
- * TWIN DEDUPE: during the 4C-3 producer flip a single event can momentarily
- * exist in both stores under the same `(kind, idempotency_key)`. Such twins
- * fold ONCE, preferring the durable row; the relay twin's id still enters the
- * mark-processed set so it can never re-fold on a later wakeup.
+ * The read is scoped to the passive intake kinds (webhook_intake,
+ * connector_intake, rss_intake) owned by this consumer. Rows of other
+ * intake-shaped kinds sharing a `ref_id` have non-interchangeable payload
+ * schemas and must not be folded in as event envelopes.
  *
  * The claim is taken here (pending -> processing, one fresh token per row) so
  * that folding and ownership are a single decision. The caller acknowledges
@@ -149,19 +118,13 @@ export function buildEventWakeupContent(
 	const fallback = task.payload ?? DEFAULT_FALLBACK;
 
 	if (task.type !== "event" || !task.thread_id) {
-		return { content: fallback, processedIds: [], durableClaims: [] };
+		return { content: fallback, durableClaims: [] };
 	}
 	const threadId = task.thread_id;
 
-	// Passive intake rows for this thread ride the durable_work spool (4C-1
-	// reader; already scoped to the passive intake kinds and ordered by
-	// received/created time). Legacy relay_inbox intake is retired (release N+1).
-
-	// Pending durable_work intake rows for this thread (4C-1 reader; already
-	// scoped to the passive intake kinds and ordered by received/created time).
 	const durableRows = listPendingIntakeDurableWorkForRef(db, threadId);
 
-	const merged: MergedIntakeEntry[] = [];
+	const merged: IntakeEntry[] = [];
 	for (const row of durableRows) {
 		merged.push({
 			// received_at is nullable on durable_work; fall back to created_at so
@@ -175,12 +138,10 @@ export function buildEventWakeupContent(
 	}
 
 	if (merged.length === 0) {
-		return { content: fallback, processedIds: [], durableClaims: [] };
+		return { content: fallback, durableClaims: [] };
 	}
 
-	// Order the union oldest-first by received time across both stores, so
-	// multiple deliveries interleave chronologically regardless of which store
-	// they landed in.
+	// Oldest-first by received time.
 	merged.sort((a, b) =>
 		a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0,
 	);
@@ -190,18 +151,16 @@ export function buildEventWakeupContent(
 	// claim only stamps ownership. A row that lost its pending state between the
 	// list and the claim is dropped from the fold so we never present an event
 	// we can't acknowledge.
-	const durableIdsToClaim = merged
-		.map((entry) => entry.durableId)
-		.filter((id): id is string => id !== null);
-	const claimedRows = claimDurableWorkByIds(db, durableIdsToClaim, targetSiteId);
-	const claimTokenById = new Map(claimedRows.map((row) => [row.id, row.claim_token as string]));
-	const folded = merged.filter(
-		(entry) => entry.durableId === null || claimTokenById.has(entry.durableId),
+	const claimedRows = claimDurableWorkByIds(
+		db,
+		merged.map((entry) => entry.durableId),
+		targetSiteId,
 	);
+	const claimTokenById = new Map(claimedRows.map((row) => [row.id, row.claim_token as string]));
+	const folded = merged.filter((entry) => claimTokenById.has(entry.durableId));
 
 	if (folded.length === 0) {
-		// Every durable candidate slipped away between the list and the claim.
-		return { content: fallback, processedIds: [], durableClaims: [] };
+		return { content: fallback, durableClaims: [] };
 	}
 
 	const triggerSpec = task.trigger_spec || "(unspecified)";
@@ -209,8 +168,8 @@ export function buildEventWakeupContent(
 	// Wrap the folded envelopes in a dedicated connector-specific XML envelope:
 	// a `<connector-events>` parent carrying the shared trigger + event count,
 	// with each intake entry as its own `<event>` node. Per-event attributes are
-	// drawn straight from the immutable intake row (received time, relay/durable
-	// kind, originating site), so the agent can reason over provenance without
+	// drawn straight from the immutable intake row (received time, kind,
+	// originating site), so the agent can reason over provenance without
 	// re-deriving it. This mirrors the structural shape of the per-user-message
 	// `<user-message>` envelope and the volatile-context `<volatile-context>`
 	// envelope (kebab-case tags, attribute-escaped via escapeXmlAttr).
@@ -236,19 +195,13 @@ export function buildEventWakeupContent(
 
 	const standing = task.payload ? `\n\nStanding task payload:\n${task.payload}` : "";
 
-	// No relay ids to mark processed after the release-N+1 demolition — the
-	// durable claims below are the sole acknowledgment path.
-	const processedIds: string[] = [];
-	const durableClaims: DurableWakeupClaim[] = folded
-		.filter((entry) => entry.durableId !== null)
-		.map((entry) => ({
-			id: entry.durableId as string,
-			token: claimTokenById.get(entry.durableId as string) as string,
-		}));
+	const durableClaims: DurableWakeupClaim[] = folded.map((entry) => ({
+		id: entry.durableId,
+		token: claimTokenById.get(entry.durableId) as string,
+	}));
 
 	return {
 		content: `${envelope}${standing}`,
-		processedIds,
 		durableClaims,
 	};
 }

@@ -10,7 +10,7 @@ The `@bound/sync` package implements event-sourced synchronisation between distr
 2. [Ed25519 Keypair Management](#ed25519-keypair-management)
 3. [Request Signing](#request-signing)
 4. [Reducers](#reducers)
-5. [Changesets and Peer Cursors](#changesets-and-peer-cursors)
+5. [Peer Cursors](#peer-cursors)
 6. [WebSocket Sync Protocol](#websocket-sync-protocol)
 7. [WebSocket Frames](#websocket-frames)
 8. [Change Log Pruning](#change-log-pruning)
@@ -66,10 +66,6 @@ const encoded = await exportPublicKey(publicKey);
 ```
 
 The `ed25519:` prefix is mandatory. `importPublicKey` will reject any string that does not begin with it.
-
-#### `exportPrivateKey(key: CryptoKey): Promise<Uint8Array>`
-
-Exports a private key in PKCS#8 format as raw bytes, suitable for writing directly to disk.
 
 #### `importPublicKey(encoded: string): Promise<CryptoKey>`
 
@@ -285,52 +281,7 @@ Clears the module-level column name cache. Intended for use in tests.
 
 ---
 
-## Changesets and Peer Cursors
-
-### Changesets
-
-**Source:** `packages/sync/src/changeset.ts`
-
-A `Changeset` is a bundle of change log entries together with the HLC range it covers. It is used by the reconnect-drain path and by any bulk-transfer tooling.
-
-```typescript
-interface Changeset {
-  events: ChangeLogEntry[];
-  source_site_id: string;
-  source_hlc_start: string;
-  source_hlc_end: string;
-}
-```
-
-`source_hlc_start` and `source_hlc_end` are the first and last `hlc` values in the `events` array. When `events` is empty, both fields equal the cursor value that was passed in.
-
-#### `fetchOutboundChangeset(db, peerSiteId, siteId): Changeset`
-
-Builds the changeset that the local instance will push to a peer. Reads `sync_state.last_sent` for `peerSiteId` (defaulting to `HLC_ZERO`) and returns every `change_log` entry with `hlc > last_sent`, regardless of which site originally created the entry. The rationale is that the hub should receive the full history, not just locally-originated entries.
-
-```typescript
-const outbound = fetchOutboundChangeset(db, hubSiteId, localSiteId);
-// outbound.events contains everything the hub hasn't seen yet
-```
-
-#### `fetchInboundChangeset(db, requesterSiteId, sinceHlc): Changeset`
-
-Builds the changeset the hub will return to a spoke during a drain. Selects entries with `hlc > sinceHlc` and **excludes any entry whose `site_id` equals `requesterSiteId`**. This echo suppression prevents a spoke from receiving back its own changes that have been relayed through the hub.
-
-```typescript
-const inbound = fetchInboundChangeset(db, spokeSiteId, sinceHlc);
-// entries originally created by spokeSiteId are excluded
-```
-
-#### `serializeChangeset(changeset): string` / `deserializeChangeset(json): Result<Changeset, Error>`
-
-JSON serialises/deserialises a `Changeset`. `deserializeChangeset` returns `err` on malformed JSON without throwing.
-
-#### `chunkChangeset(changeset, maxBytes = 10 MB): Changeset[]`
-
-Splits a changeset into smaller chunks that each serialize under `maxBytes` (default 10 MB). Events are HLC-ordered; each chunk gets its own HLC range. Returns a single-element array if the changeset already fits.
-
-### Peer Cursors
+## Peer Cursors
 
 **Source:** `packages/sync/src/peer-cursor.ts`
 

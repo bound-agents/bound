@@ -1,17 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import type {
-	CommandRegistryEntry,
-	Logger,
-	ModelBackendsConfig,
+import {
+	type CommandRegistryEntry,
+	type Logger,
+	type ModelBackendsConfig,
 	TypedEventEmitter,
+	allowlistSchema,
+	createLogger,
+	modelBackendsSchema,
 } from "@bound/shared";
 import type { OptionalConfigs, RequiredConfig } from "./config-loader";
-import { loadOptionalConfigs } from "./config-loader";
-import { bootstrapContainer } from "./container";
-import { ConfigService, DatabaseService, EventBusService, LoggerService } from "./container";
-import { getHostMetaValue } from "./repositories/host-meta";
+import { loadOptionalConfigs, loadRequiredConfigs } from "./config-loader";
+import { createDatabase } from "./database";
+import { applyMetricsSchema } from "./metrics-schema";
+import { ensureHostMetaSiteId } from "./repositories/host-meta";
+import { applySchema } from "./schema";
 import { InMemoryTurnStateStore, type TurnStateStore } from "./turn-state-store";
 
 export interface AppContext {
@@ -23,16 +27,12 @@ export interface AppContext {
 	siteId: string;
 	hostName: string;
 	/**
-	 * Per-thread agent turn-state cache. Keyed by threadId. Survives
-	 * MainAgentLoop instance teardown so warm-path cache reuse works across
-	 * client-tool defer/wakeup cycles. Lifetime is process-scoped with
-	 * internal TTL shorter than upstream prompt-cache TTL.
+	 * Keyed by threadId. Outlives MainAgentLoop instances so warm-path cache
+	 * reuse survives client-tool defer/wakeup cycles; its TTL stays shorter
+	 * than the upstream prompt-cache TTL.
 	 */
 	turnStateStore: TurnStateStore;
-	/**
-	 * MCP commands registered at startup and updated on hot-reload.
-	 * Read by context assembly to render the orientation block's command list.
-	 */
+	/** MCP commands registered at startup and replaced on hot-reload. */
 	commandRegistry: CommandRegistryEntry[];
 }
 
@@ -41,45 +41,33 @@ export async function createAppContext(
 	dbPath: string,
 	modelBackends?: ModelBackendsConfig,
 ): Promise<AppContext> {
-	const container = await bootstrapContainer(configDir, dbPath, modelBackends);
-
-	const dbService = container.resolve(DatabaseService);
-	const configService = container.resolve(ConfigService);
-	const eventBusService = container.resolve(EventBusService);
-	const loggerService = container.resolve(LoggerService);
-
-	const db = dbService.getDatabase();
-	const config = configService.getConfig();
-	const eventBus = eventBusService.getEventBus();
-	const logger = loggerService.getLogger("@bound/core", "app-context");
-
-	// Initialize host_meta table with site_id if not present
-	const hostMeta = getHostMetaValue(db, "site_id");
-
-	let siteId: string;
-	if (hostMeta) {
-		siteId = hostMeta;
-	} else {
-		// Generate a new site_id for this host
-		siteId = randomUUID();
-		db.run("INSERT INTO host_meta (key, value) VALUES (?, ?)", ["site_id", siteId]);
-		logger.info("Generated new site_id", { siteId });
+	const configResult = await loadRequiredConfigs(
+		configDir,
+		allowlistSchema,
+		modelBackendsSchema,
+		modelBackends,
+	);
+	if (!configResult.ok) {
+		const errors = configResult.error.map((e) => `${e.filename}: ${e.message}`).join("; ");
+		throw new Error(`Failed to load configuration: ${errors}`);
 	}
 
-	// Get host name from OS
-	const hostName = hostname() || "localhost";
+	const db = createDatabase(dbPath);
+	applySchema(db);
+	applyMetricsSchema(db);
 
-	// Load optional configs
-	const optionalConfigs = await loadOptionalConfigs(configDir);
+	const logger = createLogger("@bound/core", "app-context");
+	const { siteId, created } = ensureHostMetaSiteId(db, randomUUID);
+	if (created) logger.info("Generated new site_id", { siteId });
 
 	return {
 		db,
-		config,
-		optionalConfig: optionalConfigs,
-		eventBus,
+		config: configResult.value,
+		optionalConfig: await loadOptionalConfigs(configDir),
+		eventBus: new TypedEventEmitter(),
 		logger,
 		siteId,
-		hostName,
+		hostName: hostname() || "localhost",
 		turnStateStore: new InMemoryTurnStateStore(55 * 60 * 1000),
 		commandRegistry: [],
 	};

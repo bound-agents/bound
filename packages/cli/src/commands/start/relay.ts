@@ -1,7 +1,4 @@
-/**
- * Relay subsystem: relay processor, KeyManager, SIGHUP handler,
- * and hub site ID resolution.
- */
+/** Relay subsystem: relay processor, KeyManager, and hub site ID resolution. */
 
 import { RelayProcessor, reconcileWaitersOnBoot } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
@@ -17,6 +14,27 @@ export interface Keypair {
 	publicKey: CryptoKey;
 	privateKey: CryptoKey;
 	siteId: string;
+}
+
+/**
+ * The keyring site id whose URL is the configured hub. Read from the keyring,
+ * not `sync_state`: a spoke needs the hub's id to open its first connection,
+ * before any sync_state row exists.
+ */
+export function findKeyringHubSiteId(keyring: KeyringConfig, hub: string): string | undefined {
+	const normalize = (url: string): string | undefined => {
+		try {
+			return new URL(url).toString();
+		} catch {
+			return undefined;
+		}
+	};
+	const hubUrl = normalize(hub);
+	if (!hubUrl) return undefined;
+	for (const [siteId, entry] of Object.entries(keyring.hosts ?? {})) {
+		if (normalize(entry.url) === hubUrl) return siteId;
+	}
+	return undefined;
 }
 
 export interface RelayResult {
@@ -35,7 +53,6 @@ export async function initRelay(
 	clusterFsObj: ClusterFsResult | null,
 	confirmGates: Map<string, string[]> = new Map(),
 ): Promise<RelayResult> {
-	// 8b. Relay processor setup
 	appContext.logger.info("Initializing relay processor...");
 
 	const keyringResult = appContext.optionalConfig.keyring;
@@ -46,9 +63,8 @@ export async function initRelay(
 	}
 
 	const syncConfigResult = appContext.optionalConfig.sync;
-	const relayConfig = resolveRelayConfig(
-		syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
-	);
+	const syncConfig = syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined;
+	const relayConfig = resolveRelayConfig(syncConfig);
 	// In single-host mode (no keyring), trust only self; in multi-host, trust all keyring peers.
 	const relayProcessor = new RelayProcessor(
 		appContext.db,
@@ -65,9 +81,8 @@ export async function initRelay(
 	// Wire the virtual filesystem reader so discord_send_message can read files
 	// created by bash commands in the sandbox.
 	if (clusterFsObj) {
-		const mountableFs = "fs" in clusterFsObj ? clusterFsObj.fs : clusterFsObj;
 		relayProcessor.setFileReader(async (path: string): Promise<Uint8Array> => {
-			const content = await mountableFs.readFile(path);
+			const content = await clusterFsObj.fs.readFile(path);
 			return new TextEncoder().encode(content);
 		});
 	}
@@ -107,18 +122,10 @@ export async function initRelay(
 		});
 	}
 
-	// Determine hub siteId from keyring (for spoke-side validation)
-	let hubSiteId: string | undefined;
-	if (keyringResult?.ok && syncConfigResult?.ok) {
-		const kr = keyringResult.value as KeyringConfig;
-		const syncConfig = syncConfigResult.value as SyncConfig;
-		const hubEntry = Object.entries(kr.hosts).find(([_, v]) => v.url === syncConfig.hub);
-		if (hubEntry) {
-			hubSiteId = hubEntry[0];
-		}
-	}
+	const hubSiteId =
+		syncConfig?.hub && keyring ? findKeyringHubSiteId(keyring, syncConfig.hub) : undefined;
 
-	// 11d. Initialize KeyManager for encrypted middleware
+	// KeyManager for the encrypted sync middleware
 	let keyManager: KeyManager | undefined;
 	if (keyringResult?.ok) {
 		const kr = keyringResult.value as KeyringConfig;
@@ -149,9 +156,6 @@ export async function initRelay(
 			}
 		}
 	}
-
-	// SIGHUP handler registration moved to index.ts where all subsystems
-	// (sandbox, MCP clients, etc.) are available for hot-reload callbacks.
 
 	// Check for plaintext logging debug mode
 	if (process.env.BOUND_LOG_SYNC_PLAINTEXT === "1") {

@@ -185,18 +185,15 @@ export function resolveSandboxConfig(
 	setting: SandboxSetting | undefined,
 	cwd: string = process.cwd(),
 ): ResolvedSandboxConfig {
-	const base =
+	const options = typeof setting === "object" ? setting : {};
+	const base: ResolvedSandboxConfig =
 		setting === false
 			? DISABLED_SANDBOX
 			: {
-					enabled: setting === true || setting === undefined ? true : (setting.enabled ?? true),
-					writablePaths:
-						setting === true || setting === undefined ? [] : (setting.writablePaths ?? []),
-					network: setting === true || setting === undefined ? "open" : (setting.network ?? "open"),
-					onUnavailable:
-						setting === true || setting === undefined
-							? "error"
-							: (setting.onUnavailable ?? "error"),
+					enabled: options.enabled ?? true,
+					writablePaths: options.writablePaths ?? [],
+					network: options.network ?? "open",
+					onUnavailable: options.onUnavailable ?? "error",
 				};
 	// This runs while Boundless creates its tool session, before the model can
 	// create or rewrite cwd/.git. Failure is intentionally fail-closed: linked
@@ -404,6 +401,9 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	return [...writable];
 }
 
+/** `.git` entries git executes as the operator; kept read-only inside the sandbox. */
+const GIT_CONTROL_ENTRIES = ["hooks", "config", "config.worktree"] as const;
+
 /**
  * Paths under the working repo's `.git` that hold code git later runs *as the
  * operator*, outside the sandbox: the hook scripts in the repo's `.git/hooks`
@@ -440,7 +440,7 @@ export function computeGitProtectedPaths(
 		// Windows add the un-resolved Git control-surface names back before handing
 		// them to lowbox, so its native reparse-point check sees the junction itself.
 		for (const base of new Set([join(cwd, ".git"), metadata.gitdir, metadata.commondir])) {
-			for (const rel of ["hooks", "config", "config.worktree"] as const) {
+			for (const rel of GIT_CONTROL_ENTRIES) {
 				const lexicalPath = join(base, rel);
 				try {
 					realpathSync(lexicalPath);
@@ -453,7 +453,7 @@ export function computeGitProtectedPaths(
 		return [...protectedPaths];
 	}
 	const protectedPaths: string[] = [];
-	for (const rel of ["hooks", "config", "config.worktree"] as const) {
+	for (const rel of GIT_CONTROL_ENTRIES) {
 		const lexicalPath = join(cwd, ".git", rel);
 		try {
 			const resolvedPath = realpathSync(lexicalPath);
@@ -502,7 +502,7 @@ export function captureGitWorktreeMetadata(cwd: string): GitWorktreeMetadata | u
 
 		const protectedPaths: string[] = [];
 		for (const base of new Set([gitdir, commondir])) {
-			for (const rel of ["hooks", "config", "config.worktree"] as const) {
+			for (const rel of GIT_CONTROL_ENTRIES) {
 				try {
 					protectedPaths.push(realpathSync(join(base, rel)));
 				} catch {
@@ -605,6 +605,22 @@ export function checkWritePath(
 	// over the writable check.
 	const gitProtected = protectedRoots.some((root) => isWithin(resolvedTarget, root));
 	return { allowed: withinWritable && !gitProtected, resolvedTarget, writableRoots, gitProtected };
+}
+
+/**
+ * In-process write guard for the TS file tools, which call fs directly and so
+ * never pass through the mxc kernel guard. Returns the denial text, or null
+ * when the write is allowed or the sandbox is disabled.
+ */
+export function guardWriteTarget(
+	toolName: string,
+	targetPath: string,
+	cwd: string,
+	cfg: ResolvedSandboxConfig,
+): string | null {
+	if (!cfg.enabled) return null;
+	const check = checkWritePath(targetPath, cwd, cfg);
+	return check.allowed ? null : formatWriteDenied(toolName, targetPath, check);
 }
 
 /**

@@ -21,8 +21,6 @@ interface DetectorResult {
 	body: string | null;
 }
 
-// ─── A. In-flight task watchdog ─────────────────────────────────────
-
 interface LongRunningTask {
 	id: string;
 	type: string;
@@ -52,8 +50,6 @@ function detectLongRunningTasks(db: Database): DetectorResult {
 
 	return { heading: "Long-running tasks", body: lines.join("\n") };
 }
-
-// ─── B. Cost spike detector ──────────────────────────────────────────
 
 interface CostSpike {
 	task_id: string;
@@ -86,8 +82,6 @@ function detectCostSpikes(db: Database, selfTaskId?: string): DetectorResult {
 
 	return { heading: "Cost spikes", body: lines.join("\n") };
 }
-
-// ─── C. Completed-but-not-surfaced tasks ─────────────────────────────
 
 interface UnsurfacedTask {
 	id: string;
@@ -122,8 +116,6 @@ function detectUnsurfacedTasks(db: Database): DetectorResult {
 
 	return { heading: "Unsurfaced completions", body: lines.join("\n") };
 }
-
-// ─── E. Unfollowed-up user thread ───────────────────────────────────
 
 interface UnansweredThread {
 	thread_id: string;
@@ -174,8 +166,6 @@ function detectUnansweredThreads(db: Database): DetectorResult {
 	return { heading: "Unanswered user threads", body: lines.join("\n") };
 }
 
-// ─── Memory pressure ────────────────────────────────────────────────
-
 interface TierCount {
 	tier: string;
 	n: number;
@@ -201,8 +191,6 @@ function detectMemoryPressure(db: Database): DetectorResult {
 	const parts = rows.map((r) => `${r.tier}=${r.n}`).join(", ");
 	return { heading: "Memory pressure", body: `${total} total (${parts}) — over threshold` };
 }
-
-// ─── Aggregator ─────────────────────────────────────────────────────
 
 /**
  * Run all detectors and return a formatted section for the heartbeat prompt.

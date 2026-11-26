@@ -47,13 +47,8 @@ export interface ClientTracingSession {
 		options?: WrapToolCallOptions,
 	): Promise<ClientToolTracingResult<T>>;
 
-	/**
-	 * Shut down the underlying provider (fire-and-forget). Idempotent —
-	 * subsequent calls return `[]`. The `SerializedSpan[]` return type is
-	 * preserved for back-compat with callers that previously shipped a
-	 * trailing batch; nothing is ever queued here so the array is always empty.
-	 */
-	end(): SerializedSpan[];
+	/** Shut down the underlying provider (fire-and-forget). Idempotent. */
+	end(): void;
 }
 
 export function createClientTracingSession(): ClientTracingSession {
@@ -76,22 +71,9 @@ export function createClientTracingSession(): ClientTracingSession {
 			fn: () => Promise<T>,
 			options?: WrapToolCallOptions,
 		): Promise<ClientToolTracingResult<T>> {
-			if (sessionEnded || !traceContextStr) {
-				const result = await fn();
-				return { result, traceData: undefined };
-			}
-
-			let carrier: Record<string, string>;
-			try {
-				carrier = JSON.parse(traceContextStr) as Record<string, string>;
-			} catch {
-				const result = await fn();
-				return { result, traceData: undefined };
-			}
-
-			if (!carrier.traceparent) {
-				const result = await fn();
-				return { result, traceData: undefined };
+			const carrier = sessionEnded ? undefined : parseCarrier(traceContextStr);
+			if (!carrier?.traceparent) {
+				return { result: await fn(), traceData: undefined };
 			}
 
 			const linkedCtx = extractTraceContext(carrier);
@@ -137,13 +119,21 @@ export function createClientTracingSession(): ClientTracingSession {
 			};
 		},
 
-		end(): SerializedSpan[] {
-			if (sessionEnded) return [];
+		end(): void {
+			if (sessionEnded) return;
 			sessionEnded = true;
 			// Fire-and-forget shutdown — InMemorySpanExporter has no real resources
 			// to release, and we don't want disconnect() to await.
 			void provider.shutdown();
-			return [];
 		},
 	};
+}
+
+function parseCarrier(traceContextStr: string | undefined): Record<string, string> | undefined {
+	if (!traceContextStr) return undefined;
+	try {
+		return JSON.parse(traceContextStr) as Record<string, string>;
+	} catch {
+		return undefined;
+	}
 }

@@ -9,10 +9,10 @@ import {
 
 import type { Database } from "bun:sqlite";
 import { redactMessage, redactThread } from "@bound/agent";
-import type { Message, TypedEventEmitter } from "@bound/shared";
+import type { Message } from "@bound/shared";
 import { Hono } from "hono";
 
-export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter): Hono {
+export function createMessagesRoutes(db: Database): Hono {
 	const app = new Hono();
 
 	app.get("/:threadId/messages", (c) => {

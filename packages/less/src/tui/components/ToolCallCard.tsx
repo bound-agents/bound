@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import type React from "react";
 import { stripTerminalControlSequences } from "../util/terminal-control";
+import { displayToolName } from "../util/tool-names";
 import { expandTabs, wrapLineAtWidth } from "../util/wrap";
 import { Collapsible } from "./Collapsible";
 import { Spinner } from "./Spinner";
@@ -60,13 +61,6 @@ export function computeStdoutRowBudget(termRows: number, numInFlight: number): n
 	if (remaining <= 0) return 0;
 	const perCard = Math.floor(remaining / numInFlight);
 	return Math.max(0, Math.min(MAX_STDOUT_ROWS, perCard));
-}
-
-/** Strip the "boundless_" prefix from local tool names for cleaner display. */
-function displayToolName(name: string): string {
-	if (name.startsWith("boundless_")) return name.slice("boundless_".length);
-	if (name.startsWith("bms_")) return name.slice("bms_".length);
-	return name;
 }
 
 export interface ToolCallCardProps {

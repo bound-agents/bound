@@ -1,4 +1,4 @@
-import { counter, histogram } from "@bound/shared";
+import { counter } from "@bound/shared";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 interface CounterLike {
@@ -13,19 +13,14 @@ interface SpanLike {
 	end(): void;
 }
 
+type CoreSpanName = "changelog.transaction" | "durable_work.operation";
+
 const tracer = trace.getTracer("bound.core");
 const changeLogTransactions = counter("bound.core.changelog.transactions", {
 	description: "Change-log transactions by outcome",
 });
 const changeLogPostcommitEvents = counter("bound.core.changelog.postcommit_events", {
 	description: "Change-log post-commit event delivery outcomes",
-});
-const relayOutboxOperations = counter("bound.core.relay_outbox.operations", {
-	description: "Relay outbox persistence operations by outcome",
-});
-const relayOutboxOperationDuration = histogram("bound.core.relay_outbox.operation.duration", {
-	description: "Relay outbox persistence operation duration",
-	unit: "ms",
 });
 
 const noopCounter: CounterLike = { add() {} };
@@ -40,21 +35,12 @@ const noopSpan: SpanLike = {
 export interface CoreTelemetry {
 	changeLogTransactions: CounterLike;
 	changeLogPostcommitEvents: CounterLike;
-	relayOutboxOperations: CounterLike;
-	relayOutboxOperationDuration: {
-		record(value: number, attributes?: Record<string, string>): void;
-	};
-	startSpan(
-		name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
-		attributes?: Record<string, string | number | boolean>,
-	): SpanLike;
+	startSpan(name: CoreSpanName, attributes?: Record<string, string | number | boolean>): SpanLike;
 }
 
 let telemetry: CoreTelemetry = {
 	changeLogTransactions,
 	changeLogPostcommitEvents,
-	relayOutboxOperations,
-	relayOutboxOperationDuration,
 	startSpan: (name, attributes) => tracer.startSpan(name, { attributes }),
 };
 
@@ -62,23 +48,18 @@ export function setCoreTelemetry(value?: CoreTelemetry): void {
 	telemetry = value ?? {
 		changeLogTransactions: noopCounter,
 		changeLogPostcommitEvents: noopCounter,
-		relayOutboxOperations: noopCounter,
-		relayOutboxOperationDuration: { record() {} },
 		startSpan: () => noopSpan,
 	};
 }
 
+export function withCoreSpan<T>(name: CoreSpanName, fn: (span: SpanLike) => T): T;
 export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
-	fn: (span: SpanLike) => T,
-): T;
-export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
+	name: CoreSpanName,
 	attributes: Record<string, string | number | boolean>,
 	fn: (span: SpanLike) => T,
 ): T;
 export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
+	name: CoreSpanName,
 	attributesOrFn: Record<string, string | number | boolean> | ((span: SpanLike) => T),
 	maybeFn?: (span: SpanLike) => T,
 ): T {
@@ -108,17 +89,4 @@ export function recordChangeLogTransaction(outcome: "committed" | "failed"): voi
 
 export function recordChangeLogPostcommitEvent(outcome: "succeeded" | "failed"): void {
 	telemetry.changeLogPostcommitEvents.add(1, { outcome });
-}
-
-export function recordRelayOutboxOperation(
-	operation: "read" | "write" | "ack" | "drain",
-	outcome:
-		"hit" | "miss" | "failed" | "inserted" | "duplicate" | "delivered" | "sent" | "backpressured",
-	count = 1,
-	durationMs?: number,
-): void {
-	const attributes = { operation, outcome };
-	telemetry.relayOutboxOperations.add(count, attributes);
-	if (durationMs !== undefined)
-		telemetry.relayOutboxOperationDuration.record(durationMs, attributes);
 }

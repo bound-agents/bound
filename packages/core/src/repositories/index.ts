@@ -1,13 +1,10 @@
 /**
- * Read repository layer for synced tables.
- *
- * This is the home for SELECT queries that were previously inlined as
- * `db.query(...)` / `db.prepare(...)` across the codebase. Writes are NOT here —
- * every write to a synced table goes through insertRow/updateRow/softDelete in
- * ../change-log.ts (invariant #1), and the single sanctioned changelog-exempt
- * bypass is dangerouslyExecuteRawWrite. The read-side CI guard
- * (scripts/validate-read-centralization.ts) forbids inline reads outside this
- * directory once a file has been migrated.
+ * Read repository layer for synced tables. The read-side CI guard
+ * (scripts/validate-read-centralization.ts) ratchets inline reads outside this
+ * directory down against a baseline. Writes go through
+ * insertRow/updateRow/softDelete in ../change-log.ts (invariant #1); the
+ * exceptions here are create-webhook-binding.ts and the owner-only status
+ * transitions in mcp-auth-challenges.ts, which call those same helpers.
  *
  * Conventions for every module here:
  *  - Standalone exported functions, `db: Database` as the first argument. No classes.
@@ -46,26 +43,20 @@ export * from "./host-meta";
 export * from "./sync-state";
 export * from "./durable-work";
 export * from "./queries/attached-session-hosts";
-export * from "./queries/client-sessions-with-host";
 export * from "./queries/cross-thread-summaries";
 export * from "./queries/connector-bindings-with-task";
-export * from "./queries/evictable-running-tasks";
 export * from "./queries/file-modification-notices";
 export * from "./queries/find-dark-connector-handles";
 export * from "./queries/find-task-infra-binding";
 export * from "./queries/get-webhook-with-task";
 export * from "./queries/get-rss-feed-with-task";
-export * from "./queries/leader-host-liveness";
 export * from "./queries/memory-graph-neighbors";
-export * from "./queries/memory-graph-view";
 export * from "./queries/memory-summary-children";
 export * from "./queries/memory-with-source";
 export * from "./queries/recent-task-runs-with-host";
 export * from "./queries/recent-threads-with-messages";
 export * from "./queries/thread-user-display-name";
 export * from "./queries/threads-directory-listing";
-export * from "./queries/threads-needing-summary";
 export * from "./queries/thread-cost";
-export * from "./queries/webhook-response-by-id";
 export * from "./queries/interrupted-tool-use";
 export * from "./queries/model-reference-health";

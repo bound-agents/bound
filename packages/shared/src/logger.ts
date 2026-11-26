@@ -21,25 +21,20 @@ export interface Logger {
 
 let rootLogger: pino.Logger | undefined;
 
+function traceMixin(): Record<string, unknown> {
+	const span = trace.getActiveSpan();
+	if (!span) return {};
+	const ctx = span.spanContext();
+	return { trace_id: ctx.traceId, span_id: ctx.spanId, trace_flags: ctx.traceFlags };
+}
+
 function getRootLogger(): pino.Logger {
 	if (rootLogger) return rootLogger;
 
 	const level = (process.env.LOG_LEVEL || "info") as pino.LevelWithSilent;
 
 	if (level === "silent") {
-		rootLogger = pino({
-			level,
-			mixin() {
-				const span = trace.getActiveSpan();
-				if (!span) return {};
-				const ctx = span.spanContext();
-				return {
-					trace_id: ctx.traceId,
-					span_id: ctx.spanId,
-					trace_flags: ctx.traceFlags,
-				};
-			},
-		});
+		rootLogger = pino({ level, mixin: traceMixin });
 		return rootLogger;
 	}
 
@@ -66,22 +61,7 @@ function getRootLogger(): pino.Logger {
 		});
 	}
 
-	rootLogger = pino(
-		{
-			level,
-			mixin() {
-				const span = trace.getActiveSpan();
-				if (!span) return {};
-				const ctx = span.spanContext();
-				return {
-					trace_id: ctx.traceId,
-					span_id: ctx.spanId,
-					trace_flags: ctx.traceFlags,
-				};
-			},
-		},
-		pino.multistream(streams),
-	);
+	rootLogger = pino({ level, mixin: traceMixin }, pino.multistream(streams));
 
 	return rootLogger;
 }
@@ -98,9 +78,7 @@ export function createLogger(pkg: string, component: string): Logger {
 	};
 }
 
-/**
- * Reset the root logger instance. Used for testing.
- */
+/** Discard the cached root logger so the next createLogger re-reads LOG_LEVEL. */
 export function resetLogger(): void {
 	rootLogger = undefined;
 }

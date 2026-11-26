@@ -17,7 +17,7 @@ import { insertRow, updateRow } from "../change-log";
  *
  * Every `status` transition is written BY THE OWNING HOST ALONE (R-MO8a);
  * resolvers never write `status`. The legal transitions and their guards live
- * in {@link markResolved} / {@link markFailed} / {@link reRaise} — `resolved` is
+ * in {@link raiseChallenge} / {@link markResolved} / {@link markFailed} — `resolved` is
  * terminal-wins against every writer except the owner's own grant-death
  * re-raise. See docs/design/sync-protocol.md for the non-obvious semantics.
  */
@@ -45,9 +45,9 @@ export interface McpAuthChallenge {
 }
 
 /**
- * The owner-written demand fields (R-MO6). Passed to {@link raiseChallenge} and
- * {@link reRaise}; both write these from the owner's current config and its own
- * observation of the 401/403. Never carries a secret (R-MO7).
+ * The owner-written demand fields (R-MO6). {@link raiseChallenge} writes these
+ * from the owner's current config and its own observation of the 401/403. Never
+ * carries a secret (R-MO7).
  */
 export interface ChallengeDemand {
 	serverName: string;
@@ -67,8 +67,6 @@ export interface ChallengeDemand {
 export function challengeId(owningSiteId: string, serverName: string): string {
 	return deterministicUUID(BOUND_NAMESPACE, `mcp-auth-challenge:${owningSiteId}:${serverName}`);
 }
-
-// --- Finders -------------------------------------------------------------
 
 /** Fetch a challenge row by its deterministic id (live rows only). */
 export function findChallengeById(db: Database, id: string): McpAuthChallenge | null {
@@ -137,8 +135,6 @@ export function findChallengeByIdIncludingDeleted(
 		.get(id) as McpAuthChallenge | null;
 }
 
-// --- Guarded status-transition writers (owner-only, R-MO8a) --------------
-
 export type TransitionError =
 	| { kind: "not_found" }
 	| { kind: "illegal_transition"; from: ChallengeStatus; to: ChallengeStatus };
@@ -161,9 +157,8 @@ export type TransitionError =
  * this fresh raise per R-MO17c's "retained until the next terminal outcome" —
  * a raise IS a fresh attempt, so it clears). Returns the row's id.
  *
- * NOTE (slice 1): the R-MO10b debounce against a row already `failed` is a
- * raise-path decision that lives in the raise caller (slice 2+), not here —
- * this writer performs the transition it is asked to perform.
+ * The R-MO10b debounce against a row already `failed` lives in the raise
+ * caller; this writer performs the transition it is asked to perform.
  */
 export function raiseChallenge(db: Database, demand: ChallengeDemand, siteId: string): string {
 	const id = challengeId(demand.owningSiteId, demand.serverName);
@@ -265,29 +260,4 @@ export function markFailed(
 		siteId,
 	);
 	return ok(undefined);
-}
-
-/**
- * `failed → pending` or `resolved → pending` (owner, R-MO8a), refreshing the
- * demand fields (R-MO6). Thin wrapper over {@link raiseChallenge} for callers
- * that hold a demand and want the re-raise semantics named explicitly:
- *  - `failed → pending`: a later use of the server raises a fresh demand (R-MO21).
- *  - `resolved → pending`: grant-death re-raise the owner observes (R-MO12).
- *
- * Refuses (returns `illegal_transition`) if there is no existing row to
- * re-raise — a first raise must go through {@link raiseChallenge} directly, so
- * a re-raise cannot silently create a row it believes already existed.
- */
-export function reRaise(
-	db: Database,
-	demand: ChallengeDemand,
-	siteId: string,
-): Result<string, TransitionError> {
-	const id = challengeId(demand.owningSiteId, demand.serverName);
-	const existing = findChallengeByIdIncludingDeleted(db, id);
-	if (existing === null) {
-		return err({ kind: "illegal_transition", from: "pending", to: "pending" });
-	}
-	raiseChallenge(db, demand, siteId);
-	return ok(id);
 }

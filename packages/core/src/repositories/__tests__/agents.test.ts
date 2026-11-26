@@ -7,8 +7,6 @@ import {
 	findActiveAgentByName,
 	findAgentById,
 	findAgentByNameIncludingRetired,
-	findAgentIdById,
-	listActiveAgents,
 	listAgentsForToolView,
 } from "../agents";
 
@@ -157,7 +155,7 @@ describe("agents repository finders", () => {
 		});
 	});
 
-	// ---- findAgentById / findAgentIdById ----
+	// ---- findAgentById ----
 
 	describe("findAgentById", () => {
 		it("returns the row by id including a retired one (deleted=0 only)", () => {
@@ -180,44 +178,6 @@ describe("agents repository finders", () => {
 			insertRow(db, "agents", makeAgent({ id: "a1", name: "tama" }), SITE_ID);
 			softDelete(db, "agents", "a1", SITE_ID);
 			expect(findAgentById(db, "a1")).toBeNull();
-		});
-	});
-
-	describe("findAgentIdById (existence check, deleted-omission variant)", () => {
-		it("returns {id} for a soft-deleted row that findAgentById hides", () => {
-			insertRow(db, "agents", makeAgent({ id: "dead", name: "tombstone" }), SITE_ID);
-			softDelete(db, "agents", "dead", SITE_ID);
-			expect(findAgentById(db, "dead")).toBeNull();
-			expect(findAgentIdById(db, "dead")).toEqual({ id: "dead" });
-		});
-
-		it("returns null for an absent id (miss path)", () => {
-			expect(findAgentIdById(db, "never")).toBeNull();
-		});
-	});
-
-	// ---- listActiveAgents (ORDER BY name ASC, retired IS NULL, deleted=0) ----
-
-	describe("listActiveAgents", () => {
-		it("returns active identities ordered by name, excluding retired and deleted", () => {
-			insertRow(db, "agents", makeAgent({ id: "a1", name: "gamma" }), SITE_ID);
-			insertRow(db, "agents", makeAgent({ id: "a2", name: "alpha" }), SITE_ID);
-			insertRow(db, "agents", makeAgent({ id: "a3", name: "beta" }), SITE_ID);
-			insertRow(
-				db,
-				"agents",
-				makeAgent({ id: "a4", name: "retired-one", retired_at: "2026-02-02T00:00:00.000Z" }),
-				SITE_ID,
-			);
-			insertRow(db, "agents", makeAgent({ id: "a5", name: "deleted-one" }), SITE_ID);
-			softDelete(db, "agents", "a5", SITE_ID);
-
-			const names = listActiveAgents(db).map((a) => a.name);
-			expect(names).toEqual(["alpha", "beta", "gamma"]);
-		});
-
-		it("returns [] when empty", () => {
-			expect(listActiveAgents(db)).toEqual([]);
 		});
 	});
 

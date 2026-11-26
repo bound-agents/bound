@@ -1,10 +1,18 @@
 import { describe, expect, it } from "bun:test";
+import { renderDiscoverableArchive as renderArchiveLines } from "../stable-prefix/compose";
 import {
 	type DiscoverableArchiveInput,
 	UNCATEGORIZED_CLUSTER_NAME,
 	VC15_TIER1_THRESHOLD,
-	renderDiscoverableArchive,
+	computeSynthesisBacklogCount,
 } from "../summary-extraction";
+
+function renderDiscoverableArchive(input: DiscoverableArchiveInput) {
+	return {
+		section: { lines: renderArchiveLines(input) },
+		synthesisBacklogCount: computeSynthesisBacklogCount(input),
+	};
+}
 import type { DetailEntry } from "../summary-extraction";
 
 function createTestEntry(

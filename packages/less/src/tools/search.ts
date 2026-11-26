@@ -8,7 +8,7 @@ import {
 	shouldSearchPath,
 } from "@bound/shared";
 import { formatProvenance } from "./provenance";
-import type { ToolHandler } from "./types";
+import { TOOL_NAMES, type ToolHandler } from "./types";
 
 /** Skip individual files larger than this to avoid pulling huge blobs into memory. */
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -71,7 +71,7 @@ function* readLazily(paths: string[], cwd: string): Generator<SearchFileInput> {
 
 export function createSearchTool(hostname: string): ToolHandler {
 	return async (args, _signal, cwd) => {
-		const provenance = formatProvenance(hostname, cwd, "boundless_search");
+		const provenance = formatProvenance(hostname, cwd, TOOL_NAMES.search);
 		const {
 			pattern,
 			path: searchPath,
@@ -121,5 +121,3 @@ export function createSearchTool(hostname: string): ToolHandler {
 		}
 	};
 }
-
-export const searchTool: ToolHandler = createSearchTool("unknown");

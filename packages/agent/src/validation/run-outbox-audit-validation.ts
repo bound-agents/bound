@@ -53,16 +53,17 @@
  *
  * Outcomes are written as `_validation:outbox-audit:<table>:<row_id>`
  * (tier `default`, `source: "validation:outbox-audit"`) idempotently
- * with the standard `updateRow → insertRow` fallback.
+ * through `writeValidationEntry`.
  *
  * Cadence: hourly from `heartbeat-context.ts`.
  */
 
 import type { Database } from "bun:sqlite";
-import { getChangeLogHorizon, insertRow, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { SYNCED_TABLE_NAMES, getChangeLogHorizon, getPkColumn } from "@bound/core";
+import { isValidationDue, recordValidationRun, writeValidationEntry } from "./validation-entries";
 
 const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
+const OUTBOX_AUDIT_LAST_RUN_KEY = "_validation:outbox-audit-last-run";
 
 /**
  * Stability threshold — rows whose `modified_at` is within this
@@ -72,38 +73,6 @@ const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
  */
 const STABILITY_THRESHOLD_MS = 30 * 60 * 1000;
 
-/**
- * Synced tables to audit. Mirrors the source-of-truth list at
- * `packages/shared/src/types.ts` `SyncedTableName`. Tables added
- * there must be added here too — there's no compile-time link.
- */
-const AUDITED_TABLES = [
-	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
-	"hosts",
-	"cluster_config",
-	"advisories",
-	"skills",
-	"memory_edges",
-	"connector_handles",
-	"webhooks",
-	"turns",
-] as const;
-
-/**
- * Per-table primary-key column. Mirrors `TABLE_PK_COLUMN` in
- * `packages/core/src/change-log.ts`. Defaults to `id` when omitted.
- */
-const TABLE_PK_OVERRIDE: Record<string, string> = {
-	hosts: "site_id",
-	cluster_config: "key",
-};
-
-/** Per-table modified_at column override. All tables use `modified_at`. */
 const MODIFIED_AT_COLUMN = "modified_at";
 
 export interface OutboxAuditReport {
@@ -155,11 +124,11 @@ export function runOutboxAuditValidation(
 	let violationsFound = 0;
 	let tablesScanned = 0;
 
-	for (const table of AUDITED_TABLES) {
+	for (const table of SYNCED_TABLE_NAMES) {
 		// Some tables may not exist in older schemas; defensive try.
 		let rows: Array<{ row_id: string; modified_at: string }>;
 		try {
-			const pkCol = TABLE_PK_OVERRIDE[table] ?? "id";
+			const pkCol = getPkColumn(table);
 			// Lower bound: the evidence horizon. Rows older than the
 			// earliest surviving change_log entry have ambiguous
 			// provenance and are skipped to avoid false positives on
@@ -214,56 +183,13 @@ export function runOutboxAuditValidation(
 	return { rowsExamined, violationsFound, tablesScanned, evidenceHorizon };
 }
 
-/** Gate for the daily outbox-audit sweep: true if it has never run, or its last run (`_validation:outbox-audit-last-run`) predates `VALIDATION_INTERVAL_MS`. */
+/** True if the outbox-audit sweep has never run or its last run predates `VALIDATION_INTERVAL_MS`. */
 export function shouldRunOutboxAuditValidation(db: Database, nowMs: number): boolean {
-	const row = db
-		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get("_validation:outbox-audit-last-run") as { value: string } | null;
-
-	if (!row) return true;
-
-	try {
-		const lastRunMs = new Date(row.value).getTime();
-		return nowMs - lastRunMs >= VALIDATION_INTERVAL_MS;
-	} catch (_e) {
-		return true;
-	}
+	return isValidationDue(db, OUTBOX_AUDIT_LAST_RUN_KEY, nowMs, VALIDATION_INTERVAL_MS);
 }
 
 function updateLastRun(db: Database, siteId: string, nowMs: number): void {
-	const lastRunKey = "_validation:outbox-audit-last-run";
-	const lastRunId = deterministicUUID(BOUND_NAMESPACE, lastRunKey);
-	const lastRunValue = new Date(nowMs).toISOString();
-	try {
-		updateRow(
-			db,
-			"semantic_memory",
-			lastRunId,
-			{ modified_at: lastRunValue, value: lastRunValue },
-			siteId,
-		);
-	} catch (_e) {
-		try {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: lastRunId,
-					key: lastRunKey,
-					value: lastRunValue,
-					tier: "default",
-					source: "validation:outbox-audit",
-					modified_at: lastRunValue,
-					last_accessed_at: lastRunValue,
-					created_at: lastRunValue,
-					deleted: 0,
-				},
-				siteId,
-			);
-		} catch (insertErr) {
-			console.warn("[outbox-audit] last-run write failed:", insertErr);
-		}
-	}
+	recordValidationRun(db, siteId, OUTBOX_AUDIT_LAST_RUN_KEY, "validation:outbox-audit", nowMs);
 }
 
 function recordViolation(
@@ -281,37 +207,10 @@ function recordViolation(
 		modified_at: modifiedAt,
 		detected_at: new Date(nowMs).toISOString(),
 	});
-	const outcomeId = deterministicUUID(BOUND_NAMESPACE, outcomeKey);
-	const now = new Date(nowMs).toISOString();
-
-	try {
-		updateRow(
-			db,
-			"semantic_memory",
-			outcomeId,
-			{ value: outcomeBody, modified_at: now, last_accessed_at: now },
-			siteId,
-		);
-	} catch (_updateErr) {
-		try {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: outcomeId,
-					key: outcomeKey,
-					value: outcomeBody,
-					tier: "default",
-					source: "validation:outbox-audit",
-					modified_at: now,
-					last_accessed_at: now,
-					created_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-		} catch (insertErr) {
-			console.warn("[outbox-audit] violation entry write failed:", insertErr);
-		}
-	}
+	writeValidationEntry(db, siteId, {
+		key: outcomeKey,
+		value: outcomeBody,
+		source: "validation:outbox-audit",
+		nowMs,
+	});
 }

@@ -18,7 +18,7 @@ describe("WebSocket tool:call trace dispatch", () => {
 
 	beforeEach(() => {
 		eventBus = new TypedEventEmitter();
-		handler = createWebSocketHandler(eventBus);
+		handler = createWebSocketHandler({ eventBus });
 	});
 
 	afterEach(() => {

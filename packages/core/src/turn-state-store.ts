@@ -1,12 +1,8 @@
 /**
- * TurnStateStore — a keyed cache for agent turn state that must survive
- * MainAgentLoop instance teardown (e.g. across client-tool defer/wakeup cycles)
- * while staying bounded in lifetime to match the upstream prompt-cache TTL.
- *
- * The interface is generic so @bound/core stays free of agent-internal types.
- * Default implementation is in-memory, scoped to process lifetime. When we
- * move to multi-node, swap this for a distributed implementation (Redis,
- * db-persisted with TTL column, or sticky-routing + local cache).
+ * Keyed cache for agent turn state that must survive MainAgentLoop teardown
+ * (e.g. across client-tool defer/wakeup cycles) while staying bounded in
+ * lifetime to match the upstream prompt-cache TTL. Generic so @bound/core
+ * stays free of agent-internal types.
  */
 export interface TurnStateStore<T = unknown> {
 	get(threadId: string): T | undefined;

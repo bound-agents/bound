@@ -66,9 +66,11 @@ export interface ConfigError {
 	filename: string;
 	message: string;
 	fieldErrors: Record<string, string[]>;
+	/** Set when neither the `.js` nor the `.json` file exists. */
+	notFound?: boolean;
 }
 
-// Duck-typed ZodSchema interface to avoid importing zod directly
+// Duck-typed so core does not import zod directly
 interface ZodSchema<T> {
 	safeParse(data: unknown): ZodSafeParseResult<T>;
 }
@@ -182,44 +184,27 @@ export function loadConfigFile<T>(
 	filename: string,
 	schema: ZodSchema<T>,
 ): Result<T, ConfigError> {
-	try {
-		const path = `${configDir}/${filename}`;
-		const content = readFileSync(path, "utf-8");
-		const parsed = JSON.parse(content);
-
-		return validateConfig(filename, schema, expandEnvVarsInObject(parsed));
-	} catch (error) {
-		if (error instanceof SyntaxError) {
-			return err({
-				filename,
-				message: `Invalid JSON: ${error.message}`,
-				fieldErrors: {},
-			});
-		}
-
-		if (
-			error instanceof Error &&
-			error.message.includes("ENOENT") &&
-			error.message.includes("no such file")
-		) {
-			return err({
-				filename,
-				message: `File not found: ${configDir}/${filename}`,
-				fieldErrors: {},
-			});
-		}
-
-		if (error instanceof Error) {
-			return err({
-				filename,
-				message: error.message,
-				fieldErrors: {},
-			});
-		}
-
+	const path = join(configDir, filename);
+	if (!existsSync(path)) {
 		return err({
 			filename,
-			message: "Unknown error loading config file",
+			message: `File not found: ${path}`,
+			fieldErrors: {},
+			notFound: true,
+		});
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8"));
+		return validateConfig(filename, schema, expandEnvVarsInObject(parsed));
+	} catch (error) {
+		return err({
+			filename,
+			message:
+				error instanceof SyntaxError
+					? `Invalid JSON: ${error.message}`
+					: error instanceof Error
+						? error.message
+						: "Unknown error loading config file",
 			fieldErrors: {},
 		});
 	}
@@ -239,7 +224,6 @@ export async function loadRequiredConfigs(
 	modelBackends?: ModelBackendsConfig,
 ): Promise<Result<RequiredConfig, ConfigError[]>> {
 	const errors: ConfigError[] = [];
-
 	const allowlistResult = await loadConfigWithPrecedence(configDir, "allowlist", allowlistSchema);
 	if (!allowlistResult.ok) {
 		errors.push(allowlistResult.error);
@@ -252,12 +236,7 @@ export async function loadRequiredConfigs(
 		errors.push(modelBackendsResult.error);
 	}
 
-	if (errors.length > 0) {
-		return err(errors);
-	}
-
 	if (!allowlistResult.ok || !modelBackendsResult.ok) {
-		// This should never happen at this point due to the check above
 		return err(errors);
 	}
 
@@ -269,30 +248,20 @@ export async function loadRequiredConfigs(
 
 export async function loadOptionalConfigs(configDir: string): Promise<OptionalConfigs> {
 	const configs: OptionalConfigs = {};
-
-	// Define optional config files and their schemas
-	const optionalConfigs: Array<{
-		filename: string;
-		schema: ZodSchema<unknown>;
-		key: string;
-	}> = [
-		{ filename: "network.json", schema: networkSchema as ZodSchema<unknown>, key: "network" },
-		{ filename: "platforms.json", schema: platformsSchema as ZodSchema<unknown>, key: "platforms" },
-		{ filename: "sync.json", schema: syncSchema as ZodSchema<unknown>, key: "sync" },
-		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
-		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
-		{ filename: "memory.json", schema: memoryConfigSchema as ZodSchema<unknown>, key: "memory" },
+	// config-keys.test.ts scans this list for `key: "..."` literals.
+	const optionalConfigs: Array<{ key: string; schema: ZodSchema<unknown> }> = [
+		{ key: "network", schema: networkSchema as ZodSchema<unknown> },
+		{ key: "platforms", schema: platformsSchema as ZodSchema<unknown> },
+		{ key: "sync", schema: syncSchema as ZodSchema<unknown> },
+		{ key: "keyring", schema: keyringSchema as ZodSchema<unknown> },
+		{ key: "mcp", schema: mcpSchema as ZodSchema<unknown> },
+		{ key: "memory", schema: memoryConfigSchema as ZodSchema<unknown> },
 	];
 
-	for (const { filename, schema, key } of optionalConfigs) {
-		const result = await loadConfigWithPrecedence(
-			configDir,
-			filename.replace(/\.json$/, ""),
-			schema,
-		);
-		if (result.ok || !result.error?.message.includes("File not found")) {
-			// Include both successful loads and actual validation errors
-			// Exclude only "file not found" errors (missing optional files are OK)
+	for (const { key, schema } of optionalConfigs) {
+		const result = await loadConfigWithPrecedence(configDir, key, schema);
+		// A missing optional file is fine; a present-but-invalid one is reported.
+		if (result.ok || !result.error.notFound) {
 			configs[key] = result as Result<Record<string, unknown>, ConfigError>;
 		}
 	}

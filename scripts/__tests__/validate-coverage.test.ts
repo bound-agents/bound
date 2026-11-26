@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	type Baseline,
@@ -278,13 +279,37 @@ describe("validate-coverage: repository wiring", () => {
 		expect(packages).not.toContain("docs");
 	});
 
-	it("lists tracked production source only", () => {
+	it("lists production source only, never ignored generated files", () => {
 		const files = packageSourceFiles(root, "sandbox");
 		expect(files.length).toBeGreaterThan(0);
 		expect(files.every((file) => file.startsWith("packages/sandbox/src/"))).toBe(true);
 		expect(files.some((file) => file.includes("/__tests__/"))).toBe(false);
 		// Generated (gitignored) runtime bundles are not tracked source.
 		expect(files.some((file) => file.includes("/_runtime/"))).toBe(false);
+	});
+
+	it("lists the working tree: tracked files deleted on disk drop out, untracked new files count", () => {
+		const repo = mkdtempSync(join(tmpdir(), "validate-coverage-"));
+		try {
+			const git = (...args: string[]) =>
+				expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+			git("init", "-q");
+			mkdirSync(join(repo, "packages/demo/src"), { recursive: true });
+			writeFileSync(join(repo, "packages/demo/src/moved-away.ts"), "export const a = 1;\n");
+			writeFileSync(join(repo, "packages/demo/src/kept.ts"), "export const b = 2;\n");
+			git("add", ".");
+			rmSync(join(repo, "packages/demo/src/moved-away.ts"));
+			writeFileSync(join(repo, "packages/demo/src/moved-here.ts"), "export const a = 1;\n");
+			writeFileSync(join(repo, ".gitignore"), "packages/demo/src/generated.ts\n");
+			writeFileSync(join(repo, "packages/demo/src/generated.ts"), "export const g = 3;\n");
+
+			expect(packageSourceFiles(repo, "demo")).toEqual([
+				"packages/demo/src/kept.ts",
+				"packages/demo/src/moved-here.ts",
+			]);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
 	});
 
 	it("has a baseline floor for every testable package", () => {

@@ -1,51 +1,32 @@
-import { dirname, join, resolve } from "node:path";
-import { countPendingPeerTargetedDurableWork, listSyncState } from "@bound/core";
 import {
-	findClusterConfigKeyByKeyIncludingDeleted,
-	getSiteId,
-	insertRow,
+	countPendingPeerTargetedDurableWork,
+	listSyncState,
 	loadConfigWithPrecedence,
-	updateRow,
+	resolveRelayConfig,
 } from "@bound/core";
 import { syncSchema } from "@bound/shared";
-import { openBoundDB } from "../lib/db";
+import {
+	CLUSTER_HUB_KEY,
+	openBoundDBWithSite,
+	resolveDataDir,
+	upsertClusterConfig,
+} from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
 	wait?: boolean;
 	timeout?: number;
 	configDir?: string;
 }
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-async function loadRelayConfig(configDir: string): Promise<{ drain_timeout_seconds: number }> {
+async function loadDrainTimeoutSeconds(configDir: string): Promise<number> {
 	const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
-	if (!result.ok) return { drain_timeout_seconds: 120 };
-	return { drain_timeout_seconds: result.value.relay?.drain_timeout_seconds ?? 120 };
+	return resolveRelayConfig(result.ok ? result.value : undefined).drain_timeout_seconds;
 }
 export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "config";
-	// Data directory is assumed to be a sibling of the config directory, matching the
-	// layout produced by `bound init` and the convention used by runConfigReload.
-	const dataDir = join(dirname(resolve(configDir)), "data");
+	const dataDir = resolveDataDir(configDir);
 	console.log(`Setting cluster hub to: ${args.hostName}`);
-	const db = openBoundDB(dataDir);
+	const { db, siteId } = openBoundDBWithSite(dataDir);
 	try {
-		// Get site_id for change_log
-		const siteId = getSiteId(db);
-		if (siteId === "unknown") {
-			throw new Error("Failed to read site_id from database. Database may not be initialized.");
-		}
-
-		// Ensure tables exist — boundctl may run before the main process
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS cluster_config (
-				key TEXT PRIMARY KEY,
-				value TEXT NOT NULL,
-				modified_at TEXT NOT NULL
-			)
-		`);
-
 		// Step 1: Set drain flag
 		// TODO: For multi-hub clusters, this should be in cluster_config (synced) so all
 		// hubs see the drain signal. Currently in host_meta (local-only), which works for
@@ -57,17 +38,13 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		);
 		console.log("Relay drain mode enabled.");
 
-		// Step 2: Wait for relay outbox to drain
-		// Polls relay_outbox until all entries are delivered or the timeout elapses.
-		// Entries are marked delivered via markDelivered() when acknowledged by the relay handler.
-		const relayConfig = await loadRelayConfig(configDir);
-		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
+		// Step 2: Wait for the peer-targeted durable spool to drain
+		const drainTimeoutSeconds = await loadDrainTimeoutSeconds(configDir);
+		const drainTimeoutMs = drainTimeoutSeconds * 1000;
 		const drainStart = Date.now();
 		let drained = false;
 
-		console.log(
-			`Waiting for durable peer spool to drain (timeout: ${relayConfig.drain_timeout_seconds}s)...`,
-		);
+		console.log(`Waiting for durable peer spool to drain (timeout: ${drainTimeoutSeconds}s)...`);
 
 		while (Date.now() - drainStart < drainTimeoutMs) {
 			const pendingCount = countPendingPeerTargetedDurableWork(db, siteId);
@@ -79,7 +56,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 			}
 
 			console.log(`Draining durable peer spool: ${pendingCount} entries remaining...`);
-			await sleep(1000);
+			await Bun.sleep(1000);
 		}
 
 		if (!drained) {
@@ -91,20 +68,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 
 		// Record the timestamp when hub is set (used for polling)
 		const hubChangeTimestamp = new Date().toISOString();
-		// Step 3: Set hub. Probe ignoring `deleted` so a previously soft-deleted
-		// key is un-tombstoned via UPDATE rather than colliding on INSERT.
-		const hubKey = "cluster_hub";
-		const existingHub = findClusterConfigKeyByKeyIncludingDeleted(db, hubKey);
-		if (existingHub) {
-			updateRow(db, "cluster_config", hubKey, { value: args.hostName, deleted: 0 }, siteId);
-		} else {
-			insertRow(
-				db,
-				"cluster_config",
-				{ key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp, deleted: 0 },
-				siteId,
-			);
-		}
+		upsertClusterConfig(db, CLUSTER_HUB_KEY, args.hostName, siteId);
 		console.log("Cluster hub set successfully.");
 
 		// Step 4: Clear drain flag
@@ -134,7 +98,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 					confirmed = true;
 					break;
 				}
-				await sleep(pollIntervalMs);
+				await Bun.sleep(pollIntervalMs);
 			}
 			if (confirmed) {
 				console.log("All peers confirmed the hub change.");

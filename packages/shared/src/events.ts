@@ -28,7 +28,7 @@ export interface EventMap {
 		reason: string;
 	};
 	/**
-	 * A classified model refusal (slice 5, R-RT21, 2026-11-21-model-routing.md
+	 * A classified model refusal (R-RT21, 2026-11-21-model-routing.md
 	 * §7.4). Emitted for EVERY classified refusal, independent of HTTP error-rate
 	 * monitoring, so refusal volume is observable on its own axis.
 	 */
@@ -42,7 +42,7 @@ export interface EventMap {
 		substitutable: boolean;
 	};
 	/**
-	 * The outcome of a refusal-fallback walk (slice 5, R-RT21). Emitted once per
+	 * The outcome of a refusal-fallback walk (R-RT21). Emitted once per
 	 * substitution attempt chain: whether a substitute served the turn, which
 	 * model, and whether an endpoint-bound credit was redeemed. Paired with
 	 * `llm:refusal`, independent of HTTP error metrics.

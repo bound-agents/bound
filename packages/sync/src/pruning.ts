@@ -35,7 +35,6 @@ export function pruneChangeLog(
 			return { deleted: 0 };
 		}
 
-		// Keep the most recent MAX_SINGLE_HOST_ENTRIES, delete the rest
 		const cutoffHlc = getChangeLogHlcAtOffset(db, MAX_SINGLE_HOST_ENTRIES);
 		if (!cutoffHlc) return { deleted: 0 };
 
@@ -53,14 +52,12 @@ export function pruneChangeLog(
 		return { deleted };
 	}
 
-	// Multi-host mode: only delete confirmed events
 	const minHlc = getMinConfirmedHlc(db);
 
 	if (minHlc === HLC_ZERO) {
 		return { deleted: 0 };
 	}
 
-	// Delete all events up to and including minHlc
 	// Raw read justification: this call prunes the local change log; it is not a read.
 	db.query("DELETE FROM change_log WHERE hlc <= ?").run(minHlc);
 
@@ -109,13 +106,11 @@ export function startPruningLoop(
 			const mode = determinePruningMode(db);
 			pruneChangeLog(db, mode, logger);
 
-			// Prune relay cycles (30-day retention)
 			const relayCyclesPruned = pruneRelayCycles(db, 30);
 			if (relayCyclesPruned > 0) {
 				logger?.debug("Pruned relay cycles", { count: relayCyclesPruned });
 			}
 
-			// Prune acknowledged dispatch entries (1-hour retention)
 			const dispatchCutoff = new Date(Date.now() - 3_600_000).toISOString();
 			const dispatchPruned = pruneAcknowledged(db, dispatchCutoff);
 			if (dispatchPruned > 0) {
@@ -125,20 +120,15 @@ export function startPruningLoop(
 			if (durableDispatchPruned > 0) {
 				logger?.debug("Pruned consumed durable_work", { count: durableDispatchPruned });
 			}
-			// Dead-letter writers stamp expires_at = dead_lettered_at + 7d as a retention
-			// deadline (durable-work.ts). Nothing else deletes past it, so a populated
-			// dead-letter table would grow without bound after the #253 incident window.
-			// This is the retention sweeper: a physical DELETE of terminally-classified
-			// rows whose retention deadline has passed. durable_work is local-only and
-			// never synced (invariant #3), so a hard DELETE is correct here. Live pending
-			// rows are left alone — age-based deletion of undrained work would be silent
-			// data loss; genuine pending residue is the operator's `workspool purge` call.
+			// Dead-letter writers stamp expires_at = dead_lettered_at + 7d and nothing else
+			// deletes past it. durable_work is local-only (invariant #3), so a hard DELETE
+			// is correct. Live pending rows are left alone: age-based deletion of undrained
+			// work would be silent data loss; pending residue is `workspool purge`'s job.
 			const deadLettersPruned = pruneExpiredDeadLetters(db);
 			if (deadLettersPruned > 0) {
 				logger?.info("Pruned expired durable_work dead letters", { count: deadLettersPruned });
 			}
 
-			// Reclaim freed pages incrementally
 			runIncrementalVacuum(db);
 		}, intervalMs);
 	};

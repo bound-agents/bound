@@ -4,10 +4,7 @@ import {
 	findActiveRssFeedByThreadId,
 	findActiveWebhookByThreadId,
 } from "@bound/core";
-import { RELAY_PASSIVE_KINDS, type RelayPassiveKind } from "@bound/shared";
-
-/** The retention period assigned by every current passive-intake producer. */
-export const PASSIVE_INTAKE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+import { PASSIVE_INTAKE_TTL_MS, type RelayPassiveKind } from "@bound/shared";
 
 export interface PassiveIntakeBinding {
 	id: string;
@@ -63,9 +60,3 @@ export const PASSIVE_INTAKE_REGISTRY: readonly PassiveIntakeRegistration[] = [
 		titleFor: (threadId) => `RSS intake not draining: handler thread ${threadId} is dark`,
 	},
 ] as const;
-
-export const PASSIVE_INTAKE_KINDS = PASSIVE_INTAKE_REGISTRY.map((intake) => intake.kind);
-
-// Keep the shared producer contract live in this module; the test intentionally
-// compares the registration with it rather than maintaining a second list.
-void RELAY_PASSIVE_KINDS;

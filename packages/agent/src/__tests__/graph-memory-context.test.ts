@@ -96,7 +96,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// User message with keyword that matches A's value
 			const userMessage = "How does the scheduler handle cron patterns?";
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, userMessage);
 
 			// Should contain A (seed), B and C (via graph traversal)
 			const memoryLines = deltaLines(enrichment).join("\n");
@@ -145,7 +145,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			upsertEdge(db, seedMem.key, linkedMem.key, "informs", 0.8, siteId);
 
 			const userMessage = "Tell me about the sync protocol";
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, userMessage);
 
 			const seedLine = deltaLines(enrichment).find((l) => l.includes("sync_protocol"));
 			expect(seedLine).toBeDefined();
@@ -210,7 +210,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			// Trigger graph-seeded retrieval
 			const userMessage = "Tell me about graph seeding";
-			const enrichment = buildVolatileEnrichment(db, baseline, 8, 5, userMessage);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 8, 5, userMessage);
 
 			// Should have at most 8 memory entries
 			expect(deltaLines(enrichment).length).toBeLessThanOrEqual(8);
@@ -269,6 +269,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(
 				db,
 				baseline,
+				Date.now(),
 				5, // maxMemory = 5
 				5,
 				"test seed query",
@@ -308,7 +309,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", mem2, siteId);
 
 			// No edges created — call buildVolatileEnrichment
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5);
 
 			const memoryLines = deltaLines(enrichment);
 
@@ -354,7 +355,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			insertRow(db, "semantic_memory", mem, siteId);
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5);
 
 			// Find the memory line (may not be first if there are others)
 			const line = deltaLines(enrichment).find((l) => l.includes("test_key"));
@@ -418,7 +419,14 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// Create edge seed -> graph
 			upsertEdge(db, seedMem.key, graphMem.key, "related_to", 0.8, siteId);
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "seed entry query");
+			const enrichment = buildVolatileEnrichment(
+				db,
+				baseline,
+				Date.now(),
+				10,
+				5,
+				"seed entry query",
+			);
 
 			const memoryLines = deltaLines(enrichment);
 
@@ -478,6 +486,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(
 				db,
 				baseline,
+				Date.now(),
 				3, // Budget pressure cap
 				3,
 				"budget seed query",
@@ -518,7 +527,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", pinnedMem, siteId);
 
 			// Budget pressure with maxMemory=3
-			const enrichment = buildVolatileEnrichment(db, baseline, 3, 3, "test query");
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 3, 3, "test query");
 
 			// Should contain pinned entry
 			const hasPinned = deltaLines(enrichment).some((l) => l.includes("critical_rule"));
@@ -563,7 +572,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// User message with keywords that don't match anything
 			const userMessage = "Tell me about zebras and ice cream";
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, userMessage);
 
 			const memoryLines = deltaLines(enrichment);
 
@@ -614,7 +623,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const userMessage = "is it the one?";
 
 			// Should not crash or throw
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, userMessage);
 
 			expect(deltaLines(enrichment)).toBeDefined();
 			expect(Array.isArray(deltaLines(enrichment))).toBe(true);
@@ -650,7 +659,14 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", mem, siteId);
 
 			// Query that doesn't match
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "purple elephants");
+			const enrichment = buildVolatileEnrichment(
+				db,
+				baseline,
+				Date.now(),
+				10,
+				5,
+				"purple elephants",
+			);
 
 			// Should be empty (old memory, no match, before baseline)
 			expect(deltaLines(enrichment).length).toBe(0);
@@ -671,7 +687,14 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			insertRow(db, "semantic_memory", seedMem, siteId);
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "test graph query");
+			const enrichment = buildVolatileEnrichment(
+				db,
+				baseline,
+				Date.now(),
+				10,
+				5,
+				"test graph query",
+			);
 
 			// When graph is used (has edges or was attempted), counts should be set
 			if (enrichment.graphCount !== undefined) {
@@ -698,7 +721,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			insertRow(db, "semantic_memory", mem, siteId);
 
 			// No edges, so graph path should not activate
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5);
 
 			expect(enrichment.graphCount).toBe(0);
 			expect(enrichment.recencyCount).toBe(0);

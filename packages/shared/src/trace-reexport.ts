@@ -66,8 +66,6 @@ function errorClass(error: unknown): string {
  * Re-export serialized remote spans to the local OTLP exporter.
  * Constructs ReadableSpan-conformant objects from SerializedSpan data.
  * Used on spoke side to integrate hub-generated spans into local traces.
- *
- * AC5.4: This function is called when a trace_data relay response is received.
  */
 export function reExportSpans(
 	spans: SerializedSpan[],

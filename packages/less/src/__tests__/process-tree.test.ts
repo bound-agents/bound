@@ -10,11 +10,8 @@ import {
 	parseProcessTable,
 	readHostProcessTable,
 } from "../tools/process-tree";
-import {
-	DISABLED_SANDBOX,
-	type ResolvedSandboxConfig,
-	checkSandboxAvailable,
-} from "../tools/sandbox";
+import { checkSandboxAvailable } from "../tools/sandbox";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 
 const SELF = 100;
@@ -166,10 +163,11 @@ async function sandboxedCommandRuns(): Promise<boolean> {
 			{ command: `echo ok > "${marker}"`, timeout: 10_000 },
 			new AbortController().signal,
 			dir,
-			undefined,
-			"test",
-			resolveShell(undefined),
-			{ enabled: true, writablePaths: [], network: "open", onUnavailable: "error" },
+			{
+				hostname: "test",
+				shell: resolveShell(undefined),
+				sandbox: { enabled: true, writablePaths: [], network: "open", onUnavailable: "error" },
+			},
 		);
 		return existsSync(marker);
 	} finally {
@@ -190,15 +188,11 @@ describe.skipIf(!canManageProcesses)("bash tool kills the whole tree on timeout"
 		const pidFile = join(dir, "child.pid");
 		try {
 			const command = `sh -c 'trap "" HUP TERM; echo $ > "${pidFile}"; exec sleep 60' & wait`;
-			await bashToolWithStreaming(
-				{ command, timeout: 1500 },
-				new AbortController().signal,
-				dir,
-				undefined,
-				"test",
-				resolveShell(undefined),
+			await bashToolWithStreaming({ command, timeout: 1500 }, new AbortController().signal, dir, {
+				hostname: "test",
+				shell: resolveShell(undefined),
 				sandbox,
-			);
+			});
 			expect(existsSync(pidFile)).toBe(true);
 			const childPid = Number(readFileSync(pidFile, "utf8").trim());
 			for (let i = 0; i < 30; i++) {
@@ -233,10 +227,7 @@ describe.skipIf(!canManageProcesses)("bash tool kills the whole tree on timeout"
 				{ command, timeout: 1000 },
 				new AbortController().signal,
 				dir,
-				undefined,
-				"test",
-				resolveShell(undefined),
-				DISABLED_SANDBOX,
+				{ hostname: "test", shell: resolveShell(undefined), sandbox: DISABLED_SANDBOX },
 			);
 			expect(result.content.length).toBeGreaterThan(0);
 			expect(existsSync(pidFile)).toBe(true);

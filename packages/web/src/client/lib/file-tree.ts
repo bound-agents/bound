@@ -38,10 +38,8 @@ export function buildFileTree(files: FileMetadata[]): FileTreeNode[] {
 				nodeMap.set(key, node);
 
 				if (i === 0) {
-					// Root level node
 					rootNodes.push(node);
 				} else {
-					// Add to parent's children
 					const parentPath = parts.slice(0, i).join("/");
 					const parent = nodeMap.get(parentPath);
 					if (parent) {

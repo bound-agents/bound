@@ -2,7 +2,7 @@ export class UrlFilter {
 	constructor(private allowedPrefixes: string[]) {}
 
 	isAllowed(url: string): boolean {
-		if (this.allowedPrefixes.length === 0) return true; // No restrictions if empty
+		if (this.allowedPrefixes.length === 0) return true;
 		return this.allowedPrefixes.some((prefix) => url.startsWith(prefix));
 	}
 
@@ -13,8 +13,4 @@ export class UrlFilter {
 			);
 		}
 	}
-}
-
-export function createUrlFilter(allowedPrefixes: string[]): UrlFilter {
-	return new UrlFilter(allowedPrefixes);
 }

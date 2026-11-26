@@ -1,17 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { HLC_ZERO, type SyncState } from "@bound/shared";
 
-/** Single-table reads for the local, unsynced `sync_state` table. */
-export function getSyncStateByPeer(db: Database, peerSiteId: string): SyncState | null {
-	const row = db
-		.query(
-			`SELECT peer_site_id, last_received, last_sent, last_confirmed, last_sync_at, sync_errors
-			 FROM sync_state WHERE peer_site_id = ?`,
-		)
-		.get(peerSiteId) as SyncState | null;
-	return row ?? null;
-}
-
 export function getPeerSiteId(db: Database): string | undefined {
 	try {
 		const row = db.query("SELECT peer_site_id FROM sync_state LIMIT 1").get() as {

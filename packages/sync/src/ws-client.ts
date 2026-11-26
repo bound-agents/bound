@@ -6,8 +6,6 @@ import { incrementSyncErrors, resetSyncErrors } from "./peer-cursor.js";
 import { signRequest } from "./signing.js";
 import { type HandshakeSpan, startWsHandshake } from "./telemetry.js";
 import type {
-	ChangelogAckPayload,
-	ChangelogPushPayload,
 	RelayAckPayload,
 	RelayDeliverPayload,
 	SnapshotAckPayload,
@@ -18,6 +16,7 @@ import type {
 	SpoolTransferPayload,
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame, encodeFrame, isSpoolFrameByte } from "./ws-frames.js";
+import type { WsTransport } from "./ws-transport.js";
 
 /**
  * Dead-but-OPEN socket detector cadence (#253, third leg). Aligned with the 30s
@@ -38,43 +37,27 @@ export interface WsClientConfig {
 	siteId: string;
 	keyManager: KeyManager;
 	hubSiteId: string;
-	wsTransport?: {
-		addPeer: (
-			peerSiteId: string,
-			sendFrame: (frame: Uint8Array) => boolean,
-			symmetricKey: Uint8Array,
-			ping?: () => void,
-			ownerId?: string,
-		) => void;
-		removePeer: (peerSiteId: string) => void;
-		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
-		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
-		drainChangelog: (peerSiteId: string) => void;
-		/** Re-drain a changelog range refused under backpressure (#305). */
-		resumeChangelogDrain?: (peerSiteId: string) => void;
-		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
-		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
-		/** Receive a hub→spoke durable-work spool transfer (R-DW10). */
-		handleSpoolTransfer: (
-			sourceSiteId: string,
-			payload: SpoolTransferPayload,
-			senderIsOriginator?: boolean,
-		) => void;
-		/** Retire sender copies the hub acknowledged as durable (R-DW10). */
-		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
-		/** Reconnect drain of pending/transferring peer-targeted spool rows toward the hub. */
-		drainDurableWorkSpool: (peerSiteId: string, reason?: "reconnect" | "sweep") => void;
-		/** Apply a snapshot chunk to the local DB (spoke-side). */
-		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
-		/** Apply a column chunk for sub-row seeding of oversized rows. */
-		applyColumnChunk: (
-			tableName: string,
-			pkValue: string,
-			columnName: string,
-			chunkIndex: number,
-			chunkData: string,
-		) => void;
-	};
+	wsTransport?: Pick<
+		WsTransport,
+		| "addPeer"
+		| "removePeer"
+		| "handleChangelogPush"
+		| "handleChangelogAck"
+		| "drainChangelog"
+		| "resumeChangelogDrain"
+		| "handleRelayDeliver"
+		| "handleRelayAck"
+		| "handleSpoolTransfer"
+		| "handleSpoolTransferAck"
+		| "drainDurableWorkSpool"
+		| "applySnapshotChunk"
+		| "applyColumnChunk"
+		| "runBackfill"
+		| "clearSyncedTables"
+		| "handleConsistencyResponse"
+		| "handleConsistencyError"
+		| "handleRowPullResponse"
+	>;
 	logger?: Logger;
 	reconnectMaxInterval?: number; // seconds, default 10
 	/** Internal/test override; reconnect backfill waits 15s by default. */
@@ -542,31 +525,21 @@ export class WsSyncClient {
 		}
 
 		if (this.config.wsTransport) {
-			const wt = this.config.wsTransport as unknown as {
-				runBackfill?: (opts?: {
-					isFirstConnect?: boolean;
-					trigger?: "initial" | "reconnect" | "periodic";
-				}) => Promise<unknown>;
-				clearSyncedTables?: () => void;
-			};
+			const wt = this.config.wsTransport;
 
 			if (this.config.reseed && !this.reseedSent) {
 				this.reseedSent = true;
-				if (typeof wt.clearSyncedTables === "function") {
-					wt.clearSyncedTables();
-					this.config.logger?.info("[reseed] Cleared local tables for consistency-based reseed");
-				}
+				wt.clearSyncedTables();
+				this.config.logger?.info("[reseed] Cleared local tables for consistency-based reseed");
 			}
 
-			if (typeof wt.runBackfill === "function") {
-				const isFirstConnect = !this.hasOpenedOnce;
-				if (isFirstConnect) {
-					wt.runBackfill({ isFirstConnect, trigger: "initial" }).catch((err: Error) => {
-						this.config.logger?.warn("[backfill] Failed", { error: err.message });
-					});
-				} else {
-					this.scheduleReconnectBackfill(wt);
-				}
+			const isFirstConnect = !this.hasOpenedOnce;
+			if (isFirstConnect) {
+				wt.runBackfill({ isFirstConnect, trigger: "initial" }).catch((err: Error) => {
+					this.config.logger?.warn("[backfill] Failed", { error: err.message });
+				});
+			} else {
+				this.scheduleReconnectBackfill(wt);
 			}
 			this.hasOpenedOnce = true;
 		}
@@ -693,27 +666,15 @@ export class WsSyncClient {
 				}
 
 				if (decodedFrame.type === WsMessageType.CONSISTENCY_RESPONSE && this.config.wsTransport) {
-					(
-						this.config.wsTransport as unknown as {
-							handleConsistencyResponse?: (payload: unknown) => void;
-						}
-					).handleConsistencyResponse?.(decodedFrame.payload);
+					this.config.wsTransport.handleConsistencyResponse(decodedFrame.payload);
 				}
 
 				if (decodedFrame.type === WsMessageType.ERROR && this.config.wsTransport) {
-					(
-						this.config.wsTransport as unknown as {
-							handleConsistencyError?: (payload: unknown) => void;
-						}
-					).handleConsistencyError?.(decodedFrame.payload);
+					this.config.wsTransport.handleConsistencyError(decodedFrame.payload);
 				}
 
 				if (decodedFrame.type === WsMessageType.ROW_PULL_RESPONSE && this.config.wsTransport) {
-					(
-						this.config.wsTransport as unknown as {
-							handleRowPullResponse?: (payload: unknown) => void;
-						}
-					).handleRowPullResponse?.(decodedFrame.payload);
+					this.config.wsTransport.handleRowPullResponse(decodedFrame.payload);
 				}
 			}
 
@@ -726,18 +687,12 @@ export class WsSyncClient {
 		this.reconnectInterval = 1;
 	}
 
-	private scheduleReconnectBackfill(wt: {
-		runBackfill?: (opts?: {
-			isFirstConnect?: boolean;
-			trigger?: "initial" | "reconnect" | "periodic";
-		}) => Promise<unknown>;
-	}): void {
+	private scheduleReconnectBackfill(wt: Pick<WsTransport, "runBackfill">): void {
 		this.stopReconnectBackfillTimer();
 		const delayMs = this.config.reconnectBackfillDelayMs ?? 15_000;
 		this.reconnectBackfillTimer = setTimeout(() => {
 			this.reconnectBackfillTimer = null;
-			if (!this.connected || !this.connectionHealthy || typeof wt.runBackfill !== "function")
-				return;
+			if (!this.connected || !this.connectionHealthy) return;
 			wt.runBackfill({ trigger: "reconnect" }).catch((err: Error) => {
 				this.config.logger?.warn("[backfill] Failed", { error: err.message });
 			});
@@ -766,7 +721,6 @@ export class WsSyncClient {
 		this.snapshotHlc = null;
 		this.snapshotRowCount = 0;
 
-		// Remove WsTransport peer
 		if (this.config.wsTransport) {
 			this.config.wsTransport.removePeer(this.config.hubSiteId);
 		}
@@ -878,19 +832,11 @@ export class WsSyncClient {
 		const intervalSeconds = this.config.backfillIntervalSeconds ?? 300;
 		if (intervalSeconds <= 0) return;
 		this.backfillTimer = setInterval(() => {
-			const wt = this.config.wsTransport as unknown as {
-				runBackfill?: (opts?: {
-					isFirstConnect?: boolean;
-					trigger?: "initial" | "reconnect" | "periodic";
-				}) => Promise<unknown>;
-			};
-			if (typeof wt?.runBackfill === "function") {
-				wt.runBackfill({ trigger: "periodic" }).catch((err: Error) => {
-					this.config.logger?.warn("[backfill] Periodic backfill failed", {
-						error: err.message,
-					});
+			this.config.wsTransport?.runBackfill({ trigger: "periodic" }).catch((err: Error) => {
+				this.config.logger?.warn("[backfill] Periodic backfill failed", {
+					error: err.message,
 				});
-			}
+			});
 		}, intervalSeconds * 1000);
 	}
 

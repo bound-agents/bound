@@ -1,25 +1,20 @@
 import type { Implementation } from "@agentclientprotocol/sdk";
 import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/server";
-import type { McpServerConfig } from "../config";
+import { DEFAULT_BOUND_URL, type McpServerConfig } from "../config";
 import type { McpServerManager } from "../mcp/manager";
-import { proxyToolCall } from "../mcp/proxy";
+import { type ToolNameMapping, proxyToolCall } from "../mcp/proxy";
 import { type BashEventLogger, createBashTool } from "./bash";
 import { CONTEXT_FILE_CANDIDATES, collectContextFiles } from "./context-files";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
 import { createReadStructureTool } from "./read-structure";
-import type { ResolvedSandboxConfig } from "./sandbox";
+import type { ResolvedSandboxConfig } from "./sandbox-policy";
 import { createSearchTool } from "./search";
 import { type ResolvedShell, resolveShell } from "./shell";
-import type { ToolHandler, ToolResult } from "./types";
+import { TOOL_NAMES, type ToolHandler, type ToolResult } from "./types";
 import { createWriteTool } from "./write";
-
-export interface ToolNameMapping {
-	serverName: string;
-	toolName: string;
-}
 
 export interface BuildToolSetResult {
 	tools: ToolDefinition[];
@@ -27,18 +22,29 @@ export interface BuildToolSetResult {
 	toolNameMapping: Map<string, ToolNameMapping>;
 }
 
-export function buildToolSet(
-	_cwd: string,
-	hostname: string,
-	mcpTools?: Map<string, { tools: Tool[]; config: McpServerConfig }>,
-	confirmFn?: (toolName: string) => Promise<boolean>,
-	boundUrl?: string,
-	shell?: ResolvedShell,
-	mcpManager?: McpServerManager,
-	sandbox?: ResolvedSandboxConfig,
-	logger?: BashEventLogger,
-	contextFiles?: readonly string[],
-): BuildToolSetResult {
+export interface BuildToolSetOptions {
+	hostname: string;
+	mcpTools?: Map<string, { tools: Tool[]; config: McpServerConfig }>;
+	confirmFn?: (toolName: string) => Promise<boolean>;
+	boundUrl?: string;
+	shell?: ResolvedShell;
+	mcpManager?: McpServerManager;
+	sandbox?: ResolvedSandboxConfig;
+	logger?: BashEventLogger;
+	contextFiles?: readonly string[];
+}
+
+export function buildToolSet({
+	hostname,
+	mcpTools,
+	confirmFn,
+	boundUrl,
+	shell,
+	mcpManager,
+	sandbox,
+	logger,
+	contextFiles,
+}: BuildToolSetOptions): BuildToolSetResult {
 	const resolvedShell = shell ?? resolveShell(undefined);
 	const toolDefinitions: ToolDefinition[] = [];
 	const handlers = new Map<string, ToolHandler>();
@@ -49,7 +55,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_read",
+				name: TOOL_NAMES.read,
 				description:
 					"Read file contents in hashline format: each line renders as LINE:HASH|content. " +
 					"The 4-char hash is a stable anchor — pass it to boundless_edit to address lines " +
@@ -78,7 +84,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_read_structure",
+				name: TOOL_NAMES.readStructure,
 				description:
 					"Return a supported source file's top-level declaration structure without source bodies. Registered extensions: .ts, .tsx, .js, .jsx, .mjs, .cjs, .d.ts, .d.mts, .d.cts, .py, .pyi, .go, .rs; other extensions return empty. Each symbol includes a hashline-compatible LINE:HASH anchor.",
 				parameters: {
@@ -96,7 +102,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_write",
+				name: TOOL_NAMES.write,
 				description: "Write content to a file (creates parents, atomic write)",
 				parameters: {
 					type: "object",
@@ -118,7 +124,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_edit",
+				name: TOOL_NAMES.edit,
 				description:
 					"Edit a file using hashline anchors copied verbatim from a prior read of the same file. " +
 					"Each edit replaces the inclusive line range [start..end] with new content; anchors are " +
@@ -195,7 +201,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_copy",
+				name: TOOL_NAMES.copy,
 				description:
 					"Copy a file between the Boundless Satellite Station (the host disk where boundless runs) and the Bound Main Station (the virtualized bound VFS), without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one environment to the other.",
 				parameters: {
@@ -231,7 +237,7 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_search",
+				name: TOOL_NAMES.search,
 				description:
 					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:hash:preview matches (the hash is the line's hashline anchor from boundless_read/boundless_edit, so a hit can feed boundless_edit directly as `${line}:${hash}` with no extra read) with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
 				parameters: {
@@ -264,23 +270,23 @@ export function buildToolSet(
 	];
 
 	toolDefinitions.push(...coreToolDefs);
-	handlers.set("boundless_read", createReadTool(hostname));
-	handlers.set("boundless_read_structure", createReadStructureTool(hostname));
+	handlers.set(TOOL_NAMES.read, createReadTool(hostname));
+	handlers.set(TOOL_NAMES.readStructure, createReadStructureTool(hostname));
 	handlers.set(
-		"boundless_write",
+		TOOL_NAMES.write,
 		createWriteTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),
 	);
 	handlers.set(
-		"boundless_edit",
+		TOOL_NAMES.edit,
 		createEditTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),
 	);
-	handlers.set("boundless_search", createSearchTool(hostname));
+	handlers.set(TOOL_NAMES.search, createSearchTool(hostname));
 	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell, sandbox, logger));
 	handlers.set(
-		"boundless_copy",
+		TOOL_NAMES.copy,
 		createCopyTool({
 			hostname: hostname,
-			boundUrl: boundUrl ?? "http://localhost:3001",
+			boundUrl: boundUrl ?? DEFAULT_BOUND_URL,
 			sandbox: sandbox,
 		}),
 	);
@@ -341,7 +347,6 @@ export function buildToolSet(
 			}
 
 			for (const tool of tools) {
-				// Apply allowTools filtering (AC6.4)
 				if (config.allowTools && !config.allowTools.includes(tool.name)) {
 					continue;
 				}
@@ -364,13 +369,9 @@ export function buildToolSet(
 
 				toolDefinitions.push(mcpToolDef);
 
-				// Store reverse mapping for proxyToolCall lookup
-				toolNameMapping.set(mcpToolName, {
-					serverName,
-					toolName: tool.name,
-				});
+				const mapping: ToolNameMapping = { serverName, toolName: tool.name };
+				toolNameMapping.set(mcpToolName, mapping);
 
-				// Check if this tool requires confirmation (AC6.5)
 				const requiresConfirmation = config.confirm?.includes(tool.name) ?? false;
 
 				// MCP tools execute by proxying the call through the server
@@ -379,8 +380,6 @@ export function buildToolSet(
 				// error rather than silently dead-ending.
 				const baseHandler: ToolHandler = async (
 					args: Record<string, unknown>,
-					signal: AbortSignal,
-					_cwd: string,
 				): Promise<ToolResult> => {
 					if (!mcpManager) {
 						return {
@@ -393,18 +392,9 @@ export function buildToolSet(
 							isError: true,
 						};
 					}
-					const blocks = await proxyToolCall(
-						mcpManager,
-						mcpToolName,
-						args,
-						signal,
-						hostname,
-						toolNameMapping,
-					);
-					return { content: blocks };
+					return proxyToolCall(mcpManager, mapping, args, hostname);
 				};
 
-				// Wrap with confirmation gate if needed (AC6.5)
 				if (requiresConfirmation && confirmFn) {
 					const handler: ToolHandler = async (
 						args: Record<string, unknown>,
@@ -441,11 +431,6 @@ export function buildToolSet(
 }
 
 /**
- * Collects git context (current branch + recent commits) from the given
- * working directory. Returns formatted context lines on success, or a
- * warning string if git is unavailable or the directory is not a repository.
- */
-/**
  * Explains, in the system prompt, why the injected git context does not change
  * when the agent commits mid-session. Like the context-file copies, this block
  * is captured once at session start and held frozen for prompt-cache stability;
@@ -456,6 +441,10 @@ export function buildToolSet(
 const GIT_CONTEXT_STALENESS_NOTE =
 	"This git context (branch, HEAD, recent commits) was read when the session started and is held FROZEN for prompt-cache stability — it is NOT refreshed when you commit, branch, or pull during this session, so the head attribute and commit list below will NOT reflect commits you make now. After you commit, trust the commit command's own output; do not re-run git log or git rev-parse just to confirm a commit landed. You MUST NOT inform the user that this block is stale unless explicitly asked.";
 
+/**
+ * Collects git context (current branch + recent commits) from `cwd`, or a
+ * warning string when git is unavailable or `cwd` is not a repository.
+ */
 export async function collectGitContext(cwd: string): Promise<string> {
 	// Strip repository-location env vars so `git -C <cwd>` discovers the repo by
 	// walking up from cwd rather than honoring an inherited GIT_DIR. Without this,
@@ -517,15 +506,6 @@ export async function collectGitContext(cwd: string): Promise<string> {
 		return "Git context: (git unavailable)";
 	}
 }
-
-/**
- * The standard context files that boundless auto-injects when present in the
- * working directory, and the reader that wraps them for the system prompt, live
- * in ./context-files (shared with the write/edit tools' steering note, which
- * registry.ts cannot import from without a cycle). Re-exported here so callers
- * and tests that reach for them via registry keep resolving.
- */
-export { CONTEXT_FILE_CANDIDATES, collectContextFiles };
 
 export async function buildSystemPromptAddition(
 	cwd: string,

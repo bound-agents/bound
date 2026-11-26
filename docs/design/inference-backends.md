@@ -374,9 +374,9 @@ const router = createModelRouter({
 | `getDefault()` | Returns the default backend directly. |
 | `getDefaultId()` | Returns the default backend ID string. |
 | `listBackends()` | Returns `BackendInfo[]` — an array of `{ id, capabilities }` for every registered backend, using effective capabilities (driver baseline merged with config override). |
-| `listEligible(requirements?)` | Returns backends that are not currently rate-limited, optionally filtered by `CapabilityRequirements`. Sorted by registration order. |
-| `markRateLimited(id, retryAfterMs)` | Marks a backend as rate-limited for `retryAfterMs` milliseconds. The backend is excluded from `listEligible()` until the window expires. |
-| `isRateLimited(id)` | Returns `true` if the backend is currently rate-limited. Automatically clears expired entries. |
+| `listEligible(requirements?)` | Returns backends whose route is not in route-health backoff, optionally filtered by `CapabilityRequirements`. Sorted by registration order. |
+| `recordRouteFailure(id, { errorKind, retryAfterMs? })` | Records a classified route failure (`RouteErrorKind`) into the route-health backoff state machine. The backend moves to `backoff` on the exponential schedule, or for exactly `retryAfterMs` on a `429`, and is excluded from `listEligible()` until its next half-open trial. |
+| `isRateLimited(id)` | Returns `true` if the backend's route is in route-health backoff (set by `recordRouteFailure`). A `half_open` or `healthy` route returns `false`. |
 | `getEarliestCapableRecovery(requirements?)` | Returns the earliest expiry timestamp (ms) among rate-limited backends that satisfy `requirements`, or `null` if none exists. Used by `resolveModel()` to populate `earliestRecovery` on transient-unavailable errors. |
 | `getEffectiveCapabilities(id)` | Returns the merged capabilities (driver-reported baseline plus any config `capabilities` override) for the given backend ID, or `null` if not found. |
 

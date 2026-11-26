@@ -30,7 +30,6 @@
 		return [...data].sort((a, b) => (b.avg_latency_ms ?? -1) - (a.avg_latency_ms ?? -1));
 	});
 
-	// Get the maximum p95 latency across all hosts for x scale domain
 	const maxLatency = $derived.by(() => {
 		return Math.max(...sortedData.map((d) => d.p95_latency_ms ?? 0), 1);
 	});

@@ -6,7 +6,6 @@ import {
 	countSyncStatePeers,
 	getMinSyncReceivedHlc,
 	getPeerSiteId,
-	getSyncStateByPeer,
 	listSyncState,
 } from "../sync-state";
 
@@ -45,32 +44,6 @@ describe("sync-state repository", () => {
 
 	afterEach(() => {
 		db.close();
-	});
-
-	describe("getSyncStateByPeer", () => {
-		it("returns null for an unknown peer", () => {
-			expect(getSyncStateByPeer(db, "nobody")).toBeNull();
-		});
-
-		it("returns the full projected row for a known peer", () => {
-			seedPeer(db, {
-				peer_site_id: "peer-1",
-				last_received: "2026-01-01T00:00:00.000Z_0001_aaaa",
-				last_sent: "2026-01-01T00:00:00.000Z_0002_aaaa",
-				last_confirmed: "2026-01-01T00:00:00.000Z_0003_aaaa",
-				last_sync_at: "2026-01-02T00:00:00.000Z",
-				sync_errors: 2,
-			});
-			const row = getSyncStateByPeer(db, "peer-1");
-			expect(row).toEqual({
-				peer_site_id: "peer-1",
-				last_received: "2026-01-01T00:00:00.000Z_0001_aaaa",
-				last_sent: "2026-01-01T00:00:00.000Z_0002_aaaa",
-				last_confirmed: "2026-01-01T00:00:00.000Z_0003_aaaa",
-				last_sync_at: "2026-01-02T00:00:00.000Z",
-				sync_errors: 2,
-			});
-		});
 	});
 
 	describe("getPeerSiteId", () => {

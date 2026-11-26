@@ -2,14 +2,11 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, insertRow, softDelete } from "@bound/core";
 import {
-	type RankableRoute,
 	STICKY_MIN_WINDOW_MS,
 	cacheTtlToMs,
-	isRouteDrained,
 	loadDrainedRouteIds,
 	loadRouteOrder,
 	parseModelHint,
-	rankRoutes,
 	resolveStickyRoute,
 	stickyUntilMs,
 } from "../routing-preferences";
@@ -17,46 +14,6 @@ import {
 const R_A = "site-a:bedrock:opus";
 const R_B = "site-b:anthropic:opus";
 const R_C = "site-c:openai:opus";
-
-describe("rankRoutes (§5.2 deterministic ranking + §6.2 drain exclusion)", () => {
-	const routes: RankableRoute[] = [
-		{ routeId: R_C, local: false },
-		{ routeId: R_A, local: true },
-		{ routeId: R_B, local: false },
-	];
-
-	it("orders by per-model route_order first, listed before unlisted", () => {
-		const ranked = rankRoutes(routes, { routeOrder: [R_B, R_C] });
-		// R_B and R_C are listed (in that order); R_A is unlisted and sorts after.
-		expect(ranked.map((r) => r.routeId)).toEqual([R_B, R_C, R_A]);
-	});
-
-	it("falls back to locality then lexical RouteId for unlisted routes", () => {
-		const ranked = rankRoutes(routes, { routeOrder: null });
-		// No route_order: local (R_A) first, then remote by lexical RouteId.
-		expect(ranked.map((r) => r.routeId)).toEqual([R_A, R_B, R_C]);
-	});
-
-	it("excludes a drained route from the ranked candidate list entirely", () => {
-		const ranked = rankRoutes(routes, {
-			routeOrder: [R_A, R_B, R_C],
-			drainedRouteIds: new Set([R_A]),
-		});
-		expect(ranked.map((r) => r.routeId)).toEqual([R_B, R_C]);
-		expect(ranked.some((r) => r.routeId === R_A)).toBe(false);
-	});
-
-	it("never consults heartbeat freshness — ordering is stable regardless of input order", () => {
-		const shuffled: RankableRoute[] = [
-			{ routeId: R_B, local: false },
-			{ routeId: R_A, local: true },
-			{ routeId: R_C, local: false },
-		];
-		expect(rankRoutes(routes, { routeOrder: null }).map((r) => r.routeId)).toEqual(
-			rankRoutes(shuffled, { routeOrder: null }).map((r) => r.routeId),
-		);
-	});
-});
 
 describe("cacheTtlToMs + stickyUntilMs (§5.3 cache-aware hysteresis)", () => {
 	it("maps 5m and 1h hints, nulls everything else", () => {
@@ -236,7 +193,7 @@ describe("drain + route_order DB read wrappers", () => {
 		db.close();
 	});
 
-	it("isRouteDrained / loadDrainedRouteIds reflect live drains and un-drains", () => {
+	it("loadDrainedRouteIds reflects live drains and un-drains", () => {
 		insertRow(
 			db,
 			"route_drains",
@@ -249,12 +206,10 @@ describe("drain + route_order DB read wrappers", () => {
 			},
 			SITE,
 		);
-		expect(isRouteDrained(db, R_A)).toBe(true);
 		expect(loadDrainedRouteIds(db).has(R_A)).toBe(true);
 
 		// Un-drain: the route is no longer excluded.
 		softDelete(db, "route_drains", R_A, SITE);
-		expect(isRouteDrained(db, R_A)).toBe(false);
 		expect(loadDrainedRouteIds(db).has(R_A)).toBe(false);
 	});
 

@@ -46,8 +46,13 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { findClusterConfigValueByKey } from "@bound/core";
-import { type ClusterModelRoles, ROUTING_MODEL_ROLES_KEY, compareBytewise } from "@bound/shared";
+import { findClusterConfigValueByKey, listActiveSkillNameDescriptions } from "@bound/core";
+import {
+	type ClusterModelRoles,
+	ROUTING_MODEL_ROLES_KEY,
+	compareBytewise,
+	createLogger,
+} from "@bound/shared";
 import {
 	buildParentSummaryMap,
 	buildStaleChildrenMap,
@@ -58,6 +63,8 @@ import {
 } from "../summary-extraction";
 import type { StageEntry, Vc15Tunables } from "../summary-extraction";
 import type { ClusterModelView, StableVolatileInputs } from "./types";
+
+const logger = createLogger("@bound/agent", "stable-prefix");
 
 /**
  * Wider shapes consumed by `projectStableVolatileInputs`. Mirrors
@@ -309,10 +316,8 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
  * is computed upstream from token totals, not from DB state. The
  * caller (`context-assembly.ts`) holds it.
  *
- * Skill loading is wrapped in a try/catch matching the existing
- * production behavior in `buildVolatileContext` — an empty list
- * is the documented graceful degradation when the skills query
- * fails.
+ * A failed skills query degrades to an empty skill index, matching
+ * the cold path in `buildVolatileContext`.
  */
 export function collectStableVolatileInputs(
 	db: Database,
@@ -331,13 +336,11 @@ export function collectStableVolatileInputs(
 
 	let activeSkills: Array<{ name: string; description: string }> = [];
 	try {
-		activeSkills = db
-			.query(
-				"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
-			)
-			.all() as Array<{ name: string; description: string }>;
-	} catch {
-		// Non-fatal — match `buildVolatileContext`'s behavior.
+		activeSkills = listActiveSkillNameDescriptions(db);
+	} catch (error) {
+		logger.debug("Active skill index query failed; rendering no skill index", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	return projectStableVolatileInputs({

@@ -40,7 +40,7 @@ describe("createRelayWait$", () => {
 	});
 
 	// Post-N+1 the relay path is durable-only. A tool_call request rides a
-	// durable_work row; the awaiter (createRelayWait$ → readUnionResponseEntry)
+	// durable_work row; the awaiter (createRelayWait$ → readDurableResponseEntry)
 	// resolves from a durable response row keyed by the request's ref_id and
 	// consumes it exactly-once via the token-fenced claim/ack lifecycle.
 	function insertDurableRequest(opts: { id: string; kind: string; targetSiteId: string }): void {
@@ -585,7 +585,7 @@ describe("createRelayWait$", () => {
 		}
 		it("acks a durable response only AFTER delivery, and a crash before ack boot-resets it (no silent loss)", async () => {
 			// OBJECTION 1 crash-window: the required order is claim → deliver → ack.
-			// readUnionResponse claims the durable row, but the ack is deferred until the
+			// readDurableResponse claims the durable row, but the ack is deferred until the
 			// awaiter has RECEIVED the value. This test proves the ordering two ways.
 			const { params, outboxEntryId } = createHostsAndParams();
 			const aborted$ = new Subject<void>();

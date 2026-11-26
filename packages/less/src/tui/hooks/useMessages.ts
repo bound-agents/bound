@@ -30,7 +30,7 @@ export interface UseMessagesResult {
  * Manages message list state.
  * - State: `Message[]` initialized from attach flow
  * - Listens to `client.on("message:created", ...)` to append new messages
- * - Handles pending tool call placeholders (from AC7.2):
+ * - Handles pending tool call placeholders:
  *   - When a `tool:call` message arrives, replace the placeholder with the actual tool call
  *   - When `tool:result` arrives, append it
  * - Handles the optimistic user-message placeholder (#88):

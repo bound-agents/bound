@@ -16,25 +16,10 @@ export type {
 	ModelBackendsConfig,
 	InferenceRequestPayload,
 	StreamChunkPayload,
-	StreamEndPayload,
 } from "./types";
 export { LLMError } from "./types";
 
-export type {
-	DriverFallbackSupport,
-	ModelFallbackPolicy,
-	ResolvedFallbackChain,
-	ResolveFallbackChainArgs,
-} from "./fallback-policy";
-export { resolveFallbackChain } from "./fallback-policy";
-export type {
-	CreditIneligibleReason,
-	CreditRedemptionContext,
-	CreditRedemptionPlan,
-	CreditStep,
-	CreditStepKind,
-} from "./fallback-credit";
-export { isTransientRedemptionError, planCreditRedemption } from "./fallback-credit";
+export type { DriverFallbackSupport } from "./fallback-policy";
 
 export { AnthropicDriver } from "./drivers/anthropic";
 
@@ -78,87 +63,41 @@ export {
 	type DevicePollResult,
 } from "./drivers/github-copilot/auth-core";
 
-export { UmansDriver, type UmansAccount } from "./drivers/umans";
+export { UmansDriver } from "./drivers/umans";
 
-export {
-	fetchUmansModelMetadata,
-	fetchUmansUsage,
-	UMANS_ANTHROPIC_BASE,
-	UMANS_OPENAI_BASE,
-	type UmansModelMeta,
-	type UmansUsage,
-} from "./umans-metadata";
+export type { UmansModelMeta, UmansUsage } from "./umans-metadata";
 export {
 	createModelRouter,
+	DEFAULT_BACKEND_CAPABILITIES,
 	ModelRouter,
 	makeRouteId,
-	type BackendInfo,
-	type RouteEntry,
 	type RouteId,
 } from "./model-router";
-export {
-	markAwsCredentialCacheStale,
-	consumeAwsCredentialCacheBust,
-	resolveAwsCredentials,
-} from "./drivers/aws-credential-cache";
+export { markAwsCredentialCacheStale } from "./drivers/aws-credential-cache";
 
 export {
 	sniffImageMediaType,
-	correctMediaType,
 	PROVIDER_IMAGE_BASE64_MAX_BYTES,
 	PROVIDER_IMAGE_RAW_MAX_BYTES,
 } from "./image-utils";
 
-export { installAiSdkWarningHook, uninstallAiSdkWarningHook } from "./ai-sdk-warning-hook";
+export { installAiSdkWarningHook } from "./ai-sdk-warning-hook";
 
 export { createLoggingFetch } from "./fetch-logger";
 
-export {
-	LLMRefusalError,
-	classifyGeminiInteractions400,
-	type ModelDeclinedOutcome,
-} from "./model-declined";
+export { LLMRefusalError, type ModelDeclinedOutcome } from "./model-declined";
 
-export { normalizeModelKey, type NormalizedModelKey } from "./catalog/normalize";
-export {
-	resolveModelMetadata,
-	type FieldSource,
-	type ModelMetadata,
-	type MetadataLayer,
-	type PricingTier,
-	type ResolvedCapabilities,
-	type ResolvedPricing,
-	type ResolveMetadataArgs,
-	type ResolveMetadataResult,
+export { normalizeModelKey } from "./catalog/normalize";
+export type {
+	FieldSource,
+	MetadataLayer,
+	PricingTier,
+	ResolvedPricing,
 } from "./catalog/resolve-metadata";
-export {
-	resolveLogicalModel,
-	type GroupingSource,
-	type ResolveGroupingArgs,
-	type ResolveGroupingResult,
-} from "./catalog/resolve-grouping";
-export {
-	supportsModelDiscovery,
-	type DiscoveredModel,
-	type SupportsModelDiscovery,
-} from "./catalog/discovery";
-export {
-	indexModelsDevSnapshot,
-	lookupModelsDev,
-	ModelsDevCache,
-	type ModelsDevCacheOptions,
-	type RefreshStatus,
-} from "./catalog/models-dev-cache";
+export { supportsModelDiscovery, type DiscoveredModel } from "./catalog/discovery";
+export { ModelsDevCache, type RefreshStatus } from "./catalog/models-dev-cache";
 export {
 	resolveCatalog,
 	type CatalogBackendInput,
-	type ResolveCatalogArgs,
 	type ResolvedBackend,
 } from "./catalog/resolve-catalog";
-export {
-	parseAnthropicModelsList,
-	parseBedrockFoundationModels,
-	parseBedrockInferenceProfiles,
-	parseOllamaTags,
-	parseOpenAIModelsList,
-} from "./catalog/discovery-fetch";

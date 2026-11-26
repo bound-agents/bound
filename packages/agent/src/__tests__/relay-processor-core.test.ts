@@ -422,8 +422,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// It executed: a result response row correlated by ref_id exists.
 			expect(readDurableResponse(db, "entry-1", "result")).not.toBeNull();
@@ -458,8 +458,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// No response row is created for an expired request.
 			expect(readDurableResponse(db, "expired-1", "result")).toBeNull();
@@ -492,8 +492,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// A durable result response row correlated by ref_id was written.
 			expect(readDurableResponse(db, "resource-1", "result")).not.toBeNull();
@@ -525,8 +525,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// A durable result response row correlated by ref_id was written.
 			expect(readDurableResponse(db, "prompt-1", "result")).not.toBeNull();
@@ -560,8 +560,8 @@ describe("RelayProcessor", () => {
 				});
 
 				await (
-					processor as unknown as { processPendingEntries: () => Promise<void> }
-				).processPendingEntries();
+					processor as unknown as { processPendingDurableWork: () => Promise<void> }
+				).processPendingDurableWork();
 
 				const result = readDurableResponse(db, "cache-warm-1", "result");
 				expect(result).not.toBeNull();
@@ -617,8 +617,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
@@ -640,8 +640,8 @@ describe("RelayProcessor", () => {
 			expect(inserted2.changes).toBe(0); // deduped by the (kind, idempotency_key) fence
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// callCount unchanged: the duplicate never became a distinct claimable row.
 			expect(callCount).toBe(callCountAfterFirst);
@@ -691,8 +691,8 @@ describe("RelayProcessor", () => {
 				} as ToolCallPayload),
 			});
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
 
@@ -708,8 +708,8 @@ describe("RelayProcessor", () => {
 				} as ToolCallPayload),
 			});
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			expect(callCount).toBeGreaterThan(callCountAfterFirst);
 		});
@@ -746,8 +746,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// The tool request was consumed but produced no result (cancel pre-empted it).
 			expect(getDurableWork(db, requestId)?.claim_state).toBe("consumed");
@@ -782,8 +782,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// A cancel arriving after execution cannot un-write the result.
 			insertDurableRequest(db, {
@@ -794,8 +794,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// Result was written (execution occurred before the cancel).
 			expect(readDurableResponse(db, requestId, "result")).not.toBeNull();
@@ -827,8 +827,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// An error response was written for the unknown server.
 			const err = readDurableResponse(db, "unknown-tool-1", "error");
@@ -868,8 +868,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// A help result (not an error) was written, enumerating the server's subcommands.
 			expect(readDurableResponse(db, "tool-call-missing-subcommand", "error")).toBeNull();
@@ -907,8 +907,8 @@ describe("RelayProcessor", () => {
 			});
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// An error response was written for the unknown server.
 			expect(readDurableResponse(db, "tool-call-unknown-server", "error")).not.toBeNull();
@@ -942,8 +942,8 @@ describe("RelayProcessor", () => {
 			);
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// The response row is left pending (the relay lane skips response kinds).
 			expect(getDurableWork(db, "error-response-1")?.claim_state).toBe("pending");
@@ -983,8 +983,8 @@ describe("RelayProcessor", () => {
 			);
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			expect(getDurableWork(db, "result-response-1")?.claim_state).toBe("pending");
 			expect(
@@ -1032,8 +1032,8 @@ describe("RelayProcessor", () => {
 			);
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// The passive row is left pending — the scheduler is the rightful consumer.
 			expect(getDurableWork(db, "webhook-row-1")?.claim_state).toBe("pending");
@@ -1073,8 +1073,8 @@ describe("RelayProcessor", () => {
 			);
 
 			await (
-				processor as unknown as { processPendingEntries: () => Promise<void> }
-			).processPendingEntries();
+				processor as unknown as { processPendingDurableWork: () => Promise<void> }
+			).processPendingDurableWork();
 
 			// Both are left pending — the relay lane claims neither passive nor response kinds.
 			expect(getDurableWork(db, "passive-row")?.claim_state).toBe("pending");
@@ -1113,8 +1113,8 @@ describe("durable active relay lane", () => {
 			],
 		);
 		await (
-			processor as unknown as { processPendingEntries: () => Promise<void> }
-		).processPendingEntries();
+			processor as unknown as { processPendingDurableWork: () => Promise<void> }
+		).processPendingDurableWork();
 		expect(getDurableWork(db, "durable-request")?.claim_state).toBe("consumed");
 		// The response rode back as a durable row keyed by ref_id = the request id.
 		expect(
@@ -1170,8 +1170,8 @@ describe("durable active relay lane", () => {
 			createMockEventBus(),
 		);
 		await (
-			processor as unknown as { processPendingEntries: () => Promise<void> }
-		).processPendingEntries();
+			processor as unknown as { processPendingDurableWork: () => Promise<void> }
+		).processPendingDurableWork();
 
 		// The durable request was consumed.
 		expect(getDurableWork(db, routed.id)?.claim_state).toBe("consumed");
@@ -1210,7 +1210,7 @@ describe("durable active relay lane", () => {
 				now,
 			],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(
 			db.query("SELECT claim_state FROM durable_work WHERE id = ?").get("durable-failure"),
 		).toEqual({ claim_state: "consumed" });
@@ -1237,7 +1237,7 @@ describe("durable active relay lane", () => {
 				[kind, "target-site", kind, `leave-${kind}`, now],
 			);
 		}
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(
 			db.query("SELECT claim_state FROM durable_work WHERE id = 'webhook_intake'").get(),
 		).toEqual({ claim_state: "pending" });
@@ -1273,7 +1273,7 @@ describe("durable active relay lane", () => {
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
 		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(
 			db.query("SELECT claim_state, attempt_count FROM durable_work WHERE id = 'recovered'").get(),
 		).toEqual({ claim_state: "consumed", attempt_count: 2 });
@@ -1303,7 +1303,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('infra', 'target-site', 'tool_call', ?, 'infra-key', 'pending', 0, ?, 'requester-site')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "infra")).toMatchObject({
 			claim_state: "processing",
 			attempt_count: 1,
@@ -1342,21 +1342,21 @@ describe("durable active relay lane", () => {
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
 		// Attempt 1: claim increments to 1, fails, stays processing (1 < 3).
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "retry")).toMatchObject({
 			claim_state: "processing",
 			attempt_count: 1,
 		});
 		// Attempt 2: boot recovery reclaims, increments to 2, fails, stays processing.
 		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "retry")).toMatchObject({
 			claim_state: "processing",
 			attempt_count: 2,
 		});
 		// Attempt 3: reclaim, increments to 3, fails, budget exhausted → dead-letter.
 		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "retry")).toMatchObject({
 			claim_state: "dead_letter",
 			attempt_count: 3,
@@ -1391,7 +1391,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('route-fail', 'target-site', 'tool_call', ?, 'route-fail-key', 'pending', 0, ?, 'requester-site')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		const row = getDurableWork(db, "route-fail");
 		expect(row?.claim_state).toBe("dead_letter");
 		expect(row?.last_error ?? "").toContain("requester-site");
@@ -1441,7 +1441,7 @@ describe("durable active relay lane", () => {
 				now,
 			],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		const row = getDurableWork(db, "intake-fail");
 		expect(row?.claim_state).toBe("dead_letter");
 		expect(row?.claim_state).not.toBe("consumed");
@@ -1511,7 +1511,7 @@ describe("durable active relay lane", () => {
 			`INSERT OR IGNORE INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('twin-durable', 'target-site', 'tool_call', ?, 'twin-key', 'pending', 0, ?, 'requester-site')`,
 			[payload, now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(calls).toBe(1);
 	});
 
@@ -1531,7 +1531,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES ('dispatch', 'target-site', 'dispatch_message', '{}', 'dispatch-key', 'pending', 0, ?)`,
 			[now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "dispatch")).toMatchObject({
 			claim_state: "pending",
 			attempt_count: 0,
@@ -1557,7 +1557,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('other', 'other-site', 'tool_call', ?, 'other-key', 'pending', 0, ?, 'requester-site')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "other")).toMatchObject({ claim_state: "pending", attempt_count: 0 });
 	});
 
@@ -1582,7 +1582,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES ('nosrc', 'target-site', 'tool_call', ?, 'nosrc-key', 'pending', 0, ?)`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		const row = getDurableWork(db, "nosrc");
 		expect(row).toMatchObject({ claim_state: "dead_letter" });
 		expect(row?.last_error).toContain("source_site");
@@ -1628,7 +1628,7 @@ describe("durable active relay lane", () => {
 				new Date(Date.now() + 300_000).toISOString(),
 			],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		const row = getDurableWork(db, "plreq");
 		// Not dead-lettered for the source_site reason — the guard passed it through.
 		expect(row?.claim_state).not.toBe("dead_letter");
@@ -1655,7 +1655,7 @@ describe("durable active relay lane", () => {
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site, stream_id) VALUES ('streamed', 'target-site', 'tool_call', ?, 'streamed-key', 'pending', 0, ?, 'target-site', 'stream-42')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
-		await (processor as any).processPendingEntries();
+		await (processor as any).processPendingDurableWork();
 		expect(getDurableWork(db, "streamed")).toMatchObject({ claim_state: "consumed" });
 		expect(
 			db

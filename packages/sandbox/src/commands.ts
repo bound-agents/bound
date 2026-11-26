@@ -2,7 +2,9 @@ import type Database from "bun:sqlite";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { formatError } from "@bound/shared";
-import type { Logger, TypedEventEmitter } from "@bound/shared";
+import type { Logger, McpAppBinding, TypedEventEmitter } from "@bound/shared";
+import type { CustomCommand, IFileSystem } from "just-bash";
+import { defineCommand } from "just-bash";
 import { withCommandTelemetry } from "./telemetry";
 
 /**
@@ -14,22 +16,6 @@ import { withCommandTelemetry } from "./telemetry";
  * Usage in start.ts loopSandbox.exec:
  *   loopContextStorage.run({ threadId, taskId }, () => sandbox.bash.exec(cmd, opts))
  */
-/**
- * MCP Apps binding for a UI-bearing tool call. When an MCP tool carries
- * `_meta.ui.resourceUri` (the `io.modelcontextprotocol/ui` capability), the
- * command handler records this triple so the agent loop can stamp it onto the
- * persisted tool_result row's metadata — letting a UI-capable surface render
- * the tool result as an interactive app, independent of where the call came
- * from.
- */
-export interface McpAppBinding {
-	server: string;
-	tool: string;
-	uiResourceUri: string;
-	/** Native arguments dispatched to the MCP tool, used to reconstruct the app after reload. */
-	input?: Record<string, unknown>;
-}
-
 export const loopContextStorage = new AsyncLocalStorage<{
 	threadId?: string;
 	taskId?: string;
@@ -48,9 +34,6 @@ export const loopContextStorage = new AsyncLocalStorage<{
 	 */
 	mcpApp?: McpAppBinding;
 }>();
-
-import type { CustomCommand, IFileSystem } from "just-bash";
-import { defineCommand } from "just-bash";
 
 export interface CommandResult {
 	stdout: string;
@@ -89,20 +72,15 @@ export interface CommandDefinition {
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }
 
-/**
- * Render usage help for a command.
- * If helpText is provided, uses it verbatim; otherwise auto-generates from args schema.
- */
-export function formatHelp(def: CommandDefinition): CommandResult {
+/** Uses `helpText` verbatim when set; otherwise generates usage from the args schema. */
+function formatHelp(def: CommandDefinition): CommandResult {
 	let body: string;
 	if (def.helpText) {
 		body = def.helpText;
 	} else {
 		const lines: string[] = [];
-		// Usage line
 		const argSyntax = def.args.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ");
 		lines.push(`Usage: ${def.name}${argSyntax ? ` ${argSyntax}` : ""}`);
-		// Arguments section
 		if (def.args.length > 0) {
 			lines.push("");
 			lines.push("Arguments:");
@@ -127,7 +105,6 @@ export function createDefineCommands(
 ): (CustomCommand & { handler: (argv: string[]) => Promise<CommandResult> })[] {
 	return definitions.map((def) => {
 		const handler = async (argv: string[]) => {
-			// --help / -h interception: sole argv, non-customHelp commands only
 			if (!def.customHelp && argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
 				return formatHelp(def);
 			}
@@ -152,7 +129,6 @@ export function createDefineCommands(
 				for (let i = 0; i < argv.length; i++) {
 					const arg = argv[i];
 					if (arg === "-h") {
-						// Short-form alias: -h → args.help = "true"
 						args.help = "true";
 					} else if (arg.startsWith("--")) {
 						const flag = arg.slice(2);
@@ -185,13 +161,11 @@ export function createDefineCommands(
 						const eqIdx = arg.indexOf("=");
 						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
 					} else if (positionalCount < def.args.length) {
-						// Unmatched token — assign to next positional arg slot
 						args[def.args[positionalCount].name] = arg;
 						positionalCount++;
 					}
 				}
 			} else if (def.args.length > 0) {
-				// Positional args: match argv to declared arg definitions
 				let argIndex = 0;
 				for (const argDef of def.args) {
 					if (argIndex < argv.length) {
@@ -206,7 +180,6 @@ export function createDefineCommands(
 					}
 				}
 			} else if (argv.length > 0) {
-				// No flags, no arg defs — try JSON parsing
 				try {
 					const jsonArgs = JSON.parse(argv.join(" "));
 					if (typeof jsonArgs === "object" && jsonArgs !== null) {

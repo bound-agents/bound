@@ -4,18 +4,10 @@ export {
 	snapshotWorkspace,
 	diffWorkspace,
 	hydrateWorkspace,
-	rehydrateWorkspaceIncremental,
-	type ClusterFsConfig,
 	type ClusterFsResult,
-	type FileChange,
 } from "./cluster-fs";
 
-export {
-	persistWorkspaceChanges,
-	type PersistResult,
-	type PersistError,
-	type PersistOptions,
-} from "./fs-persist";
+export { persistWorkspaceChanges } from "./fs-persist";
 
 export {
 	createDefineCommands,
@@ -23,14 +15,7 @@ export {
 	type CommandDefinition,
 	type CommandResult,
 	type CommandContext,
-	type McpAppBinding,
 } from "./commands";
+export type { McpAppBinding } from "@bound/shared";
 
-export {
-	createSandbox,
-	type SandboxConfig,
-	type ExecutionLimits,
-	type Sandbox,
-} from "./sandbox-factory";
-
-export { UrlFilter, createUrlFilter } from "./url-filter";
+export { createSandbox, type Sandbox } from "./sandbox-factory";

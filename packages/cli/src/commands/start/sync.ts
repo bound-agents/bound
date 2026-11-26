@@ -9,6 +9,7 @@ import type { KeyringConfig, SyncConfig } from "@bound/shared";
 import { formatError, wsSchema } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import type { WsTransport as WsTransportType } from "@bound/sync";
+import { findKeyringHubSiteId } from "./relay.js";
 
 export interface SyncResult {
 	pruningHandle: { stop: () => void } | null;
@@ -30,7 +31,6 @@ export async function initSync(
 	let wsTransport: WsTransportType | undefined;
 	let wsClient: { close: () => void } | null = null;
 
-	// 14. Sync (if configured — WS only, HTTP polling removed)
 	appContext.logger.info("Initializing sync...");
 	const syncResult = appContext.optionalConfig.sync;
 	if (syncResult?.ok) {
@@ -61,24 +61,14 @@ export async function initSync(
 			if (syncConfig.hub && keyManager) {
 				try {
 					const hubUrl = new URL(syncConfig.hub).toString();
-					// Derive hub site ID from the keyring — find the keyring entry matching hubUrl
-					let hubSiteId: string | undefined;
-					for (const [siteId, entry] of Object.entries(keyring.hosts ?? {})) {
-						const normalizedEntryUrl = new URL(entry.url).toString();
-						if (normalizedEntryUrl === hubUrl) {
-							hubSiteId = siteId;
-							break;
-						}
-					}
+					const hubSiteId = findKeyringHubSiteId(keyring, hubUrl);
 
 					if (!hubSiteId) {
 						appContext.logger.warn(
 							"[sync] Hub URL in sync config not found in keyring, cannot create WS client",
 						);
 					} else {
-						// Parse WS config with defaults applied by schema
-						const wsConfigRaw = syncConfig.ws;
-						const wsConfig = wsConfigRaw ? wsSchema.parse(wsConfigRaw) : wsSchema.parse({});
+						const wsConfig = wsSchema.parse(syncConfig.ws ?? {});
 						const reconnectMaxInterval = wsConfig.reconnect_max_interval;
 						const backpressureLimit = wsConfig.backpressure_limit;
 						const backfillIntervalSeconds = wsConfig.backfill_interval;
@@ -120,7 +110,7 @@ export async function initSync(
 		appContext.logger.info("[sync] Not configured");
 	}
 
-	// 14b. Change-log pruning (runs in both single-host and multi-host modes)
+	// Change-log pruning runs in both single-host and multi-host modes.
 	let pruningHandle: { stop: () => void } | null = null;
 	try {
 		const { startPruningLoop, drainFreelistOnStartup } = await import("@bound/sync");

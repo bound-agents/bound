@@ -22,15 +22,12 @@ import { z } from "zod";
  */
 
 /**
- * Milliseconds in each calendar-independent unit. Deliberately stops at hours:
+ * Fields whose presence means the duration needs a calendar to resolve.
  * `Temporal.Duration.total()` refuses to convert days and larger without a
  * reference point (a "day" is 23, 24, or 25 hours across a DST boundary), and a
- * config timeout has no calendar anchor to offer. A duration carrying days or
- * above is rejected rather than silently assumed to be 24-hour days.
+ * config timeout has no calendar anchor to offer, so these are rejected rather
+ * than silently assumed to be 24-hour days.
  */
-const CALENDAR_FREE_UNITS = ["hours", "minutes", "seconds", "milliseconds"] as const;
-
-/** Fields whose presence means the duration needs a calendar to resolve. */
 const CALENDAR_DEPENDENT_FIELDS = ["years", "months", "weeks", "days"] as const;
 
 export class DurationParseError extends Error {
@@ -97,24 +94,6 @@ export function parseIsoDurationMs(input: string): number {
 	return total;
 }
 
-/**
- * Render milliseconds as an ISO 8601 duration, for surfacing a numeric default
- * back to an operator in the vocabulary they'd write it in.
- */
-export function formatIsoDurationMs(ms: number): string {
-	return Temporal.Duration.from({ milliseconds: ms })
-		.round({ largestUnit: "hour", smallestUnit: "millisecond" })
-		.toString();
-}
-
-/**
- * Normalize a config duration to milliseconds. Numbers pass through; strings go
- * through {@link parseIsoDurationMs}.
- */
-export function toDurationMs(value: number | string): number {
-	return typeof value === "number" ? value : parseDurationMs(value);
-}
-
 /** Validate a duration string while preserving the operator's spelling. */
 export function durationStringSchema() {
 	return z
@@ -131,9 +110,6 @@ export function durationStringSchema() {
 			}
 		});
 }
-
-/** The units `parseIsoDurationMs` can convert without a calendar reference. */
-export const DURATION_UNITS = CALENDAR_FREE_UNITS;
 
 /**
  * Zod schema for a config duration, in milliseconds.

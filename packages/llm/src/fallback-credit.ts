@@ -1,6 +1,6 @@
 /**
- * Fallback-credit redemption planner (slice 5, R-RT18,
- * 2026-11-21-model-routing.md §7.3 step 2, 2026-11-21-model-catalog.md §7.1).
+ * Fallback-credit redemption planner (R-RT18, 2026-11-21-model-routing.md
+ * §7.3 step 2, 2026-11-21-model-catalog.md §7.1).
  *
  * The PURE decision layer for the driver-level credited inline retry: given a
  * classified refusal carrying a provider `fallback_credit_token`, the active

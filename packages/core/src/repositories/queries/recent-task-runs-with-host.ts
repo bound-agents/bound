@@ -2,16 +2,10 @@ import type { Database } from "bun:sqlite";
 
 /**
  * Cross-table read joining `tasks` to `hosts` to resolve the host display name
- * of the host that last claimed each task. Powers the Live State task digest in
- * `packages/agent/src/summary-extraction.ts`.
- *
- * See ../index.ts for conventions. Reads only.
+ * of the host that last claimed each task, for the Live State task digest.
  */
 
-/**
- * A recent task run with its claiming host resolved. Column names mirror
- * exactly what the task-digest builder destructures.
- */
+/** A recent task run with its claiming host resolved. */
 export interface RecentTaskRunWithHostRow {
 	id: string;
 	type: string;

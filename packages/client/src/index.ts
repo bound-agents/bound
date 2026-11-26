@@ -1,8 +1,6 @@
-// Client classes
 export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
 export { sortClusterModelsById } from "./model-sort.js";
 
-// Tracing utilities
 export {
 	createClientTracingSession,
 	type ClientTracingSession,
@@ -10,7 +8,6 @@ export {
 	type WrapToolCallOptions,
 } from "./tracing.js";
 
-// API-specific types
 export type {
 	ThreadListEntry,
 	ThreadDetail,

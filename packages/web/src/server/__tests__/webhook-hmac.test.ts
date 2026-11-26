@@ -4,9 +4,7 @@ import type { SignatureFormat } from "@bound/shared";
 import { validateWebhookSignature } from "../webhook-hmac.js";
 
 describe("validateWebhookSignature", () => {
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.1: GitHub format with valid signature
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.1: GitHub format returns valid when signature matches", () => {
 		const format: SignatureFormat = "github";
 		const secret = "test_secret";
@@ -24,9 +22,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.2: Stripe format with valid signature
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.2: Stripe format returns valid when signature matches and timestamp is fresh", () => {
 		const format: SignatureFormat = "stripe";
 		const secret = "test_secret";
@@ -46,9 +42,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.3: Slack format with valid signature and fresh timestamp
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.3: Slack format returns valid when signature matches and timestamp is fresh", () => {
 		const format: SignatureFormat = "slack";
 		const secret = "test_secret";
@@ -69,9 +63,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.4: Raw format with valid signature
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.4: Raw format returns valid when hex signature matches", () => {
 		const format: SignatureFormat = "raw";
 		const secret = "test_secret";
@@ -94,9 +86,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.5: All formats return invalid for incorrect HMAC
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.5: GitHub format returns invalid for incorrect HMAC", () => {
 		const format: SignatureFormat = "github";
 		const secret = "test_secret";
@@ -196,9 +186,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.6: Missing signature headers return invalid
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.6: GitHub format returns invalid when signature header missing", () => {
 		const format: SignatureFormat = "github";
 		const secret = "test_secret";
@@ -243,9 +231,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.7: Stripe/Slack timestamps older than 5 minutes return invalid
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.7: Stripe format returns invalid for stale timestamp (>5 minutes)", () => {
 		const format: SignatureFormat = "stripe";
 		const secret = "test_secret";
@@ -281,9 +267,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.8: timingSafeEqual is used (wrong-length signatures don't crash)
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.8: handles wrong-length signatures without crashing (timingSafeEqual safety)", () => {
 		const format: SignatureFormat = "github";
 		const secret = "test_secret";
@@ -300,9 +284,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// Additional edge cases
-	// ──────────────────────────────────────────────────────────────────
 	test("handles empty body", () => {
 		const format: SignatureFormat = "github";
 		const secret = "test_secret";
@@ -365,9 +347,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// "none" format: unauthenticated shape-check always passes
-	// ──────────────────────────────────────────────────────────────────
 	test("none format always reports valid regardless of headers/body", () => {
 		const body = Buffer.from("anything at all");
 		// No signature headers present — the shape-check still passes because
@@ -377,9 +357,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// Outer catch: a header accessor that throws is contained as invalid
-	// ──────────────────────────────────────────────────────────────────
 	test("returns invalid (does not throw) when header access throws", () => {
 		const body = Buffer.from("payload");
 		// A Headers-shaped object whose get() throws models a malformed request
@@ -393,9 +371,7 @@ describe("validateWebhookSignature", () => {
 		expect(result.valid).toBe(false);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// Malformed signature shapes per format (regex / hex guards)
-	// ──────────────────────────────────────────────────────────────────
 	test("Slack format returns invalid when signature is not v0=<64 hex>", () => {
 		const body = Buffer.from('{"type":"event_callback"}');
 		const timestamp = Math.floor(Date.now() / 1000).toString();

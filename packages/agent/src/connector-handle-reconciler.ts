@@ -2,27 +2,13 @@ import type { Database } from "bun:sqlite";
 import { findDarkConnectorHandles } from "@bound/core";
 import type { DarkConnectorHandle } from "@bound/core";
 import { createAdvisory, hasAdvisoryWithTitle } from "./advisories";
-
-/** Logger surface this module needs — the relay-processor passes its own. */
-interface ReconcilerLogger {
-	info: (msg: string, meta?: Record<string, unknown>) => void;
-	warn: (msg: string, meta?: Record<string, unknown>) => void;
-}
-
-/**
- * Default settle window. A connector handle whose backing task is dark AND
- * which has not been touched for this long is a genuine orphan, not a sync-replay
- * race (a handle synced ahead of its task row, invariant #20). 15 minutes clears
- * many scheduler ticks and sync cycles.
- */
-export const DEFAULT_CONNECTOR_HANDLE_STALE_AFTER_MS = 15 * 60 * 1000;
+import { RECONCILE_STALE_AFTER_MS, type ReconcilerLogger } from "./stale-reconcile";
 
 export interface ReconcileDarkConnectorHandlesOptions {
 	/** How long a handle must be settled before a dark task counts as an orphan. */
 	staleAfterMs?: number;
 	/** Injectable clock for deterministic tests. */
 	now?: Date;
-	/** Optional logger for visibility (the relay-processor passes its own). */
 	logger?: ReconcilerLogger;
 }
 
@@ -36,25 +22,21 @@ export interface ReconcileDarkConnectorHandlesResult {
  * analogue of `reconcileStaleWebhookIntake`).
  *
  * A platform connector subscription is a `connector_handles` row bound to a
- * `type: "event"` task (`connector_handles.task_id`). When that task goes dark —
- * cancelled, soft-deleted, or lost entirely — but the handle stays live, the
+ * `type: "event"` task (`connector_handles.task_id`). When that task goes dark
+ * (cancelled, soft-deleted, or lost entirely) but the handle stays live, the
  * subscription silently stops firing: the connector still emits the event, but
- * no task consumes it. This is exactly how "file for later" (issue #196) broke —
- * the `interaction.received` handler task was cancelled during a May inference
- * outage, five weeks before the `findTaskInfraBinding` FK guard existed to
- * prevent it, and nothing noticed for six weeks.
+ * no task consumes it.
  *
- * `findTaskInfraBinding` now PREVENTS new occurrences by refusing to cancel a
- * task a live handle points at. This sweep is the paired far-end DETECTOR for the
- * states that predate the guard or slip past it. Unlike the webhook reconciler
- * there is NO dead-letter branch: connector push events buffer in-memory on the
- * connector host (they are not written durably to `relay_inbox`), so there is no
- * backlog to drain — only a dark subscription to surface.
+ * `findTaskInfraBinding` prevents new occurrences by refusing to cancel a task a
+ * live handle points at. This sweep is the paired detector for states that slip
+ * past the guard. It has no dead-letter branch: stale `connector_intake` rows are
+ * drained by `reconcileStaleWebhookIntake`; this sweep only surfaces the dark
+ * subscription.
  *
  * Reads synced tables (`connector_handles` ⋈ `tasks`), so it can run on any host;
- * the advisory is deduped by title across ALL non-deleted statuses (same fix as
- * the webhook reconciler's apply-then-reraise churn), which also converges the
- * redundant raises when more than one host runs the sweep.
+ * the advisory is deduped by title across all non-deleted statuses, so an
+ * applied advisory is not re-raised and redundant raises converge when more
+ * than one host runs the sweep.
  */
 export function reconcileDarkConnectorHandles(
 	db: Database,
@@ -62,7 +44,7 @@ export function reconcileDarkConnectorHandles(
 	options: ReconcileDarkConnectorHandlesOptions = {},
 ): ReconcileDarkConnectorHandlesResult {
 	const now = options.now ?? new Date();
-	const staleAfterMs = options.staleAfterMs ?? DEFAULT_CONNECTOR_HANDLE_STALE_AFTER_MS;
+	const staleAfterMs = options.staleAfterMs ?? RECONCILE_STALE_AFTER_MS;
 	const staleBeforeIso = new Date(now.getTime() - staleAfterMs).toISOString();
 	const logger = options.logger;
 

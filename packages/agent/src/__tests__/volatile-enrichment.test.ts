@@ -207,7 +207,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain("- test-key:");
 	});
@@ -228,7 +228,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(0);
 	});
 
@@ -253,7 +253,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 
 		// Set baseline before the soft delete to ensure the modified_at is after it
 		const earlyBaseline = "2026-01-01T00:00:00.000Z";
-		const enrichment = buildVolatileEnrichment(db, earlyBaseline);
+		const enrichment = buildVolatileEnrichment(db, earlyBaseline, Date.now());
 
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain("[forgotten]");
@@ -281,7 +281,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		// 11 eligible entries, maxMemory=10: the 11th is dropped by the cap.
 		// (The old "... and N more" overflow line rode memoryDeltaLines, which
 		// was removed as dead code — nothing rendered it after R-VC24.)
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10);
 		expect(deltaLines(enrichment).length).toBe(10);
 	});
 
@@ -302,7 +302,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain("...");
 		expect(deltaLines(enrichment)[0]).not.toContain(longValue);
@@ -330,7 +330,7 @@ describe("buildVolatileEnrichment — _internal key filtering", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		const hasInternal = deltaLines(enrichment).some((l) => l.includes("_internal.file_thread"));
 		expect(hasInternal).toBe(false);
 	});
@@ -373,7 +373,7 @@ describe("buildVolatileEnrichment — _internal key filtering", () => {
 			);
 		}
 
-		const enrichment = buildVolatileEnrichment(db, baseline, 2);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 2);
 		const lines = deltaLines(enrichment);
 		expect(lines.length).toBe(2);
 		expect(lines.every((l) => l.includes("real-key-"))).toBe(true);
@@ -403,7 +403,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 		);
 
 		// Baseline well after the entry
-		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", Date.now());
 		const policyLine = deltaLines(enrichment).find((l) => l.includes("policy_research_guidelines"));
 		expect(policyLine).toBeDefined();
 		expect(policyLine).toContain("Always cite sources");
@@ -427,7 +427,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", Date.now());
 		const pinnedLine = deltaLines(enrichment).find((l) => l.includes("_pinned_operator_name"));
 		// The entry is not pinned and was modified before baseline, so it must NOT appear.
 		expect(pinnedLine).toBeUndefined();
@@ -470,7 +470,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 		}
 
 		// maxMemory=3: all 3 regular entries + pinned should appear
-		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 3);
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", Date.now(), 3);
 		const hasPinned = deltaLines(enrichment).some((l) => l.includes("important_rule"));
 		const regularCount = deltaLines(enrichment).filter((l) => l.includes("regular-entry")).length;
 		expect(hasPinned).toBe(true);
@@ -518,6 +518,7 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"How does the scheduler handle cron tasks?",
@@ -548,6 +549,7 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"What is the sync protocol?",
@@ -585,6 +587,7 @@ describe("buildVolatileEnrichment — assistant message keyword seeding", () => 
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"continue",
@@ -613,7 +616,14 @@ describe("buildVolatileEnrichment — assistant message keyword seeding", () => 
 		);
 
 		// Same keyword-barren user message, but no assistant seed — nothing matches.
-		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 10, 5, "continue");
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			Date.now(),
+			10,
+			5,
+			"continue",
+		);
 
 		const hasKafka = deltaLines(enrichment).some((l) => l.includes("kafka_rebalance_protocol"));
 		expect(hasKafka).toBe(false);
@@ -661,6 +671,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"memory coherence check",
@@ -696,6 +707,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"How does the scheduler work?",
@@ -727,6 +739,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			"some user message",
@@ -755,6 +768,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 		const enrichment = buildVolatileEnrichment(
 			db,
 			"2026-03-28T00:00:00.000Z",
+			Date.now(),
 			10,
 			5,
 			undefined,
@@ -789,7 +803,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(1);
 		expect(enrichment.taskDigestLines[0]).toContain(" ran ");
 	});
@@ -813,7 +827,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(1);
 		expect(enrichment.taskDigestLines[0]).toContain(" failed ");
 	});
@@ -850,7 +864,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(1);
 		expect(enrichment.taskDigestLines[0]).toContain("my-host");
 	});
@@ -875,7 +889,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(1);
 		expect(enrichment.taskDigestLines[0]).toContain("abcdef12");
 	});
@@ -901,7 +915,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			);
 		}
 
-		const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5);
 		expect(enrichment.taskDigestLines.length).toBe(6);
 		expect(enrichment.taskDigestLines[5]).toContain("... and 1 more");
 		expect(enrichment.taskDigestLines[5]).toContain("query tasks for full list");
@@ -926,7 +940,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(0);
 	});
 
@@ -952,7 +966,7 @@ describe("buildVolatileEnrichment — task digest", () => {
 
 		softDelete(db, "tasks", taskId, siteId);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(enrichment.taskDigestLines.length).toBe(0);
 	});
 });
@@ -996,7 +1010,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain('via task "my_cron"');
 	});
@@ -1038,7 +1052,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain('via thread "My Thread"');
 	});
@@ -1080,7 +1094,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain(`via thread "${threadId.slice(0, 8)}"`);
 	});
@@ -1124,7 +1138,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 
 		softDelete(db, "threads", threadId, siteId);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain(threadId.slice(0, 8));
 		expect(deltaLines(enrichment)[0]).not.toContain('thread "');
@@ -1146,7 +1160,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain("via zzzzzzzz");
 	});
@@ -1167,7 +1181,7 @@ describe("buildVolatileEnrichment — source resolution", () => {
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now());
 		expect(deltaLines(enrichment).length).toBe(1);
 		expect(deltaLines(enrichment)[0]).toContain("via unknown");
 	});

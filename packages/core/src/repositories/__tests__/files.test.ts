@@ -8,17 +8,13 @@ import {
 	findFileByIdActive,
 	findFileByPath,
 	findFileByPathActive,
-	findFileContentBinaryByIdActive,
 	findFileContentByIdActive,
 	findFileContentByPathActive,
-	findFileContentModifiedByPathActive,
-	findFileIdByIdActive,
 	findFileIdByPathActive,
 	findFileIdContentByPathActive,
 	findFileIdContentDeletedByPath,
 	listFileIdPathSizeByPrefixActive,
 	listFilePathContentByPrefixActive,
-	listFilePathSizeModifiedByPrefixActive,
 	listFilesActiveByCreatedDesc,
 	listWorkspaceFiles,
 	listWorkspaceFilesModifiedSince,
@@ -191,37 +187,12 @@ describe("active path/id projection finders", () => {
 		expect(findFileContentByPathActive(db, "/p.txt")).toEqual({ content: "body" });
 	});
 
-	it("findFileContentModifiedByPathActive returns {content, modified_at}", () => {
-		const r = findFileContentModifiedByPathActive(db, "/p.txt");
-		expect(r?.content).toBe("body");
-		expect(r?.modified_at).toBe("2026-01-01T00:00:00.000Z");
-	});
-
 	it("findFileIdByPathActive returns {id}", () => {
 		expect(findFileIdByPathActive(db, "/p.txt")).toEqual({ id: "f1" });
 	});
 
-	it("findFileIdByIdActive returns {id}", () => {
-		expect(findFileIdByIdActive(db, "f1")).toEqual({ id: "f1" });
-	});
-
 	it("findFileContentByIdActive returns {content}", () => {
 		expect(findFileContentByIdActive(db, "f1")).toEqual({ content: "body" });
-	});
-
-	it("findFileContentBinaryByIdActive returns {content, is_binary}", () => {
-		expect(findFileContentBinaryByIdActive(db, "f1")).toEqual({ content: "body", is_binary: 1 });
-	});
-
-	it("all active projections return null for a soft-deleted row", () => {
-		softDelete(db, "files", "f1", SITE);
-		expect(findFileIdContentByPathActive(db, "/p.txt")).toBeNull();
-		expect(findFileContentByPathActive(db, "/p.txt")).toBeNull();
-		expect(findFileContentModifiedByPathActive(db, "/p.txt")).toBeNull();
-		expect(findFileIdByPathActive(db, "/p.txt")).toBeNull();
-		expect(findFileIdByIdActive(db, "f1")).toBeNull();
-		expect(findFileContentByIdActive(db, "f1")).toBeNull();
-		expect(findFileContentBinaryByIdActive(db, "f1")).toBeNull();
 	});
 
 	it("all active projections return null for an absent key", () => {
@@ -373,57 +344,5 @@ describe("listFileIdPathSizeByPrefixActive", () => {
 			{ id: "a", path: "/p/a.txt", size_bytes: 10 },
 			{ id: "b", path: "/p/b.txt", size_bytes: 20 },
 		]);
-	});
-});
-
-describe("listFilePathSizeModifiedByPrefixActive (ORDER BY path)", () => {
-	it("returns matching active rows ordered by path ascending", () => {
-		// Insert out of path order to prove the ORDER BY path sort.
-		insertRow(
-			db,
-			"files",
-			makeFile({
-				id: "c",
-				path: "/p/charlie.txt",
-				size_bytes: 3,
-				modified_at: "2026-03-03T00:00:00.000Z",
-			}),
-			SITE,
-		);
-		insertRow(
-			db,
-			"files",
-			makeFile({
-				id: "a",
-				path: "/p/alpha.txt",
-				size_bytes: 1,
-				modified_at: "2026-01-01T00:00:00.000Z",
-			}),
-			SITE,
-		);
-		insertRow(
-			db,
-			"files",
-			makeFile({
-				id: "b",
-				path: "/p/bravo.txt",
-				size_bytes: 2,
-				modified_at: "2026-02-02T00:00:00.000Z",
-			}),
-			SITE,
-		);
-		insertRow(db, "files", makeFile({ id: "z", path: "/p/zeta.txt", size_bytes: 9 }), SITE);
-		softDelete(db, "files", "z", SITE);
-
-		const rows = listFilePathSizeModifiedByPrefixActive(db, "/p/%");
-		expect(rows).toEqual([
-			{ path: "/p/alpha.txt", size_bytes: 1, modified_at: "2026-01-01T00:00:00.000Z" },
-			{ path: "/p/bravo.txt", size_bytes: 2, modified_at: "2026-02-02T00:00:00.000Z" },
-			{ path: "/p/charlie.txt", size_bytes: 3, modified_at: "2026-03-03T00:00:00.000Z" },
-		]);
-	});
-
-	it("returns [] when nothing matches", () => {
-		expect(listFilePathSizeModifiedByPrefixActive(db, "/p/%")).toEqual([]);
 	});
 });

@@ -19,11 +19,6 @@ export async function exportPublicKey(key: CryptoKey): Promise<string> {
 	return `ed25519:${base64}`;
 }
 
-export async function exportPrivateKey(key: CryptoKey): Promise<Uint8Array> {
-	const pkcs8Buffer = await crypto.subtle.exportKey("pkcs8", key);
-	return new Uint8Array(pkcs8Buffer);
-}
-
 export async function importPublicKey(encoded: string): Promise<CryptoKey> {
 	if (!encoded.startsWith("ed25519:")) {
 		throw new Error("Invalid public key format: must start with 'ed25519:'");
@@ -67,7 +62,7 @@ export async function ensureKeypair(dataDir: string): Promise<{
 	}
 
 	const { publicKey, privateKey } = await generateKeypair();
-	const privateKeyBytes = await exportPrivateKey(privateKey);
+	const privateKeyBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", privateKey));
 	const publicKeyEncoded = await exportPublicKey(publicKey);
 
 	mkdirSync(dataDir, { recursive: true });

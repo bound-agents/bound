@@ -6,13 +6,11 @@ tables, and operation-shaped reads.
 
 Conventions:
 
-- Named by the **operation**, not a table (e.g. `memory-delta.ts`, not
-  `semantic-memory-with-source.ts`).
+- Named by the **operation**, not a table (e.g. `memory-with-source.ts`,
+  `threads-directory-listing.ts`).
 - Same shape as the per-table repositories: standalone functions, `db: Database`
   first arg, no classes, reads only.
 - Return a purpose-built row interface declared in the module when the shape is a
   JOIN projection rather than a single table's `SyncedTableRowMap[T]` row.
-- bun:sqlite `.get()` returns `null` (not undefined) on empty reads.
-
-Example: `summary-extraction.ts`'s memory-delta query (`LEFT JOIN tasks + threads`
-for source resolution) belongs here as `memory-delta.ts`.
+- SQL fragments shared across modules live in `sql-fragments.ts`, which the
+  repository barrel does not re-export.

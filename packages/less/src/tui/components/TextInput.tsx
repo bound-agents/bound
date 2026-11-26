@@ -274,7 +274,7 @@ export function TextInput({
 	});
 	const { value, pos } = state;
 
-	// --- Slash-command completion menu (derived) ---
+	// Slash-command completion menu (derived)
 	// Active only while the buffer is a bare "/token" — the moment a space
 	// lands (arguments begin) the menu folds away and every key reverts to
 	// its plain meaning.
@@ -295,7 +295,6 @@ export function TextInput({
 			? Math.min(menuState.idx, Math.max(0, menuItems.length - 1))
 			: 0;
 
-	// --- History recall state ---
 	// idx === null: not browsing. draft: the in-progress text saved when ↑
 	// first entered history, restored when ↓ walks past the newest entry.
 	const [hist, setHist] = useState<{ idx: number | null; draft: string }>({
@@ -367,7 +366,7 @@ export function TextInput({
 				return;
 			}
 
-			// --- Navigation keys (must be checked BEFORE the meta/ctrl swallow,
+			// Navigation keys (must be checked BEFORE the meta/ctrl swallow,
 			// because Option+Arrow on macOS arrives as meta === true). ---
 
 			if (key.leftArrow) {
@@ -461,8 +460,6 @@ export function TextInput({
 				return;
 			}
 
-			// --- Editing keys ---
-
 			if (key.return) {
 				// With the menu open, Enter runs the SELECTED command — the buffer
 				// may only hold "/mo" but the operator's intent is the highlighted
@@ -535,7 +532,6 @@ export function TextInput({
 				return;
 			}
 
-			// --- Character input ---
 			if (input && input.length > 0) {
 				// Filter out mouse escape sequences that leak through Ink's parser.
 				if (input.startsWith("[<") || input.startsWith("[M")) {
@@ -568,7 +564,6 @@ export function TextInput({
 	// At end-of-string (pos === value.length), the cursor is rendered as a
 	// trailing inverse-video space so it remains visible.
 
-	// --- Completion menu node ---
 	// Rendered UNDER the value line(s). Hard row cap keeps the dynamic
 	// region's height predictable (the ghost-card lesson: unbounded physical
 	// rows in the live area make log-update strand scrollback copies). Eight

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { TurnProvenanceInfo } from "@bound/client";
 	import { onMount, tick } from "svelte";
+	import { fmtHhmm } from "../lib/format-time";
 	import type { McpAppInstance } from "../lib/mcp-app-store";
 	import {
 		type DisplayItem as GroupedDisplayItem,
@@ -383,17 +384,6 @@
 
 	// Render time as HH:MM in the local timezone — matches the reference
 	// signage aesthetic (tabular-numeric mono, 24-hour).
-	function fmtTime(iso: string | undefined): string {
-		if (!iso) return "";
-		try {
-			const d = new Date(iso);
-			if (Number.isNaN(d.getTime())) return "";
-			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-		} catch {
-			return "";
-		}
-	}
-
 	function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 		if (item.kind === "toolGroup") return "assistant";
 		const role = item.msg.role;
@@ -451,7 +441,7 @@
 					data-message-id={item.kind === "message" ? item.msg.id : undefined}
 					data-message-role={item.kind === "message" ? item.msg.role : "tool_call"}
 				>
-					<div class="time-gutter mono">{fmtTime(item.earliest)}</div>
+					<div class="time-gutter mono">{fmtHhmm(item.earliest)}</div>
 					<div class="rail">
 						<div class="rail-line" style="background: {lineColor}"></div>
 						{#if isFirst}

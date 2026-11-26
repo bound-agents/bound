@@ -54,7 +54,6 @@
 		detail: "var(--ink-4)",
 	};
 
-	// Layout constants — mirrors web/src/client/lib/graph-layout.ts for arc geometry.
 	const VB_W = 1100;
 	const VB_H = 640;
 	const CX = VB_W / 2;

@@ -1,3 +1,5 @@
+import type { ClusterModelRoles } from "./types.js";
+
 /**
  * Shared model-hint → logical-model matching (2026-11-21-model-catalog.md §2.1,
  * 2026-11-21-model-routing.md §2.1).
@@ -18,8 +20,8 @@
  * only on `@bound/shared` and cannot import `@bound/llm`, where
  * `normalizeModelKey` lives. The normalizer is injected (`normalizeKey`) rather
  * than imported here: `@bound/shared` gains no dependency on catalog internals,
- * and `normalizeModelKey` stays put in the catalog module where its six other
- * callers already consume it. Callers in `@bound/agent` / `@bound/web` (both of
+ * and `normalizeModelKey` stays in the catalog module alongside its other
+ * callers. Callers in `@bound/agent` / `@bound/web` (both of
  * which depend on `@bound/llm`) pass `@bound/llm`'s `normalizeModelKey`.
  *
  * Literal id matches ALWAYS take precedence (an exact backend id, an advertised
@@ -40,16 +42,13 @@
  * (`gpt-5-6-sol`, `gpt-6-2-sol`) the expanded backend advertises, with no
  * namespace-specific rewriting baked into the hint side.
  */
-export const HINT_NORMALIZE_PROVIDER = "openai-compatible";
-
-import type { ClusterModelRoles } from "./types.js";
+const HINT_NORMALIZE_PROVIDER = "openai-compatible";
 
 /** A `normalizeModelKey`-shaped function: `(provider, id) → { key }`. */
 export type NormalizeKeyFn = (provider: string, providerModelId: string) => { key: string };
 
 /** The three reserved cluster-role names with documented resolution semantics. */
 export const RESERVED_MODEL_ROLES = ["default", "heavy", "fast"] as const;
-export type ReservedModelRole = (typeof RESERVED_MODEL_ROLES)[number];
 
 /**
  * Whether `name` is a valid cluster model-role / alias name: non-empty and free

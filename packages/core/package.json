@@ -1,7 +1,7 @@
 {
 	"name": "@bound/core",
 	"version": "0.0.1",
-	"description": "SQLite database schema, migration runner, DI container bootstrap, and config file loading for the Bound agent system",
+	"description": "SQLite database schema, migration runner, and config file loading for the Bound agent system",
 	"type": "module",
 	"main": "src/index.ts",
 	"types": "src/index.ts",
@@ -9,8 +9,6 @@
 		"@bound/shared": "workspace:*",
 		"@jitl/quickjs-singlefile-cjs-release-sync": "0.32.0",
 		"quickjs-emscripten-core": "0.32.0",
-		"tsyringe": "^4.8.0",
-		"reflect-metadata": "^0.2.0",
 		"@opentelemetry/api": "^1.9.0"
 	},
 	"devDependencies": {

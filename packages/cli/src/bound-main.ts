@@ -1,7 +1,5 @@
 #!/usr/bin/env bun
-// Real entry point for the `bound` command, loaded by the bound.ts shim
-// AFTER reflect-metadata has been evaluated. See bound.ts for why this
-// split exists.
+// Implementation of the `bound` command; bound.ts is the binary entry point.
 //
 // `runStart` and `createLogger` are imported LAZILY below. `bound init` must
 // not evaluate any module that calls `createLogger()` at module scope: doing

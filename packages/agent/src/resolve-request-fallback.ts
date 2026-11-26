@@ -1,9 +1,9 @@
 /**
  * Loop-host refusal-fallback resolution for the outgoing inference request
- * (slice 5, R-RT18 step 1, 2026-11-21-model-routing.md §7.3 step 2 "Relay
- * contract"). The loop host resolves the logical model's effective fallback
- * policy and ordered candidate list, then ships them on the inference request
- * so a remote inference host knows the resolved chain without re-deriving it.
+ * (R-RT18 step 1, 2026-11-21-model-routing.md §7.3 step 2 "Relay contract").
+ * The loop host resolves the logical model's effective fallback policy and
+ * ordered candidate list, then ships them on the inference request so a remote
+ * inference host knows the resolved chain without re-deriving it.
  *
  * This is the PURE policy read: it reads `model_routing_rules.fallback_policy`
  * (an absent row means `{ mode: "auto" }`) and the cluster-wide

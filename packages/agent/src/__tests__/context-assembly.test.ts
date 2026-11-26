@@ -17,7 +17,6 @@ import {
 	assembleContext,
 	computeBaseTruncationTarget,
 	computeSafetyMargin,
-	estimateContentLength,
 	formatTimestamp,
 	frozenClock,
 	rebuildWarmSections,
@@ -3238,7 +3237,7 @@ This skill reviews pull requests.`;
 	// budget-check reduces used `typeof content === "string" ? content.length : 0`.
 	// When substituteUnsupportedBlocks() runs, it returns ContentBlock[] for
 	// messages with image/document blocks, making them count as 0 tokens.
-	// Fix: export estimateContentLength() that handles both forms.
+	// Fix: budget reduces count both content forms via countContentTokens().
 	// Bug: model switch notifications were injected for every switch in history
 	// with no cap, so a long thread with many model changes could flood the context.
 	describe("model switch notification cap", () => {
@@ -3392,53 +3391,6 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [otherThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-	});
-
-	describe("estimateContentLength", () => {
-		it("measures string content by character count", () => {
-			expect(estimateContentLength("hello world")).toBe(11);
-		});
-
-		it("returns 0 for empty string", () => {
-			expect(estimateContentLength("")).toBe(0);
-		});
-
-		it("returns 0 for empty ContentBlock array", () => {
-			expect(estimateContentLength([])).toBe(0);
-		});
-
-		it("sums text block lengths in a ContentBlock array", () => {
-			const blocks = [
-				{ type: "text" as const, text: "hello " },
-				{ type: "text" as const, text: "world!" },
-			];
-			expect(estimateContentLength(blocks)).toBe(12);
-		});
-
-		it("uses JSON.stringify length for non-text blocks", () => {
-			const blocks = [
-				{
-					type: "tool_use" as const,
-					id: "tu1",
-					name: "bash",
-					input: { command: "ls" },
-				},
-			];
-			const expected = JSON.stringify(blocks[0]).length;
-			expect(estimateContentLength(blocks)).toBe(expected);
-		});
-
-		it("handles mixed text and tool_use blocks", () => {
-			const textBlock = { type: "text" as const, text: "prefix" };
-			const toolBlock = {
-				type: "tool_use" as const,
-				id: "tu1",
-				name: "bash",
-				input: { command: "ls" },
-			};
-			const expected = textBlock.text.length + JSON.stringify(toolBlock).length;
-			expect(estimateContentLength([textBlock, toolBlock])).toBe(expected);
 		});
 	});
 

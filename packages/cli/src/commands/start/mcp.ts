@@ -208,7 +208,7 @@ export async function initMcp(
 	appContext: AppContext,
 	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
 ): Promise<McpResult> {
-	// 8. MCP connections — build a named Map so the agent loop can look up clients by server name
+	// Build a named Map so the agent loop can look up clients by server name
 	appContext.logger.info("Initializing MCP servers...");
 	let mcpClientsMap = new Map<string, MCPClient>();
 	{
@@ -254,8 +254,7 @@ export async function initMcp(
 	);
 	appContext.logger.info(`[mcp] Generated ${mcpCommands.length} MCP command definition(s)`);
 
-	// Update hosts.mcp_tools with the connected server names so relay routing
-	// and delegation affinity work correctly for this host.
+	// hosts.mcp_tools drives relay routing to this host's MCP servers.
 	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap, appContext.logger);
 
 	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.

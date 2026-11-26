@@ -20,8 +20,7 @@ import { LLMError, type LLMFinishReason } from "./types";
  * A normalized model refusal. `category` is display/telemetry metadata, never
  * parsed for control flow beyond the `substitutable` flag the driver already
  * resolved. `credit`, when present, carries the provider's fallback-credit
- * token for the §7.3 driver-level redemption path (slice 1 classifies and
- * carries it; redemption lands in a later slice).
+ * token for the §7.3 driver-level redemption path.
  */
 export type ModelDeclinedOutcome = {
 	kind: "model-declined";
@@ -106,106 +105,6 @@ export function classifyAnthropicRefusal(
 		}
 	}
 	return outcome;
-}
-
-/** OpenAI refusal signals across the Chat Completions and Responses APIs. */
-export interface OpenAIRefusalSignals {
-	/** `message.refusal` string or refusal content-part text. */
-	messageRefusal?: string | null;
-	/** Chat Completions `finish_reason`. */
-	chatFinishReason?: string | null;
-	/** Responses API `status`. */
-	responsesStatus?: string | null;
-	/** Responses API `incomplete_details.reason`. */
-	responsesIncompleteReason?: string | null;
-}
-
-/**
- * OpenAI (Chat Completions & Responses): a `message.refusal` string/content
- * part, Chat `finish_reason: "content_filter"`, or Responses
- * `status: "incomplete"` with `incomplete_details.reason: "content_filter"`.
- * All OpenAI refusals are substitutable.
- */
-export function classifyOpenAIRefusal(signals: OpenAIRefusalSignals): ModelDeclinedOutcome | null {
-	if (signals.messageRefusal) {
-		return {
-			kind: "model-declined",
-			vendor: "openai",
-			category: null,
-			raw_reason: "refusal",
-			explanation: signals.messageRefusal,
-			substitutable: true,
-		};
-	}
-	if (signals.chatFinishReason === "content_filter") {
-		return {
-			kind: "model-declined",
-			vendor: "openai",
-			category: null,
-			raw_reason: "content_filter",
-			substitutable: true,
-		};
-	}
-	if (
-		signals.responsesStatus === "incomplete" &&
-		signals.responsesIncompleteReason === "content_filter"
-	) {
-		return {
-			kind: "model-declined",
-			vendor: "openai",
-			category: null,
-			raw_reason: "content_filter",
-			substitutable: true,
-		};
-	}
-	return null;
-}
-
-/** Gemini `generateContent` terminal finish reasons that denote a safety block. */
-const GEMINI_REFUSAL_FINISH_REASONS = new Set([
-	"SAFETY",
-	"PROHIBITED_CONTENT",
-	"RECITATION",
-	"SPII",
-	"BLOCKLIST",
-	"OTHER",
-]);
-
-/** Gemini `generateContent` refusal signals. */
-export interface GeminiGenerateContentSignals {
-	/** `promptFeedback.blockReason`. */
-	promptBlockReason?: string | null;
-	/** Candidate `finishReason`. */
-	finishReason?: string | null;
-}
-
-/**
- * Gemini `generateContent`: a `promptFeedback.blockReason`, or a
- * `finishReason` in {SAFETY, PROHIBITED_CONTENT, RECITATION, SPII, BLOCKLIST,
- * OTHER}. All map to a substitutable refusal; the category is the raw reason.
- */
-export function classifyGeminiGenerateContent(
-	signals: GeminiGenerateContentSignals,
-): ModelDeclinedOutcome | null {
-	if (signals.promptBlockReason) {
-		return {
-			kind: "model-declined",
-			vendor: "google",
-			category: signals.promptBlockReason,
-			raw_reason: signals.promptBlockReason,
-			substitutable: true,
-		};
-	}
-	if (signals.finishReason && GEMINI_REFUSAL_FINISH_REASONS.has(signals.finishReason)) {
-		return {
-			kind: "model-declined",
-			vendor: "google",
-			category: signals.finishReason,
-			raw_reason: signals.finishReason,
-			substitutable: true,
-		};
-	}
-	return null;
 }
 
 /** Gemini Interactions API HTTP 400 `code` values that denote a safety block. */

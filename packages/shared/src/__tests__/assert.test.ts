@@ -1,27 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { assert, assertNever } from "../assert";
-
-describe("assertNever", () => {
-	it("throws with the default message echoing the unexpected value", () => {
-		// Cast through unknown: the whole point is the runtime guard for an
-		// unhandled discriminated-union variant that TS believed impossible.
-		expect(() => assertNever("surprise" as unknown as never)).toThrow(
-			'Unexpected value: "surprise"',
-		);
-	});
-
-	it("throws with a caller-supplied message when given one", () => {
-		expect(() => assertNever(42 as unknown as never, "Unhandled relay kind")).toThrow(
-			"Unhandled relay kind",
-		);
-	});
-
-	it("serializes object values into the default message", () => {
-		expect(() => assertNever({ kind: "weird" } as unknown as never)).toThrow(
-			'Unexpected value: {"kind":"weird"}',
-		);
-	});
-});
+import { assert } from "../assert";
 
 describe("assert", () => {
 	it("does not throw for a truthy condition", () => {

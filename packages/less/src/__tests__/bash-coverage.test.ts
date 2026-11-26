@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bashToolWithStreaming } from "../tools/bash";
-import { DISABLED_SANDBOX } from "../tools/sandbox";
+import { DISABLED_SANDBOX } from "../tools/sandbox-policy";
 import type { ResolvedShell } from "../tools/shell";
 import { resolveShell } from "../tools/shell";
 
@@ -38,9 +38,7 @@ describe("bash tool — streaming, db-guard, abort", () => {
 			{ command: "echo streamed" },
 			new AbortController().signal,
 			tempDir,
-			{ onStdoutChunk: (c) => chunks.push(c) },
-			"host-x",
-			shell,
+			{ onStdoutChunk: (c) => chunks.push(c), hostname: "host-x", shell },
 		)) as { content: Array<{ type: string; text?: string }> };
 		const joined = normalizeEol(chunks.join(""));
 		expect(joined).toContain("streamed");
@@ -55,9 +53,7 @@ describe("bash tool — streaming, db-guard, abort", () => {
 			{ command: cmd },
 			new AbortController().signal,
 			tempDir,
-			undefined,
-			"host-x",
-			shell,
+			{ hostname: "host-x", shell },
 		)) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
 		const text = bodyText(result);
 		// The guard note mentions the database / sqlite; at minimum output is not an error.
@@ -71,9 +67,7 @@ describe("bash tool — streaming, db-guard, abort", () => {
 			{ command: longCmd, timeout: 200 },
 			new AbortController().signal,
 			tempDir,
-			undefined,
-			"host-x",
-			shell,
+			{ hostname: "host-x", shell },
 		)) as { content: Array<{ type: string; text?: string }> };
 		expect(bodyText(result)).toContain("Exit code:");
 	});
@@ -92,10 +86,7 @@ describe("bash tool — streaming, db-guard, abort", () => {
 			{ command: "echo hi" },
 			new AbortController().signal,
 			tempDir,
-			undefined,
-			"host-x",
-			badShell,
-			DISABLED_SANDBOX,
+			{ hostname: "host-x", shell: badShell, sandbox: DISABLED_SANDBOX },
 		)) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain("[boundless]");

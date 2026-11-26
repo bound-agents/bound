@@ -1,6 +1,5 @@
 /**
  * Ctrl-C cancellation state machine.
- * Implements AC7.7-AC7.11: Modal handling, transition deferral, two-press exit.
  */
 
 export interface CancelDeps {
@@ -23,12 +22,12 @@ export interface CancelDeps {
  * - deferredCtrlC: boolean - whether a Ctrl-C was deferred during transition
  *
  * Behavior:
- * 1. Modal open (AC7.10): Dismiss modal, do not count toward exit sequence
- * 2. Transition in flight (AC7.11): Defer the Ctrl-C until transition settles
- * 3. Active turn, first press (AC7.7): Cancel thread and abort tools
- * 4. Active turn, second press within 2s (AC7.8): Exit gracefully
- * 5. Idle, first press (AC7.9): Show hint
- * 6. Idle, second press within 2s (AC7.9): Exit gracefully
+ * 1. Modal open: Dismiss modal, do not count toward exit sequence
+ * 2. Transition in flight: Defer the Ctrl-C until transition settles
+ * 3. Active turn, first press: Cancel thread and abort tools
+ * 4. Active turn, second press within 2s: Exit gracefully
+ * 5. Idle, first press: Show hint
+ * 6. Idle, second press within 2s: Exit gracefully
  */
 export class CancelStateMachine {
 	private lastCtrlCTime = 0;
@@ -57,7 +56,7 @@ export class CancelStateMachine {
 	 * Handle Ctrl-C press. Implements the full state machine.
 	 */
 	async onCtrlC(): Promise<void> {
-		// AC7.10: Modal open - dismiss and return (doesn't count toward exit)
+		// Modal open - dismiss and return (doesn't count toward exit)
 		if (this.modalOpen) {
 			const wasDismissed = this.deps.dismissModal();
 			if (wasDismissed) {
@@ -66,7 +65,7 @@ export class CancelStateMachine {
 			}
 		}
 
-		// AC7.11: Transition in flight - defer and return
+		// Transition in flight - defer and return
 		if (this.transitionInFlight) {
 			this.deferredCtrlC = true;
 			return;
@@ -78,13 +77,13 @@ export class CancelStateMachine {
 		if (this.turnActive) {
 			// Active turn path
 			if (!this.canceledThisTurn) {
-				// AC7.7: First press during turn - cancel and abort
+				// First press during turn - cancel and abort
 				await this.deps.cancelThread(this.threadId);
 				this.deps.abortInFlightTools();
 				this.canceledThisTurn = true;
 				this.lastCtrlCTime = now;
 			} else if (withinTwoSeconds) {
-				// AC7.8: Second press within 2s - exit gracefully
+				// Second press within 2s - exit gracefully
 				await this.deps.gracefulExit();
 			} else {
 				// Cancel was called but 2-second window expired - show hint for fresh exit press
@@ -94,10 +93,10 @@ export class CancelStateMachine {
 		} else {
 			// Idle path
 			if (withinTwoSeconds) {
-				// AC7.9: Second press within 2s - exit gracefully
+				// Second press within 2s - exit gracefully
 				await this.deps.gracefulExit();
 			} else {
-				// AC7.9: First press - show hint
+				// First press - show hint
 				this.deps.showHint("Press Ctrl-C again to exit");
 				this.lastCtrlCTime = now;
 			}

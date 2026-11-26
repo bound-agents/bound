@@ -76,7 +76,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		}
 
 		// Build enrichment
-		const result = buildVolatileEnrichment(db, baseline, 5, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 5, 5);
 
 		// Verify tiers object exists
 		expect(result.tiers).toBeDefined();
@@ -190,7 +190,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Verify L1 has the summary (no L0 in this test)
 		expect(result.tiers?.L1.length).toBeGreaterThan(0);
@@ -276,7 +276,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Verify L1 contains the summary
 		expect(result.tiers?.L1.length).toBeGreaterThan(0);
@@ -330,7 +330,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Verify it's in L0
 		const l0Entry = result.tiers?.L0.find((e) => e.key === pinnedKey);
@@ -428,7 +428,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		}
 
 		// Set maxMemory = 3
-		const result = buildVolatileEnrichment(db, baseline, 3, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 3, 5);
 
 		// Verify L0 has 2 entries (uncapped)
 		expect(result.tiers?.L0.length).toBe(2);
@@ -501,7 +501,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Find indices in memoryDeltaLines
 		const l0LineIdx = deltaLines(result).findIndex((l) => l.includes("_pinned_order_test"));
@@ -540,7 +540,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Verify tiers is defined
 		expect(result.tiers).toBeDefined();
@@ -573,7 +573,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 			siteId,
 		);
 
-		const result = buildVolatileEnrichment(db, baseline, 25, 5);
+		const result = buildVolatileEnrichment(db, baseline, Date.now(), 25, 5);
 
 		// Verify format: "- key: value [tag]"
 		expect(deltaLines(result)[0]).toMatch(/^- /);

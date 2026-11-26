@@ -23,7 +23,6 @@ import {
 	type ParsedToolCall,
 	type ShouldRetryRelayCallInput,
 	type ToolAnnotations,
-	scaledMaxRetries,
 	scaledSilenceTimeout,
 	shouldRetryRelayCall,
 	toolCallSignature,
@@ -218,14 +217,6 @@ describe("scaledSilenceTimeout (S1–S2)", () => {
 					expect(tHi).toBeGreaterThanOrEqual(tLo);
 				},
 			),
-		);
-	});
-
-	it("scaledMaxRetries is the identity on the ceiling regardless of context", () => {
-		fc.assert(
-			fc.property(fc.nat(2_000_000), fc.nat(20), (tokens, max) => {
-				expect(scaledMaxRetries(tokens, max)).toBe(max);
-			}),
 		);
 	});
 });

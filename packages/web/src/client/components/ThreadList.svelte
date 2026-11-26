@@ -5,6 +5,11 @@
 	import { formatRelativeTime, isToday } from "../lib/format-time";
 	import { getLineColor, getLineName } from "../lib/metro-lines";
 	import { lineRoute } from "../lib/route-utils";
+	import {
+		attachedSessionHosts,
+		attachedSessionLabel,
+		attachedSessionTitle,
+	} from "../lib/session-badge";
 	import { MAX_THREAD_TITLE_LENGTH, resolveTitleEdit } from "../lib/thread-title";
 	import LineBadge from "./LineBadge.svelte";
 
@@ -109,21 +114,6 @@
 			.replace(/\s+/g, " ")
 			.trim();
 		return clean || "Untitled";
-	}
-
-	function getAttachedSessionHosts(thread: ThreadListEntry): string[] {
-		return Array.isArray(thread.attachedSessionHosts) ? thread.attachedSessionHosts : [];
-	}
-
-	function formatAttachedSessionLabel(hosts: string[]): string {
-		if (hosts.length === 0) return "";
-		if (hosts.length === 1) return hosts[0];
-		return `${hosts[0]} +${hosts.length - 1}`;
-	}
-
-	function attachedSessionTitle(hosts: string[]): string {
-		const plural = hosts.length === 1 ? "session" : "sessions";
-		return `Attached ${plural} on ${hosts.join(", ")}`;
 	}
 
 	// Virtualization: flatten group headers + thread cards into a single linear
@@ -274,7 +264,7 @@
 						{@const color = getLineColor(thread.color)}
 						{@const selected = selectedThreadId === thread.id}
 						{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
-						{@const attachedSessionHosts = getAttachedSessionHosts(thread)}
+						{@const sessionHosts = attachedSessionHosts(thread)}
 						<a
 							class="thread-card"
 							class:selected
@@ -293,12 +283,10 @@
 								<LineBadge lineIndex={thread.color} size="compact" />
 								<span class="line-name">{getLineName(thread.color)}</span>
 								<span class="thread-id mono">{thread.id.slice(0, 8)}</span>
-								{#if attachedSessionHosts.length > 0}
-									<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
+								{#if sessionHosts.length > 0}
+									<span class="session-badge" title={attachedSessionTitle(sessionHosts)}>
 										<span class="session-dot"></span>
-										<span class="session-host"
-											>{formatAttachedSessionLabel(attachedSessionHosts)}</span
-										>
+										<span class="session-host">{attachedSessionLabel(sessionHosts)}</span>
 									</span>
 								{/if}
 								<div class="spacer"></div>

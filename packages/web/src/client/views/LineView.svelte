@@ -13,7 +13,7 @@
 	import ThreadModelChip from "../components/ThreadModelChip.svelte";
 	import { reduceActiveAuxRuns } from "../lib/aux-invoke-cards";
 	import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
-	import { formatRelativeTime } from "../lib/format-time";
+	import { fmtHhmm, formatRelativeTime } from "../lib/format-time";
 	import type { McpAppHost } from "../lib/mcp-app-host";
 	import {
 		type McpAppInstanceMap,
@@ -27,6 +27,11 @@
 	import { type ModelLabels, buildModelLabels, parseRouteId } from "../lib/model-labels";
 	import { modelStore } from "../lib/modelStore";
 	import { navigateTo } from "../lib/router";
+	import {
+		attachedSessionHosts,
+		attachedSessionLabel,
+		attachedSessionTitle,
+	} from "../lib/session-badge";
 	import { MAX_THREAD_TITLE_LENGTH, resolveTitleEdit } from "../lib/thread-title";
 	import {
 		EMPTY_YARD_STATE,
@@ -155,10 +160,7 @@
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 	let namesInterval: ReturnType<typeof setInterval> | null = null;
 
-	// Live MCP App renders for UI-bearing tool calls in this thread. The store is
-	// populated by the tool-call handler (createToolCallHandler) when the agent
-	// invokes a UI-bearing MCP tool; we filter to this thread and render a panel
-	// per instance below the conversation.
+	// MCP App panels for this thread, rebuilt from persisted tool_result bindings.
 	let appInstanceMap = $state<McpAppInstanceMap>({});
 	const unsubscribeApps = mcpAppInstances.subscribe((map) => {
 		appInstanceMap = map;
@@ -561,21 +563,6 @@
 		}
 	}
 
-	function getAttachedSessionHosts(): string[] {
-		return Array.isArray(thread?.attachedSessionHosts) ? thread.attachedSessionHosts : [];
-	}
-
-	function formatAttachedSessionLabel(hosts: string[]): string {
-		if (hosts.length === 0) return "";
-		if (hosts.length === 1) return hosts[0];
-		return `${hosts[0]} +${hosts.length - 1}`;
-	}
-
-	function attachedSessionTitle(hosts: string[]): string {
-		const plural = hosts.length === 1 ? "session" : "sessions";
-		return `Attached ${plural} on ${hosts.join(", ")}`;
-	}
-
 	const lineColor = $derived(thread ? getLineColor(thread.color) : "#999");
 	const lineName = $derived(thread ? getLineName(thread.color) : "");
 
@@ -705,17 +692,6 @@
 	// user message is a "stop" on the line; the last is the current turn.
 	const userTurns = $derived(messages.filter((m) => m.role === "user"));
 
-	function fmtHhmm(iso: string | undefined | null): string {
-		if (!iso) return "";
-		try {
-			const d = new Date(iso);
-			if (Number.isNaN(d.getTime())) return "";
-			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-		} catch {
-			return "";
-		}
-	}
-
 	function turnPreview(content: string): string {
 		const compact = contentPreviewText(content).replace(/\s+/g, " ").trim();
 		if (compact.length <= 56) return compact;
@@ -785,11 +761,11 @@
 					viaProvider={chipVia.provider}
 					kind={chipKind}
 				/>
-				{@const attachedSessionHosts = getAttachedSessionHosts()}
-				{#if attachedSessionHosts.length > 0}
-					<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
+				{@const sessionHosts = attachedSessionHosts(thread)}
+				{#if sessionHosts.length > 0}
+					<span class="session-badge" title={attachedSessionTitle(sessionHosts)}>
 						<span class="session-dot"></span>
-						<span class="session-host">{formatAttachedSessionLabel(attachedSessionHosts)}</span>
+						<span class="session-host">{attachedSessionLabel(sessionHosts)}</span>
 					</span>
 				{/if}
 			{/if}

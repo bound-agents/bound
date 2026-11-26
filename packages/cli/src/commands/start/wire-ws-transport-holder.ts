@@ -27,11 +27,6 @@
 import type { Logger } from "@bound/shared";
 import type { WsTransport } from "@bound/sync";
 
-/**
- * The shape of the deferred sync-server transport holder. Kept structurally
- * identical to `ServerResult["wsTransportHolder"]` (see `server.ts`); declared
- * here as the canonical method contract the wiring both seeds and verifies.
- */
 export interface WsTransportHolder {
 	addPeer: (
 		siteId: string,
@@ -61,14 +56,10 @@ export interface WsTransportHolder {
 }
 
 /**
- * The real `WsTransport` instance is the wiring source. Typing the parameter as
- * the concrete class (not the loosened `WsTransportHolder` shape) makes the
- * compiler verify every `.bind()` reference below against a real method — the
- * compile-time complement to the runtime assertion. A method renamed or removed
- * on `WsTransport` fails typecheck here; a method omitted from the copy list
- * fails the runtime assertion. The holder's own payload params are widened to
- * `unknown`, so the narrower `WsTransport` signatures are not structurally
- * assignable to `WsTransportHolder` — hence the concrete type here.
+ * Typed as the concrete class so `wsTransport[name]` in the wiring loop fails
+ * typecheck when a holder method is renamed or removed on `WsTransport`. The
+ * holder's payload params are widened to `unknown`, so `WsTransport` is not
+ * structurally assignable to `WsTransportHolder`.
  */
 export type WsTransportSource = WsTransport;
 
@@ -158,13 +149,9 @@ function makeUnwiredStub(
 }
 
 /**
- * The neutral value each holder method returns in benign mode — read off the
- * real `WsTransport` return types (see `packages/sync/src/ws-transport.ts`). All
- * but two methods return `void` (neutral `undefined`); `applySnapshotChunk`
- * returns a `number` (neutral `0`, matching the former `() => 0` stub) and
- * `requestConsistency` returns `Promise<Map<...>>` (neutral an empty Map,
- * matching the former `async () => new Map()` stub — the exact value the
- * single-host `POST /consistency` route relied on before this holder existed).
+ * The neutral value each holder method returns in benign mode, read off the
+ * real `WsTransport` return types. The single-host `POST /consistency` route
+ * relies on `requestConsistency` resolving to an empty Map.
  */
 function benignReturnValue(name: keyof WsTransportHolder): unknown {
 	if (name === "requestConsistency") return Promise.resolve(new Map());
@@ -213,53 +200,27 @@ export function createWsTransportHolderStubs(
 }
 
 /**
- * Copy the real `WsTransport` instance's methods onto the deferred holder,
- * bound to the instance, then assert every required method was wired.
- *
- * The `.bind(wsTransport)` style matches the historical `Object.assign` in
- * `index.ts`. After the copy, any required method still carrying the unwired
- * marker means the copy list drifted from the holder interface (the #253 bug) —
- * so we throw. A hub that cannot receive a spool/changelog/relay/snapshot frame
- * must not silently boot.
+ * Copy every required method from the real `WsTransport` onto the deferred
+ * holder, bound to the instance, then assert none is still a placeholder. A
+ * hub that cannot receive a spool/changelog/relay/snapshot frame must not
+ * silently boot.
  */
 export function wireWsTransportHolder(
 	holder: WsTransportHolder,
 	wsTransport: WsTransportSource,
 ): void {
-	Object.assign(holder, {
-		addPeer: wsTransport.addPeer.bind(wsTransport),
-		removePeer: wsTransport.removePeer.bind(wsTransport),
-		handleChangelogPush: wsTransport.handleChangelogPush.bind(wsTransport),
-		handleChangelogAck: wsTransport.handleChangelogAck.bind(wsTransport),
-		drainChangelog: wsTransport.drainChangelog.bind(wsTransport),
-		handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
-		handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
-		handleSpoolTransfer: wsTransport.handleSpoolTransfer.bind(wsTransport),
-		handleSpoolTransferAck: wsTransport.handleSpoolTransferAck.bind(wsTransport),
-		drainDurableWorkSpool: wsTransport.drainDurableWorkSpool.bind(wsTransport),
-		seedNewPeer: wsTransport.seedNewPeer.bind(wsTransport),
-		handleSnapshotAck: wsTransport.handleSnapshotAck.bind(wsTransport),
-		continueSnapshotSeed: wsTransport.continueSnapshotSeed.bind(wsTransport),
-		applySnapshotChunk: wsTransport.applySnapshotChunk.bind(wsTransport),
-		handleReseedRequest: wsTransport.handleReseedRequest.bind(wsTransport),
-		handleConsistencyRequest: wsTransport.handleConsistencyRequest.bind(wsTransport),
-		requestConsistency: wsTransport.requestConsistency.bind(wsTransport),
-		handleRowPullRequest: wsTransport.handleRowPullRequest.bind(wsTransport),
-		handleRowPullAck: wsTransport.handleRowPullAck.bind(wsTransport),
-		continueRowPull: wsTransport.continueRowPull.bind(wsTransport),
-		continueConsistencyStream: wsTransport.continueConsistencyStream.bind(wsTransport),
-	});
+	const target = holder as Record<keyof WsTransportHolder, unknown>;
+	for (const name of REQUIRED_HOLDER_METHODS) {
+		const method: unknown = wsTransport[name];
+		if (typeof method === "function") target[name] = method.bind(wsTransport);
+	}
 
-	const unwired = REQUIRED_HOLDER_METHODS.filter((name) =>
-		isUnwiredStub((holder as Record<keyof WsTransportHolder, unknown>)[name]),
-	);
+	const unwired = REQUIRED_HOLDER_METHODS.filter((name) => isUnwiredStub(target[name]));
 	if (unwired.length > 0) {
 		throw new Error(
 			`ws transport holder left required methods unwired after wiring: ${unwired
 				.map(String)
-				.join(
-					", ",
-				)}. The copy list in wireWsTransportHolder drifted from the WsTransportHolder interface.`,
+				.join(", ")}. The WsTransport instance does not implement them.`,
 		);
 	}
 }

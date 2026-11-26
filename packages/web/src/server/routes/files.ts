@@ -202,10 +202,8 @@ export function createFilesRoutes(db: Database, operatorUserId = "default_web_us
 
 			let responseBody: string | Blob;
 			if (file.is_binary === 1) {
-				// Decode base64 to binary
 				responseBody = new Blob([Buffer.from(file.content, "base64")]);
 			} else {
-				// Return text as-is
 				responseBody = file.content;
 			}
 

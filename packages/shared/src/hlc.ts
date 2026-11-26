@@ -39,7 +39,6 @@ export function generateHlc(wallClock: string, lastHlc: string | null, siteId: s
 		return `${wallClock}_0000_${siteId}`;
 	}
 
-	// Wall clock hasn't advanced (equal or behind) — increment counter
 	const newCounter = (Number.parseInt(lastCounter, 16) + 1).toString(16).padStart(4, "0");
 	return `${lastTs}_${newCounter}_${siteId}`;
 }
@@ -65,10 +64,4 @@ export function mergeHlc(localHlc: string, remoteHlc: string, siteId: string): s
 	);
 	const newCounter = (maxCounter + 1).toString(16).padStart(4, "0");
 	return `${maxTs}_${newCounter}_${siteId}`;
-}
-
-/** Extract the wall clock component as a Date. */
-export function hlcToDate(hlc: string): Date {
-	const [timestamp] = parseHlc(hlc);
-	return new Date(timestamp);
 }

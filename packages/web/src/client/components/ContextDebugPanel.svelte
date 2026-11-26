@@ -2,6 +2,7 @@
 	import type { ContextDebugTurn, CrossThreadSource } from "@bound/client";
 	import { onDestroy } from "svelte";
 	import { type WebSocketMessage, client, wsEvents } from "../lib/bound";
+	import { fmtHhmm } from "../lib/format-time";
 	import { getLineColor, getLineName } from "../lib/metro-lines";
 	import { navigateTo } from "../lib/router";
 	import ContextBar from "./ContextBar.svelte";
@@ -123,17 +124,6 @@
 	const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
 
 	const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 1);
-
-	function fmtHhmm(iso: string | undefined | null): string {
-		if (!iso) return "";
-		try {
-			const d = new Date(iso);
-			if (Number.isNaN(d.getTime())) return "";
-			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-		} catch {
-			return "";
-		}
-	}
 
 	function midpointISO(a: string, b: string): string {
 		const ta = new Date(a).getTime();

@@ -104,12 +104,7 @@ TTL keep the caller's value verbatim.
 - **`BOUND_DURABLE_DISPATCH=0` (or `false`):** Routes new dispatch wakeups back to the legacy
   `dispatch_queue`. Existing durable rows remain readable and drain first. Relay and intake work
   always write to `durable_work`; non-advertising peer hops raise a typed routing error.
-- **`BOUND_TASK_FIRE_MODE`:** Controls how the scheduler fires due scheduled tasks:
-  - `durable` (default): rendezvous winner enqueues a `task_fire` row in `durable_work` (5-minute
-    TTL), claimed by the same-tick consumer lane to bridge the `pending`→`claimed` CAS.
-  - `compare`: runs the legacy in-process path and records comparison telemetry
-    (`task_fire_comparison` logs and `bound.scheduler.task_fire.comparison` counter).
-  - `legacy`: runs the legacy in-process path with no telemetry.
+- **Scheduled task fire:** The scheduler always fires due tasks through a `task_fire` durable-work row with a 5-minute TTL (`RPC_REQUEST_TTL_MS`).
 - **Startup refusal on populated legacy relay tables:** If a leftover `relay_outbox` or
   `relay_inbox` table exists at boot, Bound classifies rows per table into consumed
   (`delivered`/`processed = 1`), expired (`= 0` and valid ISO 8601

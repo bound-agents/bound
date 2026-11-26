@@ -4,13 +4,8 @@ import { type HashlineEdit, applyHashlineEdits, formatWithHashes } from "@bound/
 import { contextFileStaleNote, isContextFile } from "./context-files";
 import { checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
-import {
-	DISABLED_SANDBOX,
-	type ResolvedSandboxConfig,
-	checkWritePath,
-	formatWriteDenied,
-} from "./sandbox-policy";
-import type { ToolHandler, ToolResult } from "./types";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig, guardWriteTarget } from "./sandbox-policy";
+import { TOOL_NAMES, type ToolHandler, type ToolResult } from "./types";
 
 export function createEditTool(
 	hostname: string,
@@ -76,16 +71,9 @@ async function editToolImpl(
 		return fail(dbDenied);
 	}
 
-	// In-process write guard: an edit reads then writes back to the same path, so
-	// when the sandbox is enabled, confine the target to the writable set up front
-	// (before the read) for a clean, rich error. This tool calls fs directly and
-	// never passes through mxc's kernel guard.
-	if (sandbox.enabled) {
-		const check = checkWritePath(file_path, cwd, sandbox);
-		if (!check.allowed) {
-			return fail(formatWriteDenied("boundless_edit", file_path, check));
-		}
-	}
+	// Guard before the read so a denied edit fails with the rich sandbox error.
+	const writeDenied = guardWriteTarget(TOOL_NAMES.edit, file_path, cwd, sandbox);
+	if (writeDenied) return fail(writeDenied);
 
 	try {
 		const content = readFileSync(resolvedPath, "utf-8");

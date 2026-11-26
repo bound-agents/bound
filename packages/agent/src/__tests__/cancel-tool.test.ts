@@ -85,8 +85,6 @@ describe("cancel tool — heartbeat guard", () => {
 		return taskId;
 	}
 
-	// ─── task_id path ───────────────────────────────────────────────────────
-
 	it("refuses to cancel a heartbeat task by task_id", async () => {
 		const taskId = insertTask({ type: "heartbeat" });
 		const tool = createCancelTool(makeCtx());
@@ -115,8 +113,6 @@ describe("cancel tool — heartbeat guard", () => {
 		};
 		expect(row.status).toBe("cancelled");
 	});
-
-	// ─── payload_match path ─────────────────────────────────────────────────
 
 	it("payload_match never cancels heartbeat tasks", async () => {
 		const hbId = insertTask({

@@ -1452,7 +1452,7 @@ describe("MCP Bridge — binary resources and resource_link passthrough", () => 
 		expect(blocks[0].text).toContain('Load with: resource "https://example.test/data.csv"');
 	});
 
-	it("bash `resource` command on a text resource keeps the legacy plain-string contract", async () => {
+	it("bash `resource` command on a text resource returns plain-string stdout", async () => {
 		const fakeClient = buildClient("text-res", {
 			readResource: async (uri: string) => ({
 				uri,

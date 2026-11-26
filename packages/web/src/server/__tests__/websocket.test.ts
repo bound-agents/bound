@@ -37,7 +37,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 	beforeEach(() => {
 		eventBus = new TypedEventEmitter();
-		handler = createWebSocketHandler(eventBus);
+		handler = createWebSocketHandler({ eventBus });
 	});
 
 	afterEach(() => {
@@ -1303,7 +1303,7 @@ describe("ClientConnection type and WS message schemas", () => {
 	describe("Task 6: Event name migration and thread:status push", () => {
 		it("should send task:updated instead of task_update", () => {
 			const eventBus = new TypedEventEmitter();
-			const testHandler = createWebSocketHandler(eventBus);
+			const testHandler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			testHandler.open(mockWs);
@@ -1327,7 +1327,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should send file:updated instead of file_update", () => {
 			const eventBus = new TypedEventEmitter();
-			const testHandler = createWebSocketHandler(eventBus);
+			const testHandler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			testHandler.open(mockWs);
@@ -1351,7 +1351,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should push thread:status to subscribed clients", () => {
 			const eventBus = new TypedEventEmitter();
-			const testHandler = createWebSocketHandler(eventBus);
+			const testHandler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			testHandler.open(mockWs);
@@ -1391,7 +1391,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should not push thread:status to non-subscribed clients", () => {
 			const eventBus = new TypedEventEmitter();
-			const testHandler = createWebSocketHandler(eventBus);
+			const testHandler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			testHandler.open(mockWs);
@@ -1424,7 +1424,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should verify event names in broadcast", () => {
 			const eventBus = new TypedEventEmitter();
-			const testHandler = createWebSocketHandler(eventBus);
+			const testHandler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			testHandler.open(mockWs);
@@ -1461,7 +1461,7 @@ describe("ClientConnection type and WS message schemas", () => {
 	describe("Task 1: Connection registry with client tool lookup", () => {
 		it("should return client tools for subscribed connections", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1503,7 +1503,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should return empty map when no connections subscribed", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const tools = handler.registry.getClientToolsForThread("nonexistent-thread");
 			expect(tools.size).toBe(0);
@@ -1513,7 +1513,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should evict earlier tool-bearing connection when new one subscribes to same thread", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			// Connection 1 with tool_a
 			const mockWs1 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
@@ -1584,7 +1584,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should return connection ID for tool lookup", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1624,7 +1624,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should return undefined for tool not in thread", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1663,7 +1663,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("should exclude connections not subscribed to thread", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			// Connection 1 subscribed to thread-1
 			const mockWs1 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
@@ -1738,7 +1738,7 @@ describe("ClientConnection type and WS message schemas", () => {
 	describe("systemPromptAddition (AC2.1-AC2.7)", () => {
 		it("AC2.1: should store systemPromptAddition per (connection, thread) pair", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1771,7 +1771,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.3: thread:subscribe after session:configure inherits systemPromptAddition", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1804,7 +1804,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.4: re-sending session:configure replaces stored value", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1849,7 +1849,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.4: omitting systemPromptAddition field clears stored value", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1895,7 +1895,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.5: thread:unsubscribe clears stored addition for that thread", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1939,7 +1939,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.6: session:configure without systemPromptAddition field does not error", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -1962,7 +1962,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 		it("AC2.7: existing clients without systemPromptAddition field work unchanged", () => {
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(mockWs);
@@ -2014,7 +2014,7 @@ describe("ClientConnection type and WS message schemas", () => {
 		it("AC10.2: tool:result with ContentBlock[] accepts text, image, document blocks", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 			handler.open(mockWs);
 
 			// Should accept text block in array
@@ -2074,7 +2074,7 @@ describe("ClientConnection type and WS message schemas", () => {
 		it("AC10.3: tool:result with invalid ContentBlock variants (tool_use, thinking) is rejected", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
+			const handler = createWebSocketHandler({ eventBus });
 			handler.open(mockWs);
 
 			// tool_use block should be rejected
@@ -2135,7 +2135,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			it("AC3.5: emitToolCancel with empty entries does not throw", () => {
 				const eventBus = new TypedEventEmitter();
-				const handler = createWebSocketHandler(eventBus);
+				const handler = createWebSocketHandler({ eventBus });
 
 				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 				handler.open(mockWs);
@@ -2149,7 +2149,7 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			it("AC3.6: re-sending session:configure does not trigger tool:cancel", () => {
 				const eventBus = new TypedEventEmitter();
-				const handler = createWebSocketHandler(eventBus);
+				const handler = createWebSocketHandler({ eventBus });
 
 				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 				handler.open(mockWs);

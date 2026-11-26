@@ -2,14 +2,9 @@ import type { Database } from "bun:sqlite";
 
 /**
  * Cross-table read joining `threads` to `users` to resolve the display name of
- * a thread's owner. Used by `packages/agent/src/summary-extraction.ts` so the
- * generated summary references the user by name instead of "you".
- *
- * See ../index.ts for conventions. Reads only; bun:sqlite `.get()` returns
- * `null` on empty reads.
+ * a thread's owner, so generated summaries can name the user instead of "you".
  */
 
-/** Projection: the thread owner's display name. */
 export interface ThreadUserDisplayNameRow {
 	display_name: string;
 }

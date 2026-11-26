@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { LockKeyhole } from "lucide-svelte";
+	import { client } from "../lib/bound";
 
 	// The web-chat consent card for pending MCP OAuth challenges (R-MO27c).
 	//
@@ -19,12 +20,6 @@
 		failureReason: string | null;
 	}
 
-	interface ChallengesResponse {
-		challenges: PendingChallenge[];
-		loopback: boolean;
-		canResolve: boolean;
-	}
-
 	let challenges = $state<PendingChallenge[]>([]);
 	let loopback = $state(false);
 	let canResolve = $state(false);
@@ -35,12 +30,7 @@
 
 	async function load(): Promise<void> {
 		try {
-			const res = await fetch("/api/mcp-challenges");
-			if (!res.ok) {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				throw new Error(body.error ?? `request failed (${res.status})`);
-			}
-			const data = (await res.json()) as ChallengesResponse;
+			const data = await client.listMcpChallenges();
 			challenges = data.challenges;
 			loopback = data.loopback;
 			canResolve = data.canResolve;
@@ -55,17 +45,8 @@
 	async function authorize(id: string): Promise<void> {
 		claimState = { ...claimState, [id]: "claiming" };
 		try {
-			const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(id)}/claim`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-			});
-			const body = (await res.json().catch(() => ({}))) as {
-				authorizeUrl?: string;
-				error?: string;
-			};
-			if (!res.ok || !body.authorizeUrl) {
-				throw new Error(body.error ?? `claim failed (${res.status})`);
-			}
+			const body = await client.claimMcpChallenge(id);
+			if (!body.authorizeUrl) throw new Error("claim returned no authorize URL");
 			// Open the minted authorize URL — its loopback redirect_uri names this
 			// same daemon's canonical callback, and the browser is on that machine.
 			window.open(body.authorizeUrl, "_blank", "noopener");

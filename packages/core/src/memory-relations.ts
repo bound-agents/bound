@@ -41,7 +41,7 @@ export class InvalidRelationError extends Error {
  * Deterministic lowercased-key → canonical-value lookup for spelling variants
  * observed in production data. Keys are lowercased for case-insensitive matching.
  */
-export const SPELLING_VARIANTS: Record<string, CanonicalRelation> = {
+const SPELLING_VARIANTS: Record<string, CanonicalRelation> = {
 	// related_to variants
 	"related-to": "related_to",
 	relates_to: "related_to",
@@ -100,7 +100,7 @@ export const SPELLING_VARIANTS: Record<string, CanonicalRelation> = {
 };
 
 /** Generic canonical relation used when a non-canonical relation has no known variant. */
-export const FALLBACK_RELATION: CanonicalRelation = "related_to";
+const FALLBACK_RELATION: CanonicalRelation = "related_to";
 
 /**
  * Pure normalization of a single (relation, context) pair to the canonical set.
@@ -128,11 +128,9 @@ export function normalizeRelationValue(
 
 	const variant = SPELLING_VARIANTS[relation.toLowerCase()];
 	if (variant) {
-		// Known spelling variant → map to canonical, leave context untouched.
 		return { relation: variant, context, changed: true };
 	}
 
-	// Bespoke / unknown relation → fallback, preserving the original phrasing in context.
 	const parts: string[] = [relation];
 	if (context) parts.push(context);
 	return { relation: FALLBACK_RELATION, context: parts.join(" | "), changed: true };

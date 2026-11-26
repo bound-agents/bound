@@ -25,8 +25,8 @@ import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
 import { configureLessTelemetryFromOpenTelemetry } from "./telemetry";
 import { buildToolSet } from "./tools/registry";
-import { resolveSandboxConfig } from "./tools/sandbox";
 import { SandboxOverrideStore } from "./tools/sandbox-override";
+import { resolveSandboxConfig } from "./tools/sandbox-policy";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./tui/util/terminal-title";
@@ -154,13 +154,13 @@ async function runAcpMode(args: {
 async function main(): Promise<void> {
 	const terminalTitle = new TerminalTitleController();
 	try {
-		// Step 0: Telemetry. No-op unless OTEL_ENABLED is set. Done first so
+		// Telemetry. No-op unless OTEL_ENABLED is set. Done first so
 		// every subsequent operation that creates a span (sendMessage, tool
 		// execution, etc.) gets exported to the configured OTLP endpoint.
 		initTelemetry("boundless");
 		configureLessTelemetryFromOpenTelemetry();
 
-		// Step 1: Parse arguments. Done before any stdout-touching work because
+		// Parse arguments. Done before any stdout-touching work because
 		// in --acp mode stdout is the JSON-RPC channel and must stay pristine.
 		let attachArg: string | null = null;
 		let urlArg: string | null = null;
@@ -196,7 +196,6 @@ async function main(): Promise<void> {
 		// SessionHeader rendered into <Static> shows the right commit hash.
 		const buildInfoReady = loadBuildInfo();
 
-		// Step 2: Load config
 		const configDir = join(homedir(), ".bound", "less");
 		mkdirSync(configDir, { recursive: true });
 		const [config, mcpConfig] = await Promise.all([
@@ -229,7 +228,7 @@ async function main(): Promise<void> {
 		// and the ChatView `/sandbox` dispatch (mutator).
 		const sandboxOverrides = new SandboxOverrideStore();
 
-		// Step 3: Connect BoundClient with timeout
+		// Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
 			await client.connect();
@@ -239,7 +238,6 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
-		// Step 4: Get or create thread
 		let initialThread: Thread;
 		try {
 			initialThread = await resolveThread(client, attachArg);
@@ -249,7 +247,6 @@ async function main(): Promise<void> {
 		}
 		const threadId = initialThread.id;
 
-		// Step 5: Acquire lockfile
 		try {
 			acquireLock(configDir, threadId, process.cwd());
 		} catch (error) {
@@ -263,12 +260,10 @@ async function main(): Promise<void> {
 		// loadSession does, so it earns a registry entry the same way.
 		rememberLocalSession(configDir, threadId, process.cwd());
 
-		// Step 6: Initialize logger and MCP
 		const logger = new AppLogger(configDir);
 		const mcpManager = new McpServerManager(logger);
 		const hostname = getHostname();
 
-		// Step 7: Perform attach
 		const attachResult = await performAttach({
 			client,
 			threadId,
@@ -282,18 +277,8 @@ async function main(): Promise<void> {
 			sandbox,
 		});
 
-		// Step 8: Build tool set for App
 		const mcpTools = mcpManager.getRunningTools();
-		const toolSet = buildToolSet(
-			process.cwd(),
-			hostname,
-			mcpTools,
-			undefined,
-			config.url,
-			shell,
-			undefined,
-			sandbox,
-		);
+		const toolSet = buildToolSet({ hostname, mcpTools, boundUrl: config.url, shell, sandbox });
 
 		// Block on the shiki highlighter before render so initial message
 		// history (committed to Ink's <Static>) is fully syntax-highlighted.
@@ -303,7 +288,6 @@ async function main(): Promise<void> {
 		await buildInfoReady;
 		const { commitHash } = getBuildInfo();
 
-		// Step 9: Render App
 		// Ink requires raw-mode stdin — without a TTY it throws "Raw mode is
 		// not supported", and the error path inside Ink has a race condition
 		// between waitUntilExit() and unmount() that causes a silent hang.
@@ -340,7 +324,7 @@ async function main(): Promise<void> {
 			{ exitOnCtrlC: false },
 		);
 
-		// Step 10: SIGTERM handler for graceful shutdown
+		// SIGTERM handler for graceful shutdown
 		process.on("SIGTERM", async () => {
 			await mcpManager.terminateAll();
 			releaseLock(configDir, threadId);
@@ -351,7 +335,6 @@ async function main(): Promise<void> {
 			process.exit(0);
 		});
 
-		// Step 11: Wait for exit
 		await waitUntilExit();
 
 		// Clean up on normal exit

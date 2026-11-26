@@ -16,12 +16,6 @@ import type { Database } from "bun:sqlite";
 
 const DEFAULT_CONSOLIDATION_INSTRUCTIONS = `Read the consolidation candidates below. Identify clusters of 3+ related entries that share a topic prefix. For each cluster, synthesize a 2-4 sentence summary, store it as _summary:<topic>, and connect edges (summarizes) to each child entry. Set children to tier 'detail'. If a stale summary is listed, re-read its children and update it. If nothing needs consolidating, respond briefly.`;
 
-/**
- * Default consolidation cadence. Like the heartbeat, this is a system-managed,
- * uncancellable task seeded once per install. 4-hour interval.
- */
-export const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
-
 export function buildConsolidationContext(db: Database): string {
 	const instructions = loadConsolidationInstructions(db);
 	const candidateSection = buildCandidateSection(db);

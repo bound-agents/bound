@@ -23,21 +23,9 @@
 import { readFileSync } from "node:fs";
 import path, { resolve } from "node:path";
 import { Glob } from "bun";
+import { TABLE_REDUCER_MAP } from "../packages/shared/src/types.ts";
 
-const SYNCED_TABLES = [
-	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
-	"hosts",
-	"cluster_config",
-	"advisories",
-	"skills",
-	"memory_edges",
-	"turns",
-];
+const SYNCED_TABLES = Object.keys(TABLE_REDUCER_MAP);
 
 const EXCLUDED_PATHS = [
 	"__tests__",

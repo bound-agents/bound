@@ -3,10 +3,6 @@ import { Marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
 import { SYNTAX_THEME, getHighlighter, normalizeLang } from "./syntax-highlighter";
 
-// ---------------------------------------------------------------------------
-// Sanitizer type and config
-// ---------------------------------------------------------------------------
-
 type Sanitizer = (html: string) => string;
 
 // DOMPurify configuration:
@@ -49,10 +45,6 @@ export async function highlightCode(
 	// Preserves Shiki inline color attributes on code tokens.
 	return sanitize(html);
 }
-
-// ---------------------------------------------------------------------------
-// Marked instance
-// ---------------------------------------------------------------------------
 
 // Escape a raw string for safe embedding as the text content of an element.
 function escapeHtmlText(s: string): string {
@@ -101,10 +93,6 @@ const markedInstance = new Marked(
 	},
 );
 
-// ---------------------------------------------------------------------------
-// splitOnThinkingBlocks
-// ---------------------------------------------------------------------------
-
 export type TextSegment = { kind: "text"; text: string };
 export type ThinkingSegment = { kind: "thinking"; text: string };
 export type Segment = TextSegment | ThinkingSegment;
@@ -138,10 +126,6 @@ export function splitOnThinkingBlocks(content: string): Segment[] {
 
 	return segments;
 }
-
-// ---------------------------------------------------------------------------
-// renderMarkdown — public API
-// ---------------------------------------------------------------------------
 
 /**
  * Renders a markdown string (optionally containing `<thinking>...</thinking>`

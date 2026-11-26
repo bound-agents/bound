@@ -22,6 +22,7 @@ import type {
 	ResolvedCapabilities,
 	ResolvedPricing,
 } from "../catalog/resolve-metadata";
+import { isRecord } from "../is-record";
 
 export type OpenCodeGoProtocol = "chat-completions" | "messages" | "responses";
 
@@ -42,10 +43,6 @@ export interface OpenCodeGoCatalogEntry {
 	discovered: DiscoveredModel;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function asNumber(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -56,16 +53,17 @@ function isSupportedProtocol(value: unknown): value is OpenCodeGoProtocol {
 	);
 }
 
+export function stripOpenCodeGoModelPrefix(modelId: string): string {
+	return modelId.startsWith("opencode-go/") ? modelId.slice("opencode-go/".length) : modelId;
+}
+
 /**
- * Model-family protocol rule for rows without an `api` block: Qwen / MiniMax
- * serve Anthropic `/messages`; everything else OpenAI `/chat/completions`.
- * Mirrors `classifyOpenCodeGoProtocol` in the driver (kept local to avoid an
- * import cycle).
+ * Model-family protocol rule for rows without an `api` block and static
+ * configs: Qwen / MiniMax serve Anthropic `/messages`; everything else OpenAI
+ * `/chat/completions`.
  */
 export function fallbackOpenCodeGoProtocol(modelId: string): OpenCodeGoProtocol {
-	const normalized = (
-		modelId.startsWith("opencode-go/") ? modelId.slice("opencode-go/".length) : modelId
-	).toLowerCase();
+	const normalized = stripOpenCodeGoModelPrefix(modelId).toLowerCase();
 	return normalized.startsWith("minimax-") || normalized.startsWith("qwen")
 		? "messages"
 		: "chat-completions";

@@ -1,19 +1,17 @@
 import type { Database } from "bun:sqlite";
-import type { ModelRouter } from "@bound/llm";
-import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { McpConfig } from "@bound/shared";
+import type { TypedEventEmitter } from "@bound/shared";
 import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
-import type { MountableFs } from "just-bash";
 import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
+import type { EmitToolCancel, HandleMessageTracker } from "./lib/handler-types";
+import { hasLoopbackHostHeader, isLoopbackHost } from "./lib/loopback";
 import { instrumentSyncWebSocketHandlers } from "./sync-websocket-lifecycle.js";
 import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
 
 const logger = createLogger("@bound/web", "server-start");
-const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const UNSAFE_WEB_BIND_OVERRIDE = "BOUND_ALLOW_UNSAFE_WEB_BIND";
 // A heartbeating connection unheard-from for this long while holding an
 // in-flight client tool call is treated as wedged/dead and force-closed. 45s =
@@ -22,84 +20,12 @@ const WS_LIVENESS_STALE_MS = 45_000;
 
 export type { ModelsConfig, BackendPricing };
 
-export interface WebServerConfig {
+export type WebServerConfig = Omit<WebAppConfig, "modelsConfig" | "emitToolCancel"> & {
 	port?: number;
 	host?: string;
-	hostName?: string;
-	operatorUserId: string;
-	models?: ModelsConfig | (() => ModelsConfig | undefined);
-	backendPricing?: BackendPricing[];
-	siteId?: string;
-	/**
-	 * The sync server's bind host (PORT/BIND_HOST env). Forwarded to the
-	 * webhooks route so it can enumerate the local webhook delivery URL.
-	 * Webhook ingestion is on the sync server (port 3000), distinct from
-	 * the web port (3001) — see #36.
-	 */
-	syncBindHost?: string;
-	syncPort?: number;
-	/**
-	 * `sync.hub` from config, if this node is a spoke. Forwarded to the
-	 * webhooks route so the hub's public webhook URL appears in the URL
-	 * enumeration alongside the local URLs.
-	 */
-	hubUrl?: string;
-	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeLoops?: Set<string>;
-	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
-	/**
-	 * Optional cross-handler-invocation span tracker. Forwarded to the WS
-	 * handler so `tool:result` reception closes the matching `tool.dispatch`
-	 * span. Typed as a minimal interface so this package doesn't import
-	 * `@bound/agent`.
-	 */
-	handleMessageTracker?: {
-		closeDispatch(callId: string, status?: "ok" | "error", reason?: string): void;
-	};
-	/**
-	 * Live sandbox cluster filesystem. When provided, exposes
-	 * `/api/sandbox/file` for arbitrary path read/write — used by the
-	 * `boundless_copy` tool to bridge host and sandbox filesystems
-	 * without round-tripping bytes through the LLM context window.
-	 */
-	clusterFs?: MountableFs | null;
-	/**
-	 * Agent-side MCP server config (`mcp.json`), forwarded to the web app. The
-	 * MCP-Apps route sources app-bearing http servers from it and proxies the
-	 * browser to them. Web-router only.
-	 */
-	mcpConfig?: McpConfig | null;
-	/**
-	 * In-process model router. When provided, exposes `POST /v1/responses`
-	 * (OpenAI Responses-API-compatible inference over HTTP).
-	 */
-	modelRouter?: ModelRouter | null;
-	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
-	topologyRole?: "hub" | "spoke";
-	/**
-	 * The resolving host's in-process MCP OAuth resolver bridge (slice 3.5,
-	 * R-MO17/R-MO27). Forwarded to `createWebApp` → the oauth-mcp callback route.
-	 */
-	oauthMcpBridge?: import("./routes/oauth-mcp").OauthMcpResolverBridge | null;
-	/**
-	 * The web server's bind host (WEB_BIND_HOST). Forwarded to the
-	 * pending-MCP-challenges route so the web-chat consent card gates its live
-	 * authorize flow on a loopback bind (R-MO27c).
-	 */
-	webBindHost?: string;
-	/**
-	 * Co-location token accessor (R-MO27b LEG A) forwarded to RoutesConfig so the
-	 * MCP-Apps proxy can attach the owner's OAuth token at this host's fetch edge.
-	 */
-	getMcpAppAccessToken?: import("./routes/mcp-apps").GetAccessTokenForServer;
-	/**
-	 * Cross-host relay dispatcher (R-MO27b LEG B) forwarded to RoutesConfig so the
-	 * MCP-Apps proxy can relay to a peer-owned app-bearing server over the spool.
-	 */
-	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
-	/** Peer route-health snapshot reader for Settings › Models and the model picker. */
-	relayRouteHealth?: import("./routes/routing").RelayRouteHealth;
-}
+	models?: WebAppConfig["modelsConfig"];
+	handleMessageTracker?: HandleMessageTracker;
+};
 
 export interface SyncServerConfig extends SyncAppConfig {
 	port?: number;
@@ -121,29 +47,7 @@ export interface WebServer {
 	port(): number;
 	wsConnectionManager?: WsConnectionManager;
 	wsRegistry?: ConnectionRegistry;
-	emitToolCancel?: (
-		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
-		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
-	) => void;
-}
-
-function extractHostName(hostHeader: string): string {
-	if (hostHeader.startsWith("[")) {
-		const end = hostHeader.indexOf("]");
-		return end === -1 ? hostHeader : hostHeader.slice(0, end + 1);
-	}
-	return hostHeader.split(":")[0];
-}
-
-function isLoopbackHost(host: string): boolean {
-	return LOOPBACK_BIND_HOSTS.has(host);
-}
-
-function hasValidLoopbackHostHeader(request: Request): boolean {
-	const host = request.headers.get("host");
-	if (!host) return true;
-	return isLoopbackHost(extractHostName(host));
+	emitToolCancel?: EmitToolCancel;
 }
 
 function assertSafeWebBindHost(host: string): void {
@@ -173,7 +77,6 @@ export async function createWebServer(
 	const host = config.host ?? "localhost";
 	assertSafeWebBindHost(host);
 
-	// Create WebSocket handler first to get emitToolCancel
 	const wsHandler = createWebSocketHandler({
 		eventBus,
 		db,
@@ -183,37 +86,12 @@ export async function createWebServer(
 		handleMessageTracker: config.handleMessageTracker,
 	});
 
-	const webAppConfig: WebAppConfig = {
-		modelsConfig: config.models,
-		backendPricing: config.backendPricing,
-		hostName: config.hostName,
-		operatorUserId: config.operatorUserId,
-		siteId: config.siteId,
-		syncBindHost: config.syncBindHost,
-		syncPort: config.syncPort,
-		hubUrl: config.hubUrl,
-		statusForwardCache: config.statusForwardCache,
-		activeLoops: config.activeLoops,
+	const { port: _port, host: _host, models, handleMessageTracker: _tracker, ...shared } = config;
+	const app = await createWebApp(db, eventBus, {
+		...shared,
+		modelsConfig: models,
 		emitToolCancel: wsHandler.emitToolCancel,
-		requestConsistency: config.requestConsistency,
-		clusterFs: config.clusterFs,
-		mcpConfig: config.mcpConfig,
-		modelRouter: config.modelRouter,
-		topologyRole: config.topologyRole,
-		oauthMcpBridge: config.oauthMcpBridge ?? null,
-		getMcpAppAccessToken: config.getMcpAppAccessToken,
-		relayMcpAppProxy: config.relayMcpAppProxy,
-		relayRouteHealth: config.relayRouteHealth,
-	};
-
-	const app = await createWebApp(db, eventBus, webAppConfig);
-
-	// Request logging middleware (debug level — access logs are noisy by default)
-	app.use("*", async (c, next) => {
-		const method = c.req.method;
-		const path = new URL(c.req.url).pathname;
-		logger.debug("request", { method, path });
-		return next();
+		onRequest: (method, path) => logger.debug("request", { method, path }),
 	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
@@ -235,7 +113,7 @@ export async function createWebServer(
 				fetch(request: Request, server) {
 					const url = new URL(request.url);
 					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
-						if (!hasValidLoopbackHostHeader(request)) {
+						if (!hasLoopbackHostHeader(request.headers.get("host"))) {
 							return new Response("Invalid Host header", { status: 400 });
 						}
 						if (server.upgrade(request, { data: undefined })) {
@@ -360,12 +238,8 @@ export async function createSyncServer(
 						);
 					}
 
-					// Webhook route: POST /webhook/:name
 					const webhookMatch = url.pathname.match(/^\/webhook\/([a-z0-9][a-z0-9_-]{0,63})$/);
 					if (webhookMatch) {
-						if (request.method !== "POST") {
-							return new Response("Not found", { status: 404 });
-						}
 						return handleWebhookRequest(request, webhookMatch[1], {
 							db,
 							siteId: config.siteId,

@@ -110,6 +110,42 @@ const wsConnectionDuration = histogram("bound.client.websocket.connection.durati
 	unit: "ms",
 });
 
+export interface McpChallengeView {
+	challengeId: string;
+	serverName: string;
+	scopeDemand: string;
+	failureReason: string | null;
+}
+
+export interface McpChallengesResponse {
+	challenges: McpChallengeView[];
+	loopback: boolean;
+	canResolve: boolean;
+}
+
+export interface McpChallengesByServerResponse {
+	servers: Record<string, McpChallengeView & { status: string }>;
+	loopback: boolean;
+	canResolve: boolean;
+}
+
+export interface McpChallengeClaim {
+	authorizeUrl: string;
+	challengeId: string;
+}
+
+export interface PersonaResponse {
+	persona: string;
+	modified_at: string | null;
+	max_bytes: number;
+}
+
+export interface PersonaSaveResult {
+	ok: true;
+	bytes: number;
+	modified_at: string | null;
+}
+
 export class BoundClient {
 	private readonly baseUrl: string;
 	private ws: WebSocket | null = null;
@@ -176,8 +212,6 @@ export class BoundClient {
 		}
 	}
 
-	// ---- Internal helpers ----
-
 	private async fetchOk(path: string, options?: RequestInit): Promise<Response> {
 		const startedAt = performance.now();
 		const attributes = { method: options?.method ?? "GET" };
@@ -219,8 +253,6 @@ export class BoundClient {
 				: { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
 		});
 	}
-
-	// ---- WebSocket ----
 
 	/**
 	 * Open a WebSocket connection and resolve when the handshake completes.
@@ -533,8 +565,6 @@ export class BoundClient {
 		}, jitteredDelay);
 	}
 
-	// ---- Threads ----
-
 	async listThreads(opts?: {
 		includeEmpty?: boolean;
 		/**
@@ -637,8 +667,6 @@ export class BoundClient {
 		return data.tokens.totals;
 	}
 
-	// ---- Messages ----
-
 	async listMessages(threadId: string, options?: { limit?: number }): Promise<Message[]> {
 		const params = new URLSearchParams();
 		if (options?.limit) params.set("limit", String(options.limit));
@@ -736,8 +764,6 @@ export class BoundClient {
 		return this.fetchJson(`/api/threads/${threadId}/redact`, { method: "POST" });
 	}
 
-	// ---- Files ----
-
 	async listFiles(): Promise<FileListEntry[]> {
 		return this.fetchJson("/api/files");
 	}
@@ -769,8 +795,6 @@ export class BoundClient {
 		});
 	}
 
-	// ---- Tasks ----
-
 	async listTasks(options?: { status?: string }): Promise<TaskListEntry[]> {
 		const params = new URLSearchParams();
 		if (options?.status) params.set("status", options.status);
@@ -792,8 +816,6 @@ export class BoundClient {
 	): Promise<Task> {
 		return this.json(`/api/tasks/${id}`, "PATCH", updates);
 	}
-
-	// ---- Advisories ----
 
 	async listAdvisories(options?: { status?: AdvisoryStatus }): Promise<Advisory[]> {
 		const params = new URLSearchParams();
@@ -821,8 +843,6 @@ export class BoundClient {
 	async applyAdvisory(id: string, note: string): Promise<Advisory> {
 		return this.json(`/api/advisories/${id}/apply`, "POST", { note });
 	}
-
-	// ---- Webhooks ----
 
 	async listWebhooks(): Promise<WebhookListEntry[]> {
 		return this.fetchJson("/api/webhooks");
@@ -874,8 +894,6 @@ export class BoundClient {
 		});
 	}
 
-	// ---- RSS feeds ----
-
 	async listRssFeeds(): Promise<RssFeedListEntry[]> {
 		return this.fetchJson("/api/rss-feeds");
 	}
@@ -895,8 +913,6 @@ export class BoundClient {
 	async deleteRssFeed(id: string): Promise<void> {
 		await this.fetchOk(`/api/rss-feeds/${id}`, { method: "DELETE" });
 	}
-
-	// ---- Connector bindings ----
 
 	async listConnectorBindings(): Promise<ConnectorBindingsResponse> {
 		return this.fetchJson("/api/connectors/bindings");
@@ -918,8 +934,6 @@ export class BoundClient {
 		return this.json(`/api/connectors/bindings/${id}`, "PATCH", options);
 	}
 
-	// ---- Status ----
-
 	async getStatus(): Promise<HostStatus> {
 		return this.fetchJson("/api/status");
 	}
@@ -931,8 +945,6 @@ export class BoundClient {
 	async listModels(): Promise<ModelsResponse> {
 		return this.fetchJson("/api/status/models");
 	}
-
-	// ---- Model routing (Settings › Models) ----
 
 	async getRoutingModels(): Promise<RoutingModelsResponse> {
 		return this.fetchJson("/api/routing/models");
@@ -1009,17 +1021,48 @@ export class BoundClient {
 		return this.fetchJson(`/api/threads/${encodeURIComponent(threadId)}/provenance`);
 	}
 
+	async listMcpChallenges(): Promise<McpChallengesResponse> {
+		return this.fetchJson("/api/mcp-challenges");
+	}
+
+	async listMcpChallengesByServer(): Promise<McpChallengesByServerResponse> {
+		return this.fetchJson("/api/mcp-challenges/by-server");
+	}
+
+	/** Mint a per-attempt authorize URL for a pending challenge (loopback binds only). */
+	async claimMcpChallenge(challengeId: string): Promise<McpChallengeClaim> {
+		return this.json(`/api/mcp-challenges/${encodeURIComponent(challengeId)}/claim`, "POST", {});
+	}
+
+	async getPersona(): Promise<PersonaResponse> {
+		return this.fetchJson("/api/persona");
+	}
+
+	/**
+	 * Replace the persona. `expectedModifiedAt` makes the write conditional; a
+	 * stale value rejects with a 409 {@link BoundApiError}.
+	 */
+	async setPersona(
+		persona: string,
+		expectedModifiedAt?: string | null,
+	): Promise<PersonaSaveResult> {
+		return this.json("/api/persona", "POST", {
+			persona,
+			...(expectedModifiedAt ? { expected_modified_at: expectedModifiedAt } : {}),
+		});
+	}
+
+	async listMcpServers<TServer = unknown>(): Promise<{ servers: TServer[] }> {
+		return this.fetchJson("/api/mcp/servers");
+	}
+
 	async cancelThread(threadId: string): Promise<CancelResult> {
 		return this.fetchJson(`/api/status/cancel/${threadId}`, { method: "POST" });
 	}
 
-	// ---- Memory ----
-
 	async getMemoryGraph(): Promise<MemoryGraphResponse> {
 		return this.fetchJson("/api/memory/graph");
 	}
-
-	// ---- Skills ----
 
 	async listSkills(): Promise<SkillResponse[]> {
 		return this.fetchJson("/api/skills");

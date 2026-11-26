@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { ContentBlock, StreamChunk } from "@bound/llm";
 import { SseEmitter, assembleOutput, buildOutputItems, inputToMessages } from "../routes/responses";
 
-// ── Input side: reasoning items → thinking ContentBlocks ────────────────────
+// Input side: reasoning items → thinking ContentBlocks
 
 describe("inputToMessages — reasoning item translation", () => {
 	it("attaches a reasoning item to the following function_call as a thinking block", () => {
@@ -143,7 +143,7 @@ describe("inputToMessages — reasoning item translation", () => {
 	});
 });
 
-// ── Output side: thinking chunks → reasoning output items ───────────────────
+// Output side: thinking chunks → reasoning output items
 
 function doneChunk(): StreamChunk {
 	return {
@@ -230,7 +230,7 @@ describe("assembleOutput + buildOutputItems — reasoning items", () => {
 	});
 });
 
-// ── Streaming: SseEmitter reasoning item lifecycle ───────────────────────────
+// Streaming: SseEmitter reasoning item lifecycle
 
 class FakeSse {
 	events: Array<{ event?: string; data: Record<string, unknown> }> = [];

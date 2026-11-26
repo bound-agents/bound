@@ -1,6 +1,5 @@
 /**
- * Provider discovery-fetch helpers (slice 6, R-MC3, 2026-11-21-model-catalog.md
- * §4.1). Pure parse helpers over the two models-list endpoint shapes that have a
+ * Provider discovery-fetch helpers (R-MC3, 2026-11-21-model-catalog.md §4.1). Pure parse helpers over the two models-list endpoint shapes that have a
  * concrete driver in-tree: Anthropic `/v1/models` (which also captures
  * per-model `allowed_fallback_models` under the fallback beta) and the
  * OpenAI-compatible `/v1/models`. Transport lives in the driver; these parse the
@@ -12,7 +11,6 @@ import {
 	parseAnthropicModelsList,
 	parseBedrockFoundationModels,
 	parseBedrockInferenceProfiles,
-	parseOllamaTags,
 	parseOpenAIModelsList,
 } from "./discovery-fetch";
 
@@ -233,32 +231,5 @@ describe("parseBedrockInferenceProfiles", () => {
 		).toEqual([]);
 		expect(parseBedrockInferenceProfiles({})).toEqual([]);
 		expect(parseBedrockInferenceProfiles(null)).toEqual([]);
-	});
-});
-
-describe("parseOllamaTags", () => {
-	it("maps /api/tags models to DiscoveredModel ids", () => {
-		const body = {
-			models: [
-				{ name: "llama4:latest", model: "llama4:latest", size: 4661211808 },
-				{ name: "qwen3:30b", model: "qwen3:30b" },
-			],
-		};
-		const out = parseOllamaTags(body);
-		expect(out.map((m) => m.providerModelId)).toEqual(["llama4:latest", "qwen3:30b"]);
-	});
-
-	it("prefers model over name and skips rows with neither", () => {
-		const body = {
-			models: [{ name: "display-only", model: "canonical-id" }, { name: "name-only" }, { size: 1 }],
-		};
-		const out = parseOllamaTags(body);
-		expect(out.map((m) => m.providerModelId)).toEqual(["canonical-id", "name-only"]);
-	});
-
-	it("skips malformed rows and tolerates a missing models array", () => {
-		expect(parseOllamaTags({ models: [42, null, "x"] })).toEqual([]);
-		expect(parseOllamaTags({})).toEqual([]);
-		expect(parseOllamaTags(null)).toEqual([]);
 	});
 });

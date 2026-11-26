@@ -4,8 +4,8 @@ import {
 	buildMantleOpenAIOptions,
 	deriveMantleBaseUrl,
 	deriveMantleBaseUrlForMode,
-	withEmptyRetry,
 } from "../drivers/bedrock-mantle";
+import { withEmptyRetry } from "../drivers/shared";
 import type { ChatParams, StreamChunk } from "../types";
 
 const doneChunk = (outputTokens: number): StreamChunk => ({
@@ -345,6 +345,8 @@ describe("buildMantleOpenAIOptions", () => {
 	});
 });
 
+const RETRY_LABELS = { providerName: "bedrock-mantle", modelId: "openai.gpt-5.6-sol" };
+
 describe("withEmptyRetry", () => {
 	// Mantle GPT-5.x intermittently returns a completion with output_tokens=0 and
 	// no content (~12% observed at the bare endpoint, store:false). store:true —
@@ -356,7 +358,11 @@ describe("withEmptyRetry", () => {
 		const attempts = [() => streamOf(doneChunk(0)), () => streamOf(textChunk("hi"), doneChunk(5))];
 		let i = 0;
 		const out = await collect(
-			withEmptyRetry(() => attempts[i++](), { maxRetries: 2, isAborted: () => false }),
+			withEmptyRetry(() => attempts[i++](), {
+				maxRetries: 2,
+				isAborted: () => false,
+				...RETRY_LABELS,
+			}),
 		);
 		expect(i).toBe(2); // retried once
 		expect(out).toEqual([textChunk("hi"), doneChunk(5)]); // empty done swallowed
@@ -372,7 +378,7 @@ describe("withEmptyRetry", () => {
 					i++;
 					return streamOf(textChunk("x"), doneChunk(0));
 				},
-				{ maxRetries: 2, isAborted: () => false },
+				{ maxRetries: 2, isAborted: () => false, ...RETRY_LABELS },
 			),
 		);
 		expect(i).toBe(1); // single attempt
@@ -387,7 +393,7 @@ describe("withEmptyRetry", () => {
 					i++;
 					return streamOf(textChunk("answer"), doneChunk(12));
 				},
-				{ maxRetries: 2, isAborted: () => false },
+				{ maxRetries: 2, isAborted: () => false, ...RETRY_LABELS },
 			),
 		);
 		expect(i).toBe(1);
@@ -402,7 +408,7 @@ describe("withEmptyRetry", () => {
 					i++;
 					return streamOf(doneChunk(0));
 				},
-				{ maxRetries: 2, isAborted: () => false },
+				{ maxRetries: 2, isAborted: () => false, ...RETRY_LABELS },
 			),
 		);
 		expect(i).toBe(3); // initial + 2 retries
@@ -417,15 +423,15 @@ describe("withEmptyRetry", () => {
 					i++;
 					return streamOf(doneChunk(0));
 				},
-				{ maxRetries: 2, isAborted: () => true },
+				{ maxRetries: 2, isAborted: () => true, ...RETRY_LABELS },
 			),
 		);
 		expect(i).toBe(1); // honored the cancellation, no retry
 		expect(out).toEqual([doneChunk(0)]);
 	});
 
-	it("invokes onRetry with the attempt number for observability", async () => {
-		const retries: number[] = [];
+	it("logs each re-issue with the attempt number for observability", async () => {
+		const retries: string[] = [];
 		const attempts = [
 			() => streamOf(doneChunk(0)),
 			() => streamOf(doneChunk(0)),
@@ -436,10 +442,14 @@ describe("withEmptyRetry", () => {
 			withEmptyRetry(() => attempts[i++](), {
 				maxRetries: 3,
 				isAborted: () => false,
-				onRetry: (n) => retries.push(n),
+				...RETRY_LABELS,
+				logger: { warn: (msg: string) => retries.push(msg) },
 			}),
 		);
-		expect(retries).toEqual([1, 2]);
+		expect(retries).toEqual([
+			"[bedrock-mantle] empty completion (output_tokens=0), retrying (attempt 1/3)",
+			"[bedrock-mantle] empty completion (output_tokens=0), retrying (attempt 2/3)",
+		]);
 	});
 });
 

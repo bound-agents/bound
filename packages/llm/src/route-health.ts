@@ -3,8 +3,7 @@
  *
  * Route health is tracked per {@link RouteId} **locally per host** and is NOT
  * synced through `change_log` — it is short-lived failure state that would
- * otherwise flood replication (Invariant #3). It replaces `ModelRouter`'s
- * `rateLimits` map and the interim per-route cooldown introduced in slice 2.
+ * otherwise flood replication (Invariant #3).
  *
  * The router indexes its backends by the local `backendId`, which maps 1:1 to a
  * `RouteId` via `routeIdentities`. This machine is therefore keyed by
@@ -24,8 +23,7 @@
  *
  * The trial decides what happens next (R-RT12):
  *
- * - Success returns the route to `healthy`. `consecutive_failures` resets after
- *   10 minutes without another failure.
+ * - Success returns the route to `healthy`, which drops `consecutive_failures`.
  * - Failure doubles the backoff (capped at 4h) and the trial turn fails over to
  *   the next ranked route.
  */
@@ -34,8 +32,6 @@
 export const BACKOFF_BASE_MS = 30_000;
 /** Backoff ceiling: exponential growth is clamped here (4 hours). */
 export const BACKOFF_CAP_MS = 4 * 60 * 60 * 1000;
-/** Sustained-success window after which `consecutive_failures` resets (10 minutes). */
-export const SUCCESS_RESET_MS = 10 * 60 * 1000;
 
 /**
  * The classification of the failure that tripped (or kept) a route in backoff.
@@ -86,12 +82,6 @@ export function computeBackoffMs(consecutiveFailures: number): number {
 export class RouteHealth {
 	/** Explicit state only for routes that are not `healthy`. Absence = healthy. */
 	private states = new Map<string, RouteHealthState>();
-	/**
-	 * Timestamp (ms) of the last recorded success per route. Used to reset
-	 * `consecutive_failures` after {@link SUCCESS_RESET_MS} of sustained success
-	 * without persisting a `healthy` row per route.
-	 */
-	private lastSuccessAt = new Map<string, number>();
 
 	constructor(private clock: () => number = Date.now) {}
 
@@ -141,20 +131,15 @@ export class RouteHealth {
 			next_trial_at: now + waitMs,
 			last_error_kind: opts.errorKind,
 		});
-		// A fresh failure ends any sustained-success window.
-		this.lastSuccessAt.delete(id);
 	}
 
 	/**
 	 * Record a successful turn. A success on any non-healthy route (the
 	 * half-open trial, or an in-flight turn that beats the window) restores
-	 * `healthy`. `consecutive_failures` is modelled as cleared once the route is
-	 * healthy; the 10-minute sustained-success reset (R-RT12) is a no-op here
-	 * because returning to `healthy` already drops the counter.
+	 * `healthy`, which clears `consecutive_failures`.
 	 */
 	recordSuccess(id: string): void {
 		this.states.delete(id);
-		this.lastSuccessAt.set(id, this.clock());
 	}
 
 	/**
@@ -187,8 +172,7 @@ export class RouteHealth {
 	/**
 	 * Whether a route is currently selectable for normal (non-trial) routing.
 	 * `healthy` and `half_open` are selectable (half-open accepts a real trial
-	 * turn); `backoff` is not. This is the predicate the router's `isRateLimited`
-	 * shim inverts.
+	 * turn); `backoff` is not.
 	 */
 	isAvailable(id: string): boolean {
 		return this.getState(id).status !== "backoff";
@@ -215,12 +199,10 @@ export class RouteHealth {
 	/** Discard all health for a route (R-RT22: router rebuild / backend removal). */
 	clear(id: string): void {
 		this.states.delete(id);
-		this.lastSuccessAt.delete(id);
 	}
 
 	/** Discard all health (router `reload`). */
 	reset(): void {
 		this.states.clear();
-		this.lastSuccessAt.clear();
 	}
 }

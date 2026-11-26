@@ -11,9 +11,9 @@
  * unsandboxed with a warning (`"passthrough"`).
  *
  * The pure config/policy/decision logic lives in `./sandbox-policy` (SDK-free,
- * loads on every platform) and is re-exported here for back-compat. This module
- * holds only the SDK-dependent spawn path, and it LAZY-loads the SDK: the import
- * happens inside the async functions, not at module-eval. That matters because
+ * loads on every platform). This module holds only the SDK-dependent spawn
+ * path, and it LAZY-loads the SDK: the import happens inside the async
+ * functions, not at module-eval. That matters because
  * the SDK's entrypoint eagerly re-exports `sandbox.js` whose top-level
  * `import pty from 'node-pty'` loads a native addon — so a static top-level
  * import would drag node-pty in just to import this module (e.g. at boundless
@@ -34,10 +34,6 @@ import {
 	nonInteractiveEnv,
 } from "./sandbox-policy";
 import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
-
-// Re-export the SDK-free surface so existing import sites (`./sandbox`) keep
-// working unchanged.
-export * from "./sandbox-policy";
 
 /** Lazily-loaded `@microsoft/mxc-sdk/v1`, memoized after the first import. */
 type MxcSdk = typeof import("@microsoft/mxc-sdk/v1");

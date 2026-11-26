@@ -6,7 +6,6 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	deriveSiteId,
 	ensureKeypair,
-	exportPrivateKey,
 	exportPublicKey,
 	generateKeypair,
 	importPrivateKey,
@@ -46,17 +45,10 @@ describe("crypto module", () => {
 		});
 	});
 
-	describe("exportPrivateKey and importPrivateKey", () => {
-		it("exports private key as PKCS#8 bytes", async () => {
-			const { privateKey } = await generateKeypair();
-			const bytes = await exportPrivateKey(privateKey);
-			expect(bytes).toBeInstanceOf(Uint8Array);
-			expect(bytes.length).toBeGreaterThan(0);
-		});
-
+	describe("importPrivateKey", () => {
 		it("reimports exported private key", async () => {
 			const { privateKey: original } = await generateKeypair();
-			const bytes = await exportPrivateKey(original);
+			const bytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", original));
 			const reimported = await importPrivateKey(bytes);
 			expect(reimported.type).toBe("private");
 			expect(reimported.algorithm.name).toBe("Ed25519");
@@ -137,7 +129,7 @@ describe("crypto module", () => {
 			const originalSiteId = await deriveSiteId(publicKey);
 
 			const pubEncoded = await exportPublicKey(publicKey);
-			const privBytes = await exportPrivateKey(privateKey);
+			const privBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", privateKey));
 
 			const reimportedPub = await importPublicKey(pubEncoded);
 			await importPrivateKey(privBytes);

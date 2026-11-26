@@ -1,6 +1,6 @@
 import type { IFileSystem } from "just-bash";
 
-const DEFAULT_MEMORY_THRESHOLD_BYTES = 500 * 1024 * 1024; // 500MB
+const DEFAULT_MEMORY_THRESHOLD_BYTES = 500 * 1024 * 1024;
 
 export interface MemoryThresholdResult {
 	overThreshold: boolean;
@@ -23,9 +23,6 @@ export class MemoryTracker {
 		this.thresholdBytes = thresholdBytes;
 	}
 
-	/**
-	 * Track a file write. Adjusts the running total.
-	 */
 	trackWrite(path: string, content: string | Uint8Array): void {
 		const newSize = typeof content === "string" ? Buffer.byteLength(content) : content.byteLength;
 		const oldSize = this.fileSizes.get(path) ?? 0;
@@ -33,9 +30,6 @@ export class MemoryTracker {
 		this.fileSizes.set(path, newSize);
 	}
 
-	/**
-	 * Track a file removal. Subtracts from the running total.
-	 */
 	trackRemove(path: string): void {
 		const oldSize = this.fileSizes.get(path) ?? 0;
 		this.totalBytes -= oldSize;
@@ -55,36 +49,12 @@ export class MemoryTracker {
 		this.fileSizes.set(path, (this.fileSizes.get(path) ?? 0) + appendedBytes);
 	}
 
-	/**
-	 * Get total memory usage in bytes.
-	 */
-	getMemoryUsage(): number {
-		return this.totalBytes;
-	}
-
-	/**
-	 * Check if memory usage exceeds the configured threshold.
-	 */
-	isOverThreshold(): boolean {
-		return this.totalBytes > this.thresholdBytes;
-	}
-
-	/**
-	 * Get full memory threshold status.
-	 */
 	checkMemoryThreshold(): MemoryThresholdResult {
 		return {
 			overThreshold: this.totalBytes > this.thresholdBytes,
 			usageBytes: this.totalBytes,
 			thresholdBytes: this.thresholdBytes,
 		};
-	}
-
-	/**
-	 * Get the configured threshold in bytes.
-	 */
-	getThresholdBytes(): number {
-		return this.thresholdBytes;
 	}
 }
 
@@ -137,9 +107,7 @@ export function wrapWithMemoryTracking(fs: IFileSystem, tracker: MemoryTracker):
 					}
 				}
 			} catch {
-				// getAllPaths() failed — fallback to tracking only the requested path
-				// This underestimates freed memory for recursive deletes but prevents tracking corruption
-				// Expected causes: filesystem implementation errors, concurrent modifications
+				// Undercounts freed bytes for a recursive delete, but never corrupts the total.
 				tracker.trackRemove(path);
 			}
 		} else {

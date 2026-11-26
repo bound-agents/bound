@@ -7,7 +7,6 @@
 	"types": "src/index.ts",
 	"dependencies": {
 		"@bound/llm": "workspace:*",
-		"@bound/sandbox": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@opentelemetry/api": "^1.9.0"
 	},

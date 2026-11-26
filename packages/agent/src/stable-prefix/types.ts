@@ -18,7 +18,7 @@
  *      `last_accessed_at`-ordered DA lines. Both `last_accessed_at`
  *      leaks were removed — DA titles now render bare `- <key>` in
  *      key-sorted order (see `sortDetailEntriesForRender` /
- *      `formatDetailLine` in `summary-extraction.ts`), so the rendered
+ *      `formatDetailLine` in `stable-prefix/compose.ts`), so the rendered
  *      bytes are a pure function of {keys, cluster structure, tier},
  *      invariant to render-time `last_accessed_at` bumps. See the spec
  *      at `docs/design/specs/2026-05-22-volatile-context.md`,
@@ -48,8 +48,8 @@
 import type { Vc15Tunables } from "../summary-extraction";
 
 /**
- * Working-Knowledge tier projection. Mirrors the fields read by
- * `renderWorkingKnowledge`'s stable-output path: `key` and `value` for
+ * Working-Knowledge tier projection. This is the input to
+ * `renderWorkingKnowledge` in `compose.ts`: `key` and `value` for
  * the pinned/summary line bodies, plus `modifiedAt` for the `(modified
  * YYYY-MM-DD)` capture-time prefix (#71). `modifiedAt` is a legitimate
  * stable-side wall-clock signal under R-VC25: it enters only via the

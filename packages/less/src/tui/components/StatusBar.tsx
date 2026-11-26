@@ -1,10 +1,25 @@
 import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
-import { type SessionHudState, formatTokens, formatUsd } from "../hooks/useSessionHud";
+import type { SessionHudState } from "../hooks/useSessionHud";
 import { tokens } from "../theme";
 import { tildifyPath } from "../util/path";
 import { Badge } from "./Badge";
+
+/** Format a USD amount for the one-line HUD: $0.42, $12.30, $1.2k. */
+export function formatUsd(amount: number): string {
+	if (amount >= 1000) return `$${(amount / 1000).toFixed(1)}k`;
+	if (amount >= 100) return `$${Math.round(amount)}`;
+	return `$${amount.toFixed(2)}`;
+}
+
+/** Compact token count: 999, 1.2k, 87k, 1.1M. */
+export function formatTokens(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+	return String(n);
+}
 
 export interface StatusBarProps {
 	threadId: string;

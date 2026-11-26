@@ -4,7 +4,8 @@ import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React from "react";
 import { contextGaugeColor } from "../tui/components/StatusBar";
-import { formatTokens, formatUsd, useSessionHud } from "../tui/hooks/useSessionHud";
+import { formatTokens, formatUsd } from "../tui/components/StatusBar";
+import { useSessionHud } from "../tui/hooks/useSessionHud";
 
 describe("session HUD formatters", () => {
 	it("formatUsd: cents precision under $100, whole dollars to $999, k above", () => {

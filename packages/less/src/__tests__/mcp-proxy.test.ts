@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { McpServerManager } from "../mcp/manager";
-import { proxyToolCall } from "../mcp/proxy";
+import { type ToolNameMapping, proxyToolCall } from "../mcp/proxy";
 
 // Mock the MCP manager
 const createMockManager = (getClientImpl: (name: string) => any = () => null): McpServerManager => {
@@ -13,30 +13,20 @@ const createMockManager = (getClientImpl: (name: string) => any = () => null): M
 describe("proxyToolCall", () => {
 	let manager: McpServerManager;
 	const hostname = "test-host";
-	const signal = new AbortController().signal;
+
+	const callProxy = async (
+		mappings: Map<string, ToolNameMapping>,
+		name: string,
+		args: Record<string, unknown>,
+		host: string,
+	) => {
+		const mapping = mappings.get(name);
+		if (!mapping) throw new Error(`no mapping for ${name}`);
+		return proxyToolCall(manager, mapping, args, host);
+	};
 
 	beforeEach(() => {
 		manager = createMockManager();
-	});
-
-	it("returns error ContentBlock when tool name not in mapping", async () => {
-		const toolNameMapping = new Map();
-
-		const result = await proxyToolCall(
-			manager,
-			"unknown_tool",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
-
-		expect(result).toEqual([
-			{
-				type: "text",
-				text: expect.stringContaining("Unknown tool"),
-			},
-		]);
 	});
 
 	it("returns error ContentBlock when server not running", async () => {
@@ -46,15 +36,10 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => null);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_read",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_read", {}, hostname);
+		const result = toolResult.content;
 
+		expect(toolResult.isError).toBe(true);
 		expect(result).toEqual([
 			{
 				type: "text",
@@ -86,14 +71,13 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
+		const toolResult = await callProxy(
+			toolNameMapping,
 			"boundless_mcp_test_read",
 			{ file: "test.txt" },
-			signal,
 			hostname,
-			toolNameMapping,
 		);
+		const result = toolResult.content;
 
 		// Should include provenance block and text content
 		expect(result.length).toBe(2);
@@ -135,14 +119,13 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
+		const toolResult = await callProxy(
+			toolNameMapping,
 			"boundless_mcp_test_screenshot",
 			{},
-			signal,
 			hostname,
-			toolNameMapping,
 		);
+		const result = toolResult.content;
 
 		// Should include provenance block and image content
 		expect(result.length).toBe(2);
@@ -181,14 +164,8 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_tool",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_tool", {}, hostname);
+		const result = toolResult.content;
 
 		// Should include provenance and graceful degradation message
 		expect(result.length).toBe(2);
@@ -223,14 +200,13 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
+		const toolResult = await callProxy(
+			toolNameMapping,
 			"boundless_mcp_github_get_file",
 			{},
-			signal,
 			hostname,
-			toolNameMapping,
 		);
+		const result = toolResult.content;
 
 		// Provenance + the actual resource text, NOT an "[unsupported ...]" stub.
 		expect(result.length).toBe(2);
@@ -264,14 +240,8 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_render",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_render", {}, hostname);
+		const result = toolResult.content;
 
 		expect(result.length).toBe(2);
 		expect(result[1]).toEqual({
@@ -305,14 +275,8 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_blob",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_blob", {}, hostname);
+		const result = toolResult.content;
 
 		expect(result.length).toBe(2);
 		const text = (result[1] as { type: "text"; text: string }).text;
@@ -343,18 +307,11 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_tool",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_tool", {}, hostname);
+		const result = toolResult.content;
 
-		// Result should be marked as error
+		expect(toolResult.isError).toBe(true);
 		expect(result).toHaveLength(2);
-		// The isError flag should be handled (either on first text block or separate)
 		const textBlock = result.find((b) => b.type === "text" && (b as any).text.includes("failed"));
 		expect(textBlock).toBeDefined();
 	});
@@ -380,14 +337,13 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
+		const toolResult = await callProxy(
+			toolNameMapping,
 			"boundless_mcp_github_read",
 			{},
-			signal,
 			"my-laptop",
-			toolNameMapping,
 		);
+		const result = toolResult.content;
 
 		const provenanceBlock = result[0];
 		expect(provenanceBlock.type).toBe("text");
@@ -412,14 +368,8 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_tool",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_tool", {}, hostname);
+		const result = toolResult.content;
 
 		// Should include provenance block at minimum
 		expect(result.length).toBeGreaterThanOrEqual(1);
@@ -440,16 +390,10 @@ describe("proxyToolCall", () => {
 
 		manager = createMockManager(() => mockClient);
 
-		const result = await proxyToolCall(
-			manager,
-			"boundless_mcp_test_tool",
-			{},
-			signal,
-			hostname,
-			toolNameMapping,
-		);
+		const toolResult = await callProxy(toolNameMapping, "boundless_mcp_test_tool", {}, hostname);
+		const result = toolResult.content;
 
-		// Should return error ContentBlock
+		expect(toolResult.isError).toBe(true);
 		expect(result.length).toBeGreaterThanOrEqual(1);
 		const textBlocks = result.filter((b) => b.type === "text");
 		const hasError = textBlocks.some(

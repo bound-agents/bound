@@ -1,5 +1,5 @@
 /**
- * Catalog orchestrator (slice 6, R-MC2/R-MC3/R-MC4/R-MC8/R-MC9,
+ * Catalog orchestrator (R-MC2/R-MC3/R-MC4/R-MC8/R-MC9,
  * 2026-11-21-model-catalog.md §3–§6).
  *
  * Ties the three per-backend metadata layers — local `model_backends` config
@@ -117,7 +117,7 @@ export function resolveCatalog(args: ResolveCatalogArgs): Map<string, ResolvedBa
 	// Pass 2: resolve metadata + grouping for every backend.
 	const result = new Map<string, ResolvedBackend>();
 	for (const b of args.backends) {
-		// Provider-scoped models.dev lookup (requirement 3): prefer the entry under
+		// Provider-scoped models.dev lookup: prefer the entry under
 		// this backend's OWN provider namespace before the cross-provider canonical
 		// index, so a model id that collides across providers resolves to its own
 		// provider's limits. Falls back to the canonical index when the provider has

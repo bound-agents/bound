@@ -69,7 +69,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		return { ...rest, no_history: no_history === 1 };
 	}
 
-	// GET / — List webhooks (AC5.2)
 	app.get("/", (c) => {
 		try {
 			const rows = listWebhooksWithTask(db) as unknown as Array<Record<string, unknown>>;
@@ -136,7 +135,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
-	// GET /:id — Get single webhook (AC5.6)
 	app.get("/:id", (c) => {
 		try {
 			const id = c.req.param("id");
@@ -199,7 +197,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
-	// POST / — Create webhook (AC5.1)
 	app.post("/", async (c) => {
 		try {
 			const body = (await c.req.json()) as Record<string, unknown>;
@@ -251,7 +248,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				}
 			}
 
-			// Check for existing non-deleted webhook
 			const existing = findWebhookIdByName(db, name);
 
 			if (existing) {
@@ -285,7 +281,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
-	// PATCH /:id — Update webhook (AC5.3, AC5.7)
 	app.patch("/:id", async (c) => {
 		try {
 			const id = c.req.param("id");
@@ -334,7 +329,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				noHistoryValue = body.no_history ? 1 : 0;
 			}
 
-			// Update task system_prompt_addition if prompt provided
 			if (prompt !== undefined) {
 				updateRow(
 					db,
@@ -347,7 +341,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				);
 			}
 
-			// Update task model_hint if provided
 			if (modelHintProvided) {
 				updateRow(
 					db,
@@ -385,7 +378,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				);
 			}
 
-			// Update webhook row with description or format
 			if (description !== undefined || format !== undefined) {
 				const updateData: Record<string, unknown> = {};
 				if (description !== undefined) {
@@ -414,7 +406,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
-	// DELETE /:id — Soft-delete webhook (AC5.4)
 	app.delete("/:id", (c) => {
 		try {
 			const id = c.req.param("id");
@@ -446,7 +437,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
-	// POST /:id/rotate — Rotate secret (AC5.5)
 	app.post("/:id/rotate", (c) => {
 		try {
 			const id = c.req.param("id");
@@ -459,13 +449,10 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				return c.json({ error: "Webhook not found" }, 404);
 			}
 
-			// Generate new secret
 			const newSecret = randomBytes(32).toString("hex");
 
-			// Update webhook
 			updateRow(db, "webhooks", id, { secret: newSecret }, siteId);
 
-			// Return only the new secret
 			return c.json({ secret: newSecret });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

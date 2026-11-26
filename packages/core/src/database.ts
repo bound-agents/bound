@@ -10,7 +10,7 @@ export function createDatabase(path: string): Database {
 	// Performance tuning. Without these, sample-profiling on a live daemon
 	// shows ~91% of awake main-thread time in sqlite3_step → readDbPage → pread,
 	// because the default 2000-page (~8 MiB) cache thrashes against multi-table
-	// hot scans (relay_inbox poll, scheduler tick, change_log replay).
+	// hot scans (durable-work poll, scheduler tick, change_log replay).
 	//
 	// - synchronous=NORMAL: safe with WAL, drops fsync count meaningfully.
 	// - cache_size=-65536: 64 MiB LRU page cache (negative value = KiB).

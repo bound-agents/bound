@@ -3,8 +3,6 @@ import type { Agent } from "@bound/shared";
 
 /**
  * Read repository for the `agents` table (#201 auxiliary-agent identities).
- * See ./index.ts for conventions. Writes go through insertRow/updateRow/
- * softDelete (invariant #1), never here.
  *
  * Two orthogonal "is this live?" axes, and finders are explicit about both:
  *  - `deleted = 0` — the sync tombstone (invariant #2). Every finder filters it.
@@ -43,21 +41,6 @@ export function findAgentByNameIncludingRetired(db: Database, name: string): Age
 /** Full row by id, active only (non-deleted). Includes retired rows. */
 export function findAgentById(db: Database, id: string): Agent | null {
 	return db.query("SELECT * FROM agents WHERE id = ? AND deleted = 0").get(id) as Agent | null;
-}
-
-/** Existence check by id (no `deleted` filter — matches the raw read-back). */
-export function findAgentIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM agents WHERE id = ?").get(id) as { id: string } | null;
-}
-
-/**
- * All active identities (non-retired, non-deleted), ordered by name. The
- * `list` action's source set and the tool-description enumeration.
- */
-export function listActiveAgents(db: Database): Agent[] {
-	return db
-		.query("SELECT * FROM agents WHERE retired_at IS NULL AND deleted = 0 ORDER BY name ASC")
-		.all() as Agent[];
 }
 
 /**

@@ -36,10 +36,10 @@ import type {
 	RelevantMemoryDebugEntry,
 	Result,
 } from "@bound/shared";
-import { compareBytewise, escapeXmlAttr, safeSlice } from "@bound/shared";
+import { escapeXmlAttr, safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
 import { normalizeFilePathForKey } from "./file-thread-tracker";
-import { graphSeededRetrieval } from "./graph-queries";
+import { MAX_GRAPH_KEYWORDS, graphSeededRetrieval } from "./graph-queries";
 
 /**
  * High-frequency English function words filtered BEFORE passing to FTS5.
@@ -541,7 +541,7 @@ export function renderCrossThreadSummaries(rows: CrossThreadSummaryRow[]): Rende
 }
 
 /** Idle threshold for Scenario B: 1 hour in milliseconds. Tunable. */
-export const CROSS_THREAD_INJECTION_IDLE_MS = 60 * 60 * 1000;
+const CROSS_THREAD_INJECTION_IDLE_MS = 60 * 60 * 1000;
 
 /**
  * Decides whether cross-thread summary injection should fire for this turn
@@ -587,28 +587,6 @@ export function shouldInjectCrossThreadSummaries(args: {
 }
 
 /**
- * Parameterized relative-time fragment generator. Used for the
- * varying-side renderer where `nowMs` is plumbed through as the
- * single allowed wall-clock ingress. Production callers that want
- * the implicit-now behavior call `relativeTime` (which delegates).
- */
-export function relativeTimeAt(isoString: string, nowMs: number): string {
-	const diffMs = nowMs - new Date(isoString).getTime();
-	const diffSeconds = Math.floor(diffMs / 1000);
-	if (diffSeconds < 60) return "just now";
-	const diffMinutes = Math.floor(diffSeconds / 60);
-	if (diffMinutes < 60) return `${diffMinutes}m ago`;
-	const diffHours = Math.floor(diffMinutes / 60);
-	if (diffHours < 24) return `${diffHours}h ago`;
-	const diffDays = Math.floor(diffHours / 24);
-	return `${diffDays}d ago`;
-}
-
-function relativeTime(isoString: string): string {
-	return relativeTimeAt(isoString, Date.now());
-}
-
-/**
  * Computes the baseline timestamp (ISO string) for delta queries.
  * Implements the R-MV4 fallback chain:
  *   noHistory=false → MAX(last user-role message OR thread.created_at, NOW - 24h)
@@ -642,18 +620,15 @@ function relativeTime(isoString: string): string {
  * message ever) and dormant user threads still surface roughly the
  * last 24 hours of memory activity rather than collapsing on
  * `thread.created_at` (which can be days or weeks old).
- *
- * `nowMs` is parameterized so tests can pin floor calculation to a
- * fixed timestamp; defaults to `Date.now()` for production callers.
  */
 const RECENCY_FLOOR_MS = 24 * 60 * 60 * 1000;
 
 export function computeBaseline(
 	db: Database,
 	threadId: string,
-	taskId?: string,
-	noHistory?: boolean,
-	nowMs: number = Date.now(),
+	taskId: string | undefined,
+	noHistory: boolean,
+	nowMs: number,
 ): string {
 	const EPOCH = "1970-01-01T00:00:00.000Z";
 
@@ -751,19 +726,19 @@ export interface RenderedSection {
 
 export interface DiscoverableArchiveInput {
 	/** From loadDetailEntries — already sorted by last_accessed_at DESC. */
-	entries: DetailEntry[];
+	entries: ReadonlyArray<{ key: string; last_accessed_at: string | null }>;
 	/**
 	 * Map from a detail-tier entry key to its parent summary key (e.g.
 	 * "_summary:transit-systems"). Built by Phase 5 wiring from memory_edges
 	 * 'summarizes' edges. Entries without a parent are absent from the map.
 	 */
-	parentSummaryByKey: Map<string, string>;
+	parentSummaryByKey: ReadonlyMap<string, string>;
 	/**
 	 * Set of detail-tier keys already routed to Working Knowledge as R-HM7
 	 * stale children. These are dropped from Discoverable Archive output to
 	 * prevent duplicate rendering (§6.4 dedup rule).
 	 */
-	staleChildKeysInWorkingKnowledge: Set<string>;
+	staleChildKeysInWorkingKnowledge: ReadonlySet<string>;
 	/** True when the upstream budget gate (R-VC14) signals critical pressure. */
 	budgetPressure: boolean;
 	/** Resolved at assembly time from BOUND_VC15_N / BOUND_VC15_M (see resolveVc15Tunables). */
@@ -772,10 +747,7 @@ export interface DiscoverableArchiveInput {
 	 * R-VC29: summary-tier entries beyond WORKING_KNOWLEDGE_SUMMARY_CAP, demoted
 	 * to title-only and consolidated here (under a `### Older summaries` sub-header)
 	 * instead of in a separate Working Knowledge block. The caller computes this via
-	 * `capWorkingKnowledgeSummaries(summaries).demoted`; the stable-prefix mirror
-	 * derives it from `inputs.summaries` through the SAME helper so the two paths
-	 * stay byte-equivalent (pinned by parity-with-production.test.ts). Optional so
-	 * test fixtures predating R-VC29 render byte-identically (absent ⇒ no sub-block).
+	 * `capWorkingKnowledgeSummaries(summaries).demoted`. Absent ⇒ no sub-block.
 	 */
 	demotedSummaries?: ReadonlyArray<{ key: string }>;
 }
@@ -804,17 +776,6 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(raw, 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
 	return parsed;
-}
-
-export interface DiscoverableArchiveOutput {
-	section: RenderedSection;
-	/**
-	 * When Tier 3 is active and the Uncategorized cluster exceeds the backlog
-	 * threshold, this carries the count for Phase 4 / Phase 5 to fold into
-	 * Live State as `- [synthesis-backlog] {N} uncategorized detail entries`.
-	 * `null` otherwise.
-	 */
-	synthesisBacklogCount: number | null;
 }
 
 /**
@@ -877,28 +838,6 @@ export const DISCOVERABLE_HEADER =
 export const DISCOVERABLE_FOOTER = "</discoverable-archive>";
 
 /**
- * Render a Discoverable-Archive entry line. Pure in `(entry,
- * budgetPressure)` — no `nowMs` parameter, no `Date.now()` call —
- * which is the wall-clock-purity contract that
- * `composeStableVolatileSubsection` relies on. Delegates to
- * `formatDetailLine`; exported here so the stable-prefix module can
- * render byte-equivalently without importing internal helpers.
- */
-export function formatStableDetailLine(
-	entry: { key: string; last_accessed_at: string | null },
-	budgetPressure: boolean,
-): string {
-	return formatDetailLine(
-		// Production callers pass full `DetailEntry` rows; the
-		// renderer reads only `key` and `last_accessed_at`. The narrow
-		// shape from `stable-prefix/types.ts` is structurally
-		// compatible with the subset actually read.
-		entry as DetailEntry,
-		budgetPressure,
-	);
-}
-
-/**
  * R-VC27 section element for the turn-relevant cross-tier retrieval block.
  * The keyword+graph pipeline runs WITHOUT the old `tier='default'` clamp, so
  * pinned/summary/detail entries that match the conversation now surface here
@@ -911,7 +850,7 @@ export const RELEVANT_MEMORY_HEADER =
 export const RELEVANT_MEMORY_FOOTER = "</relevant-memory>";
 
 /** R-VC27 default cap on the relevant-memory block (`BOUND_VC27_K`). */
-export const RELEVANT_MEMORY_DEFAULT_K = 15;
+const RELEVANT_MEMORY_DEFAULT_K = 15;
 
 /**
  * Resolve the R-VC27 cap from the environment (`BOUND_VC27_K`), defaulting to
@@ -969,15 +908,12 @@ export function selectRelevantMemory(
 
 /**
  * R-VC27 title-only element: `<memory key tier age/>`. Renders the entry's
- * actual tier (pinned/summary/default/detail) — what tells the agent where the
- * body lives — not its retrieval-stage tag. Soft-deleted entries render as
- * `tier="forgotten"`. Uses wall-clock `relativeTime`; the varying-tail mirror
- * uses the `nowMs`-injected variant, and the parity test mocks the clock so
- * the two agree byte-for-byte.
+ * actual tier — what tells the agent where the body lives — not its
+ * retrieval-stage tag. Soft-deleted entries render as `tier="forgotten"`.
  */
-export function formatRelevantMemoryTitleLine(entry: StageEntry): string {
+export function formatRelevantMemoryTitleLine(entry: StageEntry, nowMs: number): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
-	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTime(entry.modifiedAt))}"/>`;
+	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTimeAt(entry.modifiedAt, nowMs))}"/>`;
 }
 
 /**
@@ -999,176 +935,40 @@ export function toRelevantMemoryDebug(
 	}));
 }
 
-export function renderDiscoverableArchive(
-	input: DiscoverableArchiveInput,
-): DiscoverableArchiveOutput {
-	const lines: string[] = [DISCOVERABLE_HEADER];
-
-	// §5.2 step 2 — drop entries also rendered as stale children in Working Knowledge.
-	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
-
-	const total = visible.length;
-	let synthesisBacklogCount: number | null = null;
-
-	if (total === 0) {
-		// No detail body; the common tail (sub-block + footer) still renders below.
-	} else if (total <= VC15_TIER1_THRESHOLD) {
-		// Tier 1: flat list, rendered key-sorted (NOT last_accessed_at order) so
-		// the output is invariant to bump-driven access-time reordering.
-		for (const entry of sortDetailEntriesForRender(visible)) {
-			lines.push(formatDetailLine(entry, input.budgetPressure));
-		}
-	} else if (total <= input.tunables.n) {
-		// Tier 2: cluster compression. Within-cluster lines rendered key-sorted.
-		const clusters = groupByCluster(visible, input.parentSummaryByKey);
-		const sorted = sortClusters(clusters);
-		for (const cluster of sorted) {
-			lines.push(
-				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
-			);
-			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
-				lines.push(formatDetailLine(entry, input.budgetPressure));
-			}
-			lines.push("</cluster>");
-		}
-	} else {
-		// Tier 3: heading-only compression with M most-recent per cluster.
-		// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
-		// so slice(0, m) keeps the M most-recently-accessed); RENDER order is then
-		// key-sorted so the kept set's bytes don't shift when bumps reorder it.
-		const clusters = groupByCluster(visible, input.parentSummaryByKey);
-		const sorted = sortClusters(clusters);
-		for (const cluster of sorted) {
-			const totalCount = cluster.entries.length;
-			const tail = cluster.entries.slice(0, input.tunables.m);
-			lines.push(
-				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${totalCount}" showing="${input.tunables.m}">`,
-			);
-			for (const entry of sortDetailEntriesForRender(tail)) {
-				lines.push(formatDetailLine(entry, input.budgetPressure));
-			}
-			lines.push("</cluster>");
-			if (
-				cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
-				totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
-			) {
-				synthesisBacklogCount = totalCount;
-			}
-		}
-	}
-
-	// R-VC29: demoted summary-overflow titles render here, inside the Archive,
-	// under their own `### Older summaries` sub-header — NOT as a separate block in
-	// Working Knowledge. Absent/empty ⇒ no sub-block, byte-identical to pre-R-VC29.
-	appendOlderSummariesSubBlock(lines, input.demotedSummaries);
-
-	lines.push(DISCOVERABLE_FOOTER);
-	return { section: { lines }, synthesisBacklogCount };
-}
-
 /**
- * R-VC29: append the demoted summary-overflow titles as a title-only sub-block
- * under `WORKING_KNOWLEDGE_DEMOTED_HEADER`, separated from the detail body by a
- * blank line. Shared by both the production renderer and the stable-prefix
- * mirror so the two paths cannot drift (parity-with-production.test.ts). No-op
- * when there is nothing demoted, which preserves pre-R-VC29 bytes exactly.
+ * The `[synthesis-backlog]` Live State count: set only when the Discoverable
+ * Archive is in Tier 3 and its Uncategorized cluster exceeds
+ * `VC15_UNCATEGORIZED_BACKLOG_THRESHOLD`.
  */
-export function appendOlderSummariesSubBlock(
-	lines: string[],
-	demotedSummaries: ReadonlyArray<{ key: string }> | undefined,
-): void {
-	if (!demotedSummaries || demotedSummaries.length === 0) return;
-	lines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
-	for (const summary of demotedSummaries) {
-		lines.push(`<entry key="${escapeXmlAttr(summary.key)}"/>`);
+export function computeSynthesisBacklogCount(input: DiscoverableArchiveInput): number | null {
+	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
+	if (visible.length <= VC15_TIER1_THRESHOLD || visible.length <= input.tunables.n) return null;
+	let uncategorized = 0;
+	for (const entry of visible) {
+		if (clusterNameForEntry(entry.key, input.parentSummaryByKey) === UNCATEGORIZED_CLUSTER_NAME) {
+			uncategorized++;
+		}
 	}
-	lines.push("</older-summaries>");
+	return uncategorized > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD ? uncategorized : null;
 }
 
-interface Cluster {
-	name: string;
-	entries: DetailEntry[];
-}
-
-function clusterNameForEntry(entry: DetailEntry, parentSummaryByKey: Map<string, string>): string {
-	const parent = parentSummaryByKey.get(entry.key);
+/** Cluster name for a detail entry: its parent summary key minus the `_summary:` prefix (R-HM1). */
+export function clusterNameForEntry(
+	key: string,
+	parentSummaryByKey: ReadonlyMap<string, string>,
+): string {
+	const parent = parentSummaryByKey.get(key);
 	if (!parent) return UNCATEGORIZED_CLUSTER_NAME;
-	// Parent key shape is "_summary:<topic>" per R-HM1 / R-HM3. Strip the prefix.
 	const colonIdx = parent.indexOf(":");
-	if (colonIdx < 0) return UNCATEGORIZED_CLUSTER_NAME; // defensive
+	if (colonIdx < 0) return UNCATEGORIZED_CLUSTER_NAME;
 	return parent.slice(colonIdx + 1) || UNCATEGORIZED_CLUSTER_NAME;
 }
 
-function groupByCluster(
-	entries: DetailEntry[],
-	parentSummaryByKey: Map<string, string>,
-): Cluster[] {
-	const map = new Map<string, DetailEntry[]>();
-	for (const entry of entries) {
-		const name = clusterNameForEntry(entry, parentSummaryByKey);
-		const bucket = map.get(name) ?? [];
-		bucket.push(entry);
-		map.set(name, bucket);
-	}
-	// Within-cluster ordering is preserved from `entries`, which is already
-	// last_accessed_at DESC from the R-VC4 SELECT. R-VC15 Tier 2 step (d).
-	return Array.from(map.entries()).map(([name, entries]) => ({ name, entries }));
-}
-
-function sortClusters(clusters: Cluster[]): Cluster[] {
-	return clusters.slice().sort((a, b) => {
-		// Primary: entry count descending.
-		if (a.entries.length !== b.entries.length) {
-			return b.entries.length - a.entries.length;
-		}
-		// Tiebreak: cluster name ascending. Bytewise, NOT localeCompare —
-		// this order lands in R-VC25 stable-prefix bytes, and locale-dependent
-		// sorting would let two hosts with different ICU configs render
-		// different prefixes for identical synced state.
-		return compareBytewise(a.name, b.name);
-	});
-}
-
-function formatDetailLine(entry: DetailEntry, _budgetPressure: boolean): string {
-	// Title-only, no `last_accessed_at`-derived suffix. The access time is a
-	// continuously-bumped column (bumpRenderedDetailEntries, debounced 1h/entry);
-	// rendering any function of it — date OR sort order — leaks wall-clock into
-	// the cached stable prefix bytes and busts the provider cache on every bump
-	// fracture for no information change. The element is a pure function of the
-	// entry key, so the Discoverable Archive bytes are invariant to bumps. The
-	// `budgetPressure` parameter is retained for call-site compatibility but no
-	// longer changes output (the date suffix it used to drop is gone for all).
-	return `<entry key="${escapeXmlAttr(entry.key)}"/>`;
-}
-
 /**
- * Order detail entries for RENDERING by key (ascending), decoupled from the
- * `last_accessed_at DESC` order they arrive in. Selection of WHICH entries to
- * render (Tier-3's M-most-recent-per-cluster) still uses access time upstream;
- * only the final rendered sequence is key-sorted, so the output bytes do not
- * shift when a bump reorders the access-time ranking. Pure + deterministic.
- *
- * Generic over the entry shape (reads only `key`) so the stable-prefix shadow
- * renderer in `stable-prefix/compose.ts` calls the SAME helper, keeping the two
- * Discoverable Archive paths byte-equivalent by construction (R-VC25 parity,
- * pinned by parity-with-production.test.ts).
+ * Humanized relative age (`"just now"`, `"5m ago"`, `"3d ago"`, …) for the
+ * varying side only — the stable subsection takes no `nowMs`.
  */
-export function sortDetailEntriesForRender<T extends { key: string }>(
-	entries: ReadonlyArray<T>,
-): T[] {
-	return entries.slice().sort((a, b) => compareBytewise(a.key, b.key));
-}
-
-/**
- * Render an ISO timestamp as a humanized relative-age fragment
- * (`"just now"`, `"5m ago"`, `"3d ago"`, etc.). Used ONLY by the
- * **varying** side of the volatile context (Live State applied-advisory
- * line). Stable-side renderers must not call this — they have no `nowMs`
- * parameter to pass in, and the stable Discoverable Archive deliberately
- * renders no time-derived fragment at all (bare key titles) to stay
- * byte-invariant to `last_accessed_at` bumps.
- */
-function relativeTimeFragment(iso: string | null, nowMs: number): string {
+export function relativeTimeAt(iso: string | null, nowMs: number): string {
 	if (!iso) return "never";
 	const ts = Date.parse(iso);
 	if (!Number.isFinite(ts)) return "never";
@@ -1261,6 +1061,7 @@ export function extractAssistantSeedText(
 export function buildVolatileEnrichment(
 	db: Database,
 	baseline: string,
+	nowMs: number,
 	maxMemory = 25,
 	maxTasks = 5,
 	userMessage?: string,
@@ -1286,7 +1087,7 @@ export function buildVolatileEnrichment(
 	//   2. assistant message (recent output + reasoning — carries the topic
 	//      vocabulary on tool-loop / keyword-barren-user turns, e.g. "continue")
 	//   3. thread summary (broadest context)
-	// Later seeds are deduplicated against earlier ones, and the 30-term cap
+	// Later seeds are deduplicated against earlier ones, and the MAX_GRAPH_KEYWORDS cap
 	// favors the user ask first, then recent work, then the broad summary.
 	const messageKeywords = extractKeywords(userMessage ?? "");
 	const seen = new Set(messageKeywords);
@@ -1296,12 +1097,9 @@ export function buildVolatileEnrichment(
 		return true;
 	});
 	const summaryKeywords = extractKeywords(threadSummary ?? "").filter((w) => !seen.has(w));
-	// Cap keywords to prevent overly broad FTS5 OR queries. 30 terms is more than
-	// sufficient for semantic memory matching. The cap in graphSeededRetrieval is
-	// a safety net; this is the primary cap at the source.
 	const mergedKeywords = [...messageKeywords, ...assistantKeywords, ...summaryKeywords].slice(
 		0,
-		30,
+		MAX_GRAPH_KEYWORDS,
 	);
 
 	// Run the L0→L1→L2→L3 pipeline
@@ -1336,7 +1134,7 @@ export function buildVolatileEnrichment(
 	for (const row of visibleTaskRows) {
 		const status = row.consecutive_failures === 0 ? "ran" : "failed";
 		const hostLabel = row.host_name ?? (row.claimed_by ? row.claimed_by.slice(0, 8) : "unknown");
-		const relTime = relativeTime(row.last_run_at);
+		const relTime = relativeTimeAt(row.last_run_at, nowMs);
 		taskDigestLines.push(`- ${row.trigger_spec} ${status} (${relTime} on ${hostLabel})`);
 		taskDigestEntries.push({
 			taskId: row.id,
@@ -1674,7 +1472,7 @@ export function bumpRenderedDetailEntries(
 export const WORKING_KNOWLEDGE_HEADER =
 	'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">';
 export const WORKING_KNOWLEDGE_FOOTER = "</working-knowledge>";
-export const SUMMARY_GLOSS_MAX = 200;
+const SUMMARY_GLOSS_MAX = 200;
 
 /**
  * Maximum number of summary entries rendered at full gloss in the stable
@@ -1705,10 +1503,8 @@ export const WORKING_KNOWLEDGE_DEMOTED_HEADER = "<older-summaries>";
  * Split a recency-ordered summary list into the `kept` prefix (rendered at full
  * gloss) and the `demoted` overflow (rendered title-only). Pure positional
  * split — no sorting, no I/O — so it is byte-stable across cold rebuilds and
- * safe on the R-VC25 stable channel. Generic over the entry shape so BOTH the
- * production renderer (`StageEntry`) and the narrow stable-path view
- * (`{key, value}`) call the SAME function, keeping the two renderers
- * byte-equivalent by construction (pinned by parity-with-production.test.ts).
+ * safe on the R-VC25 stable channel. Generic over the entry shape so the stable
+ * renderer and `selectRelevantMemory` split identically.
  */
 export function capWorkingKnowledgeSummaries<T extends { key: string }>(
 	summaries: ReadonlyArray<T>,
@@ -1719,21 +1515,12 @@ export function capWorkingKnowledgeSummaries<T extends { key: string }>(
 	};
 }
 
-/**
- * Truncate a summary value to `SUMMARY_GLOSS_MAX` chars with `…`
- * suffix when over budget. Exposed so `stable-prefix/compose.ts`
- * can render summary bodies byte-equivalently to
- * `renderWorkingKnowledge`'s stable channel without re-importing
- * the dual-purpose renderer.
- */
+/** Truncate a summary value to `SUMMARY_GLOSS_MAX` chars. */
 export function truncateGlossForSummary(value: string): string {
 	return truncateGloss(value, SUMMARY_GLOSS_MAX);
 }
-export const STALE_CHILD_GLOSS_MAX = 200;
+const STALE_CHILD_GLOSS_MAX = 200;
 
-/**
- * Truncates a string to maximum length and appends "..." if truncated.
- */
 export function truncateGloss(s: string, max: number): string {
 	if (s.length <= max) return s;
 	return `${safeSlice(s, 0, max)}...`;
@@ -1765,71 +1552,18 @@ export function formatCalendarDate(iso: string | null | undefined): string {
  * the agent can visually pair updates with the stable bodies above without
  * re-parsing the section title.
  */
-export const WORKING_KNOWLEDGE_UPDATES_HEADER = "<working-knowledge-updates>";
+const WORKING_KNOWLEDGE_UPDATES_HEADER = "<working-knowledge-updates>";
 
 /** Closing tag paired with WORKING_KNOWLEDGE_UPDATES_HEADER. */
-export const WORKING_KNOWLEDGE_UPDATES_FOOTER = "</working-knowledge-updates>";
+const WORKING_KNOWLEDGE_UPDATES_FOOTER = "</working-knowledge-updates>";
 
 /**
- * Renders the Working Knowledge section from pinned and summary entries.
- * A pure function that takes already-loaded data and produces output lines.
- * No I/O; no DB access; R-VC11(d) structurally guaranteed by signature.
- *
- * Output is split into two channels (stable / varying) so the stable bodies
- * can sit before history as a cacheable developer prefix and the varying
- * markers ride in the uncached tail (RFC 2026-05-22-volatile-context §
- * suffix-prefix split).
- *
- *   stableLines  — header + plain pinned + summary bodies + footer.
- *                  Cacheable across turns until a body itself is rewritten.
- *   varyingLines — per-key [changed since last turn] markers and stale-child
- *                  sub-bullets ([stale child of <parent>], optionally with
- *                  the delta marker). Empty when no deltas / no stale children.
- *
- * R-VC2: Produces header line with exact em-dash character (U+2014).
- * R-VC3: Pinned entries rendered in full text; summary entries with 200-char gloss.
- * R-VC6: Produces exact footer text.
- * R-VC10: Stale children referenced via [stale child of <parent>] in the
- *         varying channel; the parent's body remains stable.
- * R-VC11(a-c): Delta markers emitted into the varying channel, keyed back to
- *         the entry by name. Ordering for stale + delta on the same child is
- *         preserved: [stale child of …] [changed since last turn].
- * R-VC22: Header uses ## (top-level, uniform across sections).
+ * The varying-side `<working-knowledge-updates>` block: per-key delta markers
+ * (R-VC11) and stale-child references (R-VC10). The stable bodies render via
+ * `renderWorkingKnowledge` in `stable-prefix/compose.ts`. Empty when there are
+ * no deltas and no stale children.
  */
-export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
-	stableLines: string[];
-	varyingLines: string[];
-} {
-	const stableLines: string[] = [WORKING_KNOWLEDGE_HEADER];
-
-	// R-VC3: pinned bodies in full text, no inline markers. The `modified`
-	// capture-date attribute (#71) rides the stable channel because its source
-	// column advances only on a real body rewrite — the same event that already
-	// busts the prefix cache — so it carries provenance without adding cache
-	// churn.
-	for (const entry of input.pinned) {
-		stableLines.push(
-			`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" modified="${formatCalendarDate(entry.modifiedAt)}">${escapeXmlAttr(entry.value)}</memory>`,
-		);
-	}
-
-	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
-	// WORKING_KNOWLEDGE_SUMMARY_CAP most-recent (input.summaries arrives
-	// recency-ordered from loadSummaryEntries); the overflow is demoted to
-	// title-only entries. R-VC29: those demoted titles render in the Discoverable
-	// Archive (under `<older-summaries>`), NOT here — Working Knowledge keeps
-	// only full-fidelity content (pinned + glossed summaries). The caller passes
-	// `capWorkingKnowledgeSummaries(summaries).demoted` to renderDiscoverableArchive.
-	const { kept: keptSummaries } = capWorkingKnowledgeSummaries(input.summaries);
-	for (const summary of keptSummaries) {
-		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
-		stableLines.push(
-			`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" modified="${formatCalendarDate(summary.modifiedAt)}">${escapeXmlAttr(gloss)}</memory>`,
-		);
-	}
-
-	stableLines.push(WORKING_KNOWLEDGE_FOOTER);
-
+export function renderWorkingKnowledgeUpdates(input: WorkingKnowledgeInput): string[] {
 	const varyingLines: string[] = [];
 
 	// Collect all per-key annotations (deltas + stale children) on the varying side.
@@ -1890,7 +1624,7 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_FOOTER);
 	}
 
-	return { stableLines, varyingLines };
+	return varyingLines;
 }
 
 /**
@@ -2020,7 +1754,7 @@ export interface LiveStateInput {
 	fileEntries: LiveStateFileEntry[];
 	/** Applied advisories from loadAppliedAdvisoriesForLiveState */
 	advisories: LiveStateAdvisory[];
-	/** From renderDiscoverableArchive output. Null when Tier 3 inactive or Uncategorized ≤ 50. */
+	/** From computeSynthesisBacklogCount. Null when Tier 3 inactive or Uncategorized ≤ 50. */
 	synthesisBacklogCount: number | null;
 	/** True when budget pressure is active (R-VC14). */
 	budgetPressure: boolean;
@@ -2036,8 +1770,7 @@ export interface LiveStateInput {
 	currentHost?: string;
 }
 
-export const LIVE_STATE_HEADER = "## Live State — pointers to canonical sources";
-export const LIVE_STATE_FOOTER =
+const LIVE_STATE_FOOTER =
 	"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.";
 export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
 
@@ -2048,7 +1781,7 @@ export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
  * detail IS relevant, the wrapped pointers are a starting point to confirm
  * against the canonical source, not ground truth to quote verbatim.
  */
-export const VOLATILE_CONTEXT_NOTE =
+const VOLATILE_CONTEXT_NOTE =
 	"Internal operational state, refreshed each turn. Don't mention or quote this to the user unless it's directly relevant to their request; when it is, treat these as pointers and confirm against the canonical source (query the DB, read the file) before relying on them.";
 
 /**
@@ -2141,7 +1874,7 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 	for (const a of cap(input.advisories) as LiveStateAdvisory[]) {
 		lines.push(
 			`<advisory id="${escapeXmlAttr(a.advisoryId)}" title="${escapeXmlAttr(a.title)}` +
-				`" applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
+				`" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, input.nowMs))}"/>`,
 		);
 	}
 

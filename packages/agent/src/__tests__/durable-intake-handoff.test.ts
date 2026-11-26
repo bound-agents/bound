@@ -152,9 +152,8 @@ describe("durable intake producer→consumer handoff", () => {
 		// The folded content carries the producer's payload body.
 		expect(wakeup.content).toContain("Body of the handoff post");
 		expect(wakeup.content).toContain("handoff-guid-1");
-		// One durable claim, no legacy relay ids.
+		// One durable claim.
 		expect(wakeup.durableClaims.map((c) => c.id)).toEqual([produced[0].id]);
-		expect(wakeup.processedIds).toEqual([]);
 		// The claim moved the row pending -> processing under a fresh token.
 		const claimed = getDurableWork(db, produced[0].id);
 		expect(claimed?.claim_state).toBe("processing");
@@ -171,7 +170,6 @@ describe("durable intake producer→consumer handoff", () => {
 		const second = buildEventWakeupContent(db, task, siteId);
 		expect(second.content).not.toContain("Body of the handoff post");
 		expect(second.durableClaims).toEqual([]);
-		expect(second.processedIds).toEqual([]);
 		expect(second.content).toBe(task.payload ?? "Execute scheduled task.");
 	});
 });

@@ -1,4 +1,4 @@
-import { Bash, type CustomCommand, type ExecOptions, type NetworkConfig } from "just-bash";
+import { Bash, type CustomCommand, type ExecOptions } from "just-bash";
 import type { MountableFs } from "just-bash";
 import {
 	type MemoryThresholdResult,
@@ -23,18 +23,10 @@ class RawScriptBash extends Bash {
 	}
 }
 
-export interface ExecutionLimits {
-	maxCallDepth?: number;
-	maxCommandCount?: number;
-	maxLoopIterations?: number;
-}
-
 export interface SandboxConfig {
 	clusterFs: MountableFs;
 	commands: CustomCommand[];
-	networkConfig?: NetworkConfig;
-	executionLimits?: ExecutionLimits;
-	/** Memory threshold in bytes for the in-memory filesystem. Defaults to 50MB. */
+	/** Memory threshold in bytes for the in-memory filesystem. Defaults to 500MB. */
 	memoryThresholdBytes?: number;
 	/** Allowed URL prefixes for outbound requests. Empty array allows all. */
 	allowedUrlPrefixes?: string[];
@@ -42,11 +34,9 @@ export interface SandboxConfig {
 
 export interface Sandbox {
 	bash: Bash;
-	/** Check current memory usage against the configured threshold. */
 	checkMemoryThreshold: () => MemoryThresholdResult;
-	/** Get the memory tracker instance for direct access. */
 	memoryTracker: MemoryTracker;
-	/** URL filter for enforcing outbound request allowlist. */
+	/** Outbound request allowlist; callers must check it before fetching. */
 	urlFilter: UrlFilter;
 }
 
@@ -57,11 +47,8 @@ export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 	// this copy step is load-bearing under `bun build --compile`.
 	materializeSandboxRuntime();
 
-	// Set up memory tracking on the filesystem
 	const memoryTracker = new MemoryTracker(config.memoryThresholdBytes);
 	wrapWithMemoryTracking(config.clusterFs, memoryTracker);
-
-	// Create URL filter
 	const urlFilter = new UrlFilter(config.allowedUrlPrefixes ?? []);
 
 	const bashOptions: ConstructorParameters<typeof Bash>[0] = {
@@ -69,28 +56,8 @@ export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 		customCommands: config.commands,
 		python: true,
 		javascript: true,
+		executionLimits: { maxCallDepth: 50, maxCommandCount: 10000, maxLoopIterations: 10000 },
 	};
-
-	// Apply network configuration if provided
-	if (config.networkConfig) {
-		bashOptions.network = config.networkConfig;
-	}
-
-	// Apply execution limits if provided
-	if (config.executionLimits) {
-		bashOptions.executionLimits = {
-			maxCallDepth: config.executionLimits.maxCallDepth ?? 50,
-			maxCommandCount: config.executionLimits.maxCommandCount ?? 10000,
-			maxLoopIterations: config.executionLimits.maxLoopIterations ?? 10000,
-		};
-	} else {
-		// Apply defaults from spec
-		bashOptions.executionLimits = {
-			maxCallDepth: 50,
-			maxCommandCount: 10000,
-			maxLoopIterations: 10000,
-		};
-	}
 
 	const bash = new RawScriptBash(bashOptions);
 

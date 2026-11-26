@@ -1,4 +1,4 @@
-import { type Logger, counter, histogram } from "@bound/shared";
+import { type Logger, counter, histogram, parseDurationMs } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { type MapChunksOptions, mapChunks, mapError } from "../bridge";
 import { isEncryptedReasoningRejection } from "../bridge/request-diagnostics";
@@ -72,20 +72,26 @@ export function resolveProviderFetch(
 	);
 }
 
-export interface ProviderStreamParams {
+export interface MapProviderStreamParams {
 	providerName: string;
-	modelId?: string;
 	stream: () => AsyncIterable<unknown>;
 	map?: Omit<MapChunksOptions, "providerName">;
+}
+
+export interface ProviderStreamParams extends MapProviderStreamParams {
+	modelId: string;
 	/**
 	 * Abort signal, consulted by the empty-completion retry so a cancelled turn
 	 * is not re-issued. When omitted, retries proceed (the bounded count caps
 	 * them regardless).
 	 */
 	signal?: AbortSignal;
+	logger?: Pick<Logger, "warn">;
 }
 
-export async function* mapProviderStream(params: ProviderStreamParams): AsyncIterable<StreamChunk> {
+export async function* mapProviderStream(
+	params: MapProviderStreamParams,
+): AsyncIterable<StreamChunk> {
 	try {
 		yield* mapChunks(params.stream(), {
 			...params.map,
@@ -98,21 +104,26 @@ export async function* mapProviderStream(params: ProviderStreamParams): AsyncIte
 
 export async function* runProviderStream(params: ProviderStreamParams): AsyncIterable<StreamChunk> {
 	yield { type: "heartbeat" };
-	// Universal empty-completion retry: every driver routing through here gets
-	// the same protection a dropped/empty stream needs, rather than each driver
-	// hand-rolling it. A fully-empty turn (no thinking/text/tool) would
-	// otherwise slip past the agent loop's degenerate-turn guard (which keys on
-	// thinking) and record as a silent success. mapProviderStream re-invokes the
-	// fresh `stream` thunk per attempt, so a re-issue is a clean new request.
+	// A fully-empty turn (no thinking/text/tool) would otherwise slip past the
+	// agent loop's degenerate-turn guard (which keys on thinking) and record as a
+	// silent success. mapProviderStream re-invokes the fresh `stream` thunk per
+	// attempt, so a re-issue is a clean new request.
 	yield* withEmptyRetry(() => mapProviderStream(params), {
 		maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 		isAborted: () => params.signal?.aborted ?? false,
 		providerName: params.providerName,
 		modelId: params.modelId,
+		logger: params.logger,
 	});
 }
 
-/** Default bound for {@link withEmptyRetry} re-issues. */
+/**
+ * Default bound for {@link withEmptyRetry} re-issues. Mantle GPT-5.x returns
+ * empty turns at ~12% (independent) at the bare endpoint under `store: false`;
+ * `store: true`, the one lever that might reduce it, is forbidden by the
+ * zero-retention requirement. 2 retries drive the user-visible empty rate to
+ * ~0.2%.
+ */
 export const EMPTY_COMPLETION_MAX_RETRIES = 2;
 
 /**
@@ -136,11 +147,12 @@ export function withEmptyRetry(
 	opts: {
 		maxRetries: number;
 		isAborted: () => boolean;
-		onRetry?: (attempt: number) => void;
-		/** Stable backend label for bounded metric dimensions. */
-		providerName?: string;
-		/** Stable configured model identifier, when known at the driver call site. */
-		modelId?: string;
+		/** Stable backend label for logs and bounded metric dimensions. */
+		providerName: string;
+		/** Stable configured model identifier for logs and metric dimensions. */
+		modelId: string;
+		/** Receives one warn per empty-completion re-issue. */
+		logger?: Pick<Logger, "warn">;
 	},
 ): AsyncIterable<StreamChunk> {
 	// `async function*` bodies do not execute until their first `next()`. The
@@ -154,8 +166,8 @@ export function withEmptyRetry(
 		(async function* (): AsyncIterable<StreamChunk> {
 			for (let attempt = 0; ; attempt++) {
 				const startedAt = performance.now();
-				const provider = opts.providerName ?? "unknown";
-				const model = opts.modelId ?? "unknown";
+				const provider = opts.providerName;
+				const model = opts.modelId;
 				const dimensions = { provider, model };
 				const tracer = trace.getTracer("bound.llm");
 				const requestSpan = tracer.startSpan("llm.provider.request", {
@@ -190,7 +202,10 @@ export function withEmptyRetry(
 								outcome = "retry";
 								recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
 								recordLlmDriverMetric("retry", 1, { ...dimensions, reason: "empty_completion" });
-								opts.onRetry?.(attempt + 1);
+								opts.logger?.warn(
+									`[${provider}] empty completion (output_tokens=0), retrying (attempt ${attempt + 1}/${opts.maxRetries})`,
+									{ model },
+								);
 								retrying = true;
 								break;
 							}
@@ -297,6 +312,16 @@ export function bindAsyncIterable<T>(
 			};
 		},
 	};
+}
+
+/**
+ * Snap a requested cache TTL to the nearest lifetime the Anthropic-family
+ * cache markers accept (`5m` or `1h`).
+ */
+export function quantizeCacheTtl(cacheTtl: string | undefined): "5m" | "1h" | undefined {
+	if (cacheTtl === undefined) return undefined;
+	const durationMs = parseDurationMs(cacheTtl);
+	return Math.abs(durationMs - 300_000) <= Math.abs(durationMs - 3_600_000) ? "5m" : "1h";
 }
 
 /**

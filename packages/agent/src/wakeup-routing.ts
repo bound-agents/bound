@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { enqueueNotification } from "@bound/core";
-import type { TypedEventEmitter } from "@bound/shared";
+import { RPC_REQUEST_TTL_MS, type TypedEventEmitter } from "@bound/shared";
 import { resolveClientSessionHost } from "./delegation";
 import { routeRelayRequest } from "./relay-router";
 import type { TopologyRole } from "./topology";
@@ -47,13 +47,11 @@ export interface WakeupRoutingResult {
 export interface NotifyWakeupPayload {
 	thread_id: string;
 	payload: Record<string, unknown>;
-	/** Stable producer-minted ID; absent on legacy senders. */
+	/** Stable producer-minted ID; absent when the sender carried no identity. */
 	notification_id?: string;
 	/** Sender-derived key, retained through the local dispatch fence. */
 	idempotency_key?: string;
 }
-
-const NOTIFY_WAKEUP_TTL_MS = 5 * 60 * 1000;
 
 export function routeNotificationWakeup(
 	db: Database,
@@ -66,8 +64,8 @@ export function routeNotificationWakeup(
 	const sessionHost = resolveClientSessionHost(db, threadId, localSiteId);
 
 	if (sessionHost) {
-		// Legacy senders did not carry an identity. Leave those unkeyed so their
-		// historical random dispatch IDs (and accepted duplicate deliveries) remain.
+		// A sender without an identity stays unkeyed: each delivery gets a fresh
+		// dispatch ID and duplicates are accepted.
 		const notificationId =
 			typeof payload.notification_id === "string" && payload.notification_id.length > 0
 				? payload.notification_id
@@ -84,10 +82,9 @@ export function routeNotificationWakeup(
 			sourceSiteId: localSiteId,
 			kind: "notify_wakeup",
 			payload: JSON.stringify(wire),
-			timeoutMs: NOTIFY_WAKEUP_TTL_MS,
+			timeoutMs: RPC_REQUEST_TTL_MS,
 			// Verbatim key when the sender carried an identity (notify:<id>);
-			// legacy unkeyed senders keep their historical random dispatch id on
-			// the legacy path and, on the durable path, the minted row id.
+			// an unkeyed sender gets the minted row id.
 			idempotencyKey,
 			topologyRole,
 		});

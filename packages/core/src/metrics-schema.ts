@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ContextDebugInfo } from "@bound/shared";
-import { insertRow, updateRow } from "./change-log.js";
+import { dangerouslyExecuteRawWrite, insertRow, updateRow } from "./change-log.js";
 import { installRowHashInvalidationTriggers } from "./schema.js";
 
 /**
@@ -9,7 +9,7 @@ import { installRowHashInvalidationTriggers } from "./schema.js";
  * across hosts via the change_log (append-only / hybrid reducer) so
  * cost/usage queries and the web context-debug panel span the whole
  * cluster. All columns replicate, including `context_debug`,
- * `relay_target`, and `relay_latency_ms` â a thread can bounce between
+ * `relay_target`, and `relay_latency_ms` — a thread can bounce between
  * hosts mid-run, so any host may be asked to render the full context
  * history for a thread.
  */
@@ -128,7 +128,6 @@ export function applyMetricsSchema(db: Database): void {
 		// bump it in updateRow() when recordContextDebug / recordTurnRelayMetrics
 		// run, so post-insert column writes replicate correctly.
 		["modified_at", "TEXT"],
-		// Soft delete flag (0 = not deleted, 1 = deleted) for synced table semantics
 		["deleted", "INTEGER NOT NULL DEFAULT 0"],
 		// Per-component cost parts for the turn as JSON { input, output,
 		// cacheRead, cacheWrite } in USD, written by recordTurn. Nullable: legacy
@@ -136,21 +135,18 @@ export function applyMetricsSchema(db: Database): void {
 		// append-only reducer drops this key on older peers that haven't migrated
 		// (forward-compat; see packages/sync/src/reducers.ts).
 		["cost_breakdown", "TEXT"],
-		// Route identity + refusal-substitution provenance for thread-sticky
-		// routing (2026-11-21-model-routing.md §5.3). route_id is the RouteId that
-		// served the turn; substituted_from is the originally requested logical
-		// model when a refusal fallback substituted another. Both nullable — legacy
-		// rows and pre-identity turns leave them NULL. The LWW/append-only reducers
-		// drop these keys on older peers that haven't migrated (forward-compat;
-		// eafa66f8, see packages/sync/src/reducers.ts), so a mixed-version peer
-		// falls back to ranked selection instead of wedging the batch.
+		// Thread-sticky routing provenance (2026-11-21-model-routing.md §5.3):
+		// route_id is the RouteId that served the turn; substituted_from is the
+		// requested logical model when a refusal fallback substituted another.
+		// Older peers' reducers drop unknown keys (packages/sync/src/reducers.ts),
+		// so a mixed-version peer falls back to ranked selection.
 		["route_id", "TEXT"],
 		["substituted_from", "TEXT"],
 	] as const) {
 		try {
 			db.run(`ALTER TABLE turns ADD COLUMN ${colName} ${decl}`);
 		} catch {
-			// Column already exists â fine.
+			// Column already exists — fine.
 		}
 	}
 
@@ -179,7 +175,7 @@ export function applyMetricsSchema(db: Database): void {
 	// Performance index for turns by created_at. The scheduler's daily-budget
 	// check (shouldSkipDueToBudget) sums cost_usd over a single calendar day and
 	// runs per autonomous task on scheduler ticks. idx_turns_thread leads with
-	// thread_id, so a created_at-only range cannot use it â this index lets the
+	// thread_id, so a created_at-only range cannot use it — this index lets the
 	// sargable `created_at >= ? AND created_at < ?` bound SEARCH instead of SCAN
 	// the whole (growing) table.
 	db.run(`
@@ -202,7 +198,7 @@ function migrateTurnsIntToText(
 	const colDecls = cols.map((c) => {
 		if (c.name === "id") return "id TEXT PRIMARY KEY";
 		// Preserve NOT NULL constraint on model_id, tokens_in, tokens_out,
-		// created_at â these pre-existed in the legacy schema. Safest path
+		// created_at — these pre-existed in the legacy schema. Safest path
 		// is to rebuild from PRAGMA (which doesn't surface NOT NULL), so
 		// instead we re-declare the known-required columns explicitly and
 		// let the rest be nullable.
@@ -237,7 +233,7 @@ function migrateTurnsIntToText(
 /**
  * Insert a turn row. If `siteId` is provided, the row replicates via the
  * standard outbox (`insertRow`) so cost/usage and context-debug data are
- * visible from every host. Without `siteId` the row stays local â tests
+ * visible from every host. Without `siteId` the row stays local — tests
  * and utility scripts use this path.
  */
 export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): string {
@@ -279,13 +275,15 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		const colsInOrder = Object.keys(rowData);
 		const placeholders = colsInOrder.map(() => "?").join(", ");
 		const values = colsInOrder.map((k) => rowData[k]) as Array<string | number | null>;
-		db.prepare(`INSERT INTO turns (${colsInOrder.join(", ")}) VALUES (${placeholders})`).run(
-			...values,
-		);
+		dangerouslyExecuteRawWrite(db, {
+			sql: `INSERT INTO turns (${colsInOrder.join(", ")}) VALUES (${placeholders})`,
+			params: values,
+			reason: "no siteId provided: local-only turn row for tests and utility scripts",
+		});
 	}
 
 	// Update daily_summary for the calendar date of this turn. daily_summary
-	// is a local rollup â not synced â so this runs outside the outbox path.
+	// is a local rollup — not synced — so this runs outside the outbox path.
 	const date = turn.created_at.split("T")[0];
 	const existing = db.prepare("SELECT 1 FROM daily_summary WHERE date = ?").get(date);
 	if (existing) {
@@ -323,14 +321,10 @@ export function recordContextDebug(
 	if (siteId) {
 		updateRow(db, "turns", turnId, { context_debug: serialized }, siteId);
 	} else {
-		db.run("UPDATE turns SET context_debug = ? WHERE id = ?", [serialized, turnId]);
+		dangerouslyExecuteRawWrite(db, {
+			sql: "UPDATE turns SET context_debug = ? WHERE id = ?",
+			params: [serialized, turnId],
+			reason: "no siteId provided: local-only context_debug for tests and utility scripts",
+		});
 	}
-}
-
-export function getDailySpend(db: Database, date: string): number {
-	const result = db
-		.prepare("SELECT total_cost_usd FROM daily_summary WHERE date = ?")
-		.get(date) as { total_cost_usd: number } | null;
-
-	return result?.total_cost_usd || 0;
 }

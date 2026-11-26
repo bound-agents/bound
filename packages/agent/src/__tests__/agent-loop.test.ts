@@ -14,17 +14,17 @@ import {
 import type { AppContext } from "@bound/core";
 import type { BackendConfig, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { LLMRefusalError, type ModelDeclinedOutcome, ModelRouter } from "@bound/llm";
-import type { EventMap } from "@bound/shared";
-import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { z } from "zod";
 import {
 	ERROR_SIGNATURE_NUDGE_AT,
 	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
 	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
 	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
 	MAX_CONSECUTIVE_TRUNCATED_TURNS,
-	MainAgentLoop,
-} from "../agent-loop";
+} from "@bound/loop";
+import type { EventMap } from "@bound/shared";
+import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { z } from "zod";
+import { MainAgentLoop } from "../agent-loop";
 import { zodToToolParams } from "../tools/tool-schema";
 import type { RegisteredTool } from "../types";
 import { VALID_TRANSITIONS } from "../types";
@@ -1038,8 +1038,7 @@ describe("MainAgentLoop", () => {
 
 	it("records a route FAILURE on a non-429 terminal error so the route backs off (#285, R-RT11)", async () => {
 		// Wire-into-the-loop proof: a 5xx/transport/400 terminal failure must trip
-		// backoff on the live route, not only a 429. Before this fix only
-		// markRateLimited (429/529) recorded anything.
+		// backoff on the live route, not only a 429.
 		const { LLMError } = await import("@bound/llm");
 		const mockBackend = new MockLLMBackend();
 		mockBackend.pushResponse(() => {

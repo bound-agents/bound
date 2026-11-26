@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { get } from "svelte/store";
 import { McpAppHost } from "../mcp-app-host";
@@ -6,12 +6,9 @@ import {
 	type McpAppInstance,
 	type McpAppInstanceMap,
 	type PersistedToolMessage,
-	type UiInstanceSink,
-	createToolCallHandler,
 	instancesForThread,
 	mcpAppInstances,
 	reconstructInstancesFromMessages,
-	removeInstance,
 	upsertInstance,
 } from "../mcp-app-store";
 
@@ -47,20 +44,6 @@ describe("mcp-app-store reducers", () => {
 		expect(next["call-1"].serverName).toBe("new");
 	});
 
-	it("removeInstance drops the call id without mutating the input", () => {
-		const inst = fakeInstance();
-		const map = upsertInstance({}, inst);
-		const next = removeInstance(map, "call-1");
-		expect(next).toEqual({});
-		expect(map["call-1"]).toBe(inst);
-	});
-
-	it("removeInstance is a no-op for an unknown call id", () => {
-		const inst = fakeInstance();
-		const map = upsertInstance({}, inst);
-		expect(removeInstance(map, "nope")).toBe(map);
-	});
-
 	it("instancesForThread filters by thread and sorts oldest-first", () => {
 		const map = [
 			fakeInstance({ callId: "c1", threadId: "t1", createdAt: 30 }),
@@ -69,111 +52,6 @@ describe("mcp-app-store reducers", () => {
 		].reduce<McpAppInstanceMap>((acc, i) => upsertInstance(acc, i), {});
 		const result = instancesForThread(map, "t1");
 		expect(result.map((i) => i.callId)).toEqual(["c3", "c1"]);
-	});
-});
-
-describe("createToolCallHandler", () => {
-	function hostWithTool(opts: {
-		uiResourceUri?: string;
-		callTool: () => Promise<CallToolResult>;
-	}): { host: McpAppHost; boundName: string } {
-		const host = new McpAppHost();
-		const client = { callTool: opts.callTool };
-		const defs = host.registerServer("srv", client, [
-			{
-				name: "do_thing",
-				inputSchema: { type: "object", properties: {} },
-				...(opts.uiResourceUri
-					? {
-							_meta: {
-								"ui.resourceUri": opts.uiResourceUri,
-								ui: { resourceUri: opts.uiResourceUri },
-							},
-						}
-					: {}),
-			} as unknown as Parameters<McpAppHost["registerServer"]>[2][number],
-		]);
-		return { host, boundName: defs[0].function.name };
-	}
-
-	it("returns is_error for an unknown tool and registers nothing", async () => {
-		const host = new McpAppHost();
-		const registered: McpAppInstance[] = [];
-		const sink: UiInstanceSink = { register: (i) => registered.push(i) };
-		const handler = createToolCallHandler(host, sink);
-		const result = await handler({
-			call_id: "c1",
-			thread_id: "t1",
-			tool_name: "mcp__nope__x",
-			arguments: {},
-		});
-		expect(result.is_error).toBe(true);
-		expect(result.content).toContain("Unknown MCP tool");
-		expect(registered).toHaveLength(0);
-	});
-
-	it("dispatches a non-UI tool and registers no app instance", async () => {
-		const { host, boundName } = hostWithTool({
-			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }) as CallToolResult,
-		});
-		const registered: McpAppInstance[] = [];
-		const handler = createToolCallHandler(host, { register: (i) => registered.push(i) });
-		const result = await handler({
-			call_id: "c1",
-			thread_id: "t1",
-			tool_name: boundName,
-			arguments: { a: 1 },
-		});
-		expect(result.content).toBe("ok");
-		expect(result.is_error).toBe(false);
-		expect(registered).toHaveLength(0);
-	});
-
-	it("registers an app instance for a UI-bearing tool and returns the text result", async () => {
-		const callResult = { content: [{ type: "text", text: "rendered" }] } as CallToolResult;
-		const { host, boundName } = hostWithTool({
-			uiResourceUri: "ui://srv/app.html",
-			callTool: async () => callResult,
-		});
-		const registered: McpAppInstance[] = [];
-		const handler = createToolCallHandler(host, { register: (i) => registered.push(i) }, () => 42);
-		const result = await handler({
-			call_id: "c9",
-			thread_id: "t1",
-			tool_name: boundName,
-			arguments: { q: "hi" },
-		});
-		expect(result.content).toBe("rendered");
-		expect(registered).toHaveLength(1);
-		const inst = registered[0];
-		expect(inst.callId).toBe("c9");
-		expect(inst.threadId).toBe("t1");
-		expect(inst.uiResourceUri).toBe("ui://srv/app.html");
-		expect(inst.input).toEqual({ q: "hi" });
-		expect(inst.createdAt).toBe(42);
-		await expect(inst.resultPromise).resolves.toBe(callResult);
-	});
-
-	it("propagates a tool-call failure as is_error and still registers the instance", async () => {
-		const { host, boundName } = hostWithTool({
-			uiResourceUri: "ui://srv/app.html",
-			callTool: async () => {
-				throw new Error("boom");
-			},
-		});
-		const registered: McpAppInstance[] = [];
-		const handler = createToolCallHandler(host, { register: (i) => registered.push(i) });
-		const result = await handler({
-			call_id: "c1",
-			thread_id: "t1",
-			tool_name: boundName,
-			arguments: {},
-		});
-		expect(result.is_error).toBe(true);
-		expect(result.content).toBe("boom");
-		expect(registered).toHaveLength(1);
-		// The shared in-flight promise rejects; the app side handles it as cancel.
-		await expect(registered[0].resultPromise).rejects.toThrow("boom");
 	});
 });
 
@@ -195,7 +73,9 @@ describe("reconstructInstancesFromMessages", () => {
 
 	// The bound name the host assigns to the UI tool (namespaced + sanitized).
 	function uiBoundName(h: McpAppHost): string {
-		return h.getToolDefinitions()[0].function.name;
+		const reg = h.resolveByServerTool("srv", "do_thing");
+		if (!reg) throw new Error("do_thing not registered");
+		return reg.boundName;
 	}
 
 	// A tool_call row carrying one tool_use block (the call's input lives here).
@@ -437,27 +317,8 @@ describe("mcpAppInstances store", () => {
 		} as McpAppInstance;
 	}
 
-	afterEach(() => {
-		mcpAppInstances.clear();
-	});
-
 	it("register adds an instance observable via subscribe", () => {
 		mcpAppInstances.register(storeInstance("c1", "t1"));
 		expect(get(mcpAppInstances).c1?.callId).toBe("c1");
-	});
-
-	it("remove drops a registered instance", () => {
-		mcpAppInstances.register(storeInstance("c1", "t1"));
-		mcpAppInstances.register(storeInstance("c2", "t1"));
-		mcpAppInstances.remove("c1");
-		const map = get(mcpAppInstances);
-		expect(map.c1).toBeUndefined();
-		expect(map.c2?.callId).toBe("c2");
-	});
-
-	it("clear empties the store", () => {
-		mcpAppInstances.register(storeInstance("c1", "t1"));
-		mcpAppInstances.clear();
-		expect(get(mcpAppInstances)).toEqual({});
 	});
 });

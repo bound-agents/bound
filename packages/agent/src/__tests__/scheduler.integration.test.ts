@@ -824,12 +824,15 @@ describe("Scheduler Integration", () => {
 			WHERE id = '${taskId}'
 		`);
 
-		// Yield the event loop a few times for setImmediate to fire and the
-		// verification body to complete. With BOUND_LEASE_VERIFY_SETTLE_MS=0
-		// there is no settle delay; the verification runs on the next tick.
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		await sleep(50);
+		// Wait for the verification body to finish (it removes the task from
+		// runningTasks on both the bail and the run path) instead of a fixed
+		// sleep that a loaded host can outrun. The assertions below then tell
+		// the two paths apart.
+		await waitFor(
+			() =>
+				!(scheduler as unknown as { runningTasks: Map<string, unknown> }).runningTasks.has(taskId),
+			{ timeoutMs: 10_000, message: "lease-verification body completed" },
+		);
 
 		// Verification should have observed the peer's claimed_by, bailed before
 		// any agent-loop side effects, and removed the task from runningTasks.

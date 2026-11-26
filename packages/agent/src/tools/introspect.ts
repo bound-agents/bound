@@ -114,18 +114,14 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					}>;
 
 					for (const row of candidates) {
-						try {
-							const meta = JSON.parse(row.metadata) as Record<string, unknown>;
-							// Handle both single string and array format (multiple introspect requests per turn)
-							if (
-								meta.introspect_response_id === correlationId ||
-								(Array.isArray(meta.introspect_response_id) &&
-									meta.introspect_response_id.includes(correlationId))
-							) {
-								return withWarning(row.content); // BuiltInToolResult — the target's assistant message
-							}
-						} catch {
-							// malformed metadata, skip
+						const meta = parseMetadata(row.metadata);
+						// A single string, or an array when several introspect requests share a turn.
+						if (
+							meta?.introspect_response_id === correlationId ||
+							(Array.isArray(meta?.introspect_response_id) &&
+								meta.introspect_response_id.includes(correlationId))
+						) {
+							return withWarning(row.content);
 						}
 					}
 
@@ -164,6 +160,15 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 	};
 }
 
+/** Parsed message metadata, or null when the column holds malformed JSON. */
+function parseMetadata(raw: string): Record<string, unknown> | null {
+	try {
+		return JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Post-loop hook: Stamp the last assistant message with introspect_response_id.
  * Called after the agent loop drains to mark response messages with correlation IDs
@@ -191,14 +196,8 @@ export async function runIntrospectResponseStamp(params: {
 	// Extract correlation IDs from metadata
 	const correlationIds: string[] = [];
 	for (const msg of devMessages) {
-		try {
-			const meta = JSON.parse(msg.metadata) as Record<string, unknown>;
-			if (typeof meta.introspect_id === "string") {
-				correlationIds.push(meta.introspect_id);
-			}
-		} catch {
-			// malformed metadata, skip
-		}
+		const introspectId = parseMetadata(msg.metadata)?.introspect_id;
+		if (typeof introspectId === "string") correlationIds.push(introspectId);
 	}
 
 	// No-op if no introspect messages found (AC4.1)

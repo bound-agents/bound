@@ -22,7 +22,7 @@ describe("DNS-rebinding protection", () => {
 		eventBus = new TypedEventEmitter();
 	});
 
-	// ── API routes — Host check must fire ─────────────────────────────────────
+	// API routes — Host check must fire
 
 	it("blocks requests with an external Host header on /api/threads", async () => {
 		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
@@ -48,7 +48,7 @@ describe("DNS-rebinding protection", () => {
 		expect(body).toEqual({ error: "Invalid Host header" });
 	});
 
-	// ── Localhost — API routes must remain accessible ─────────────────────────
+	// Localhost — API routes must remain accessible
 
 	it("allows requests with Host: localhost on API routes", async () => {
 		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
@@ -70,7 +70,7 @@ describe("DNS-rebinding protection", () => {
 		expect(res.status).toBe(200);
 	});
 
-	// ── IPv6 loopback — bracket-aware Host parsing ────────────────────────────
+	// IPv6 loopback — bracket-aware Host parsing
 	// `[::1]` must be accepted both bare and with a port. The naive
 	// `host.split(":")[0]` would yield "[" and reject these, so these cases
 	// guard the bracket-handling branch against regression.

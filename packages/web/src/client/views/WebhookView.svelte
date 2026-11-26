@@ -9,6 +9,7 @@
 	import TaskCard from "../components/TaskCard.svelte";
 	import TicketTab from "../components/TicketTab.svelte";
 	import { client } from "../lib/bound";
+	import { formatDate } from "../lib/format-time";
 
 	let webhooks: WebhookListEntry[] = $state([]);
 	let loading = $state(true);
@@ -312,18 +313,6 @@
 		createModel = "";
 		createNoHistory = false;
 		createError = null;
-	}
-
-	function formatDate(iso: string): string {
-		try {
-			return new Date(iso).toLocaleDateString("en-US", {
-				month: "short",
-				day: "numeric",
-				year: "numeric",
-			});
-		} catch {
-			return iso;
-		}
 	}
 </script>
 

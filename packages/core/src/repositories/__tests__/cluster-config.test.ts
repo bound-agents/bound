@@ -7,7 +7,6 @@ import {
 	findClusterConfigKeyByKey,
 	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
-	findClusterConfigValueWithModifiedAtByKey,
 } from "../cluster-config";
 
 const SITE_ID = "site-aaaa";
@@ -75,47 +74,6 @@ describe("findClusterConfigValueByKey", () => {
 	});
 });
 
-describe("findClusterConfigValueWithModifiedAtByKey", () => {
-	it("returns value and modified_at for an existing key", () => {
-		seedConfig({
-			key: "operator_persona",
-			value: "persona body",
-			modified_at: "2026-01-01T00:00:00.000Z",
-		});
-
-		const row = findClusterConfigValueWithModifiedAtByKey(db, "operator_persona");
-
-		expect(row).toEqual({
-			value: "persona body",
-			modified_at: "2026-01-01T00:00:00.000Z",
-		});
-	});
-
-	it("returns null for an absent key", () => {
-		const row = findClusterConfigValueWithModifiedAtByKey(db, "missing");
-
-		expect(row).toBeNull();
-	});
-
-	it("surfaces the bumped modified_at after an update", () => {
-		seedConfig({
-			key: "operator_persona",
-			value: "v1",
-			modified_at: "2026-01-01T00:00:00.000Z",
-		});
-
-		// updateRow overwrites modified_at with a fresh ISO timestamp.
-		updateRow(db, "cluster_config", "operator_persona", { value: "v2" }, SITE_ID);
-
-		const row = findClusterConfigValueWithModifiedAtByKey(db, "operator_persona");
-
-		expect(row).not.toBeNull();
-		expect(row?.value).toBe("v2");
-		// The seeded sentinel timestamp must have been replaced by the update.
-		expect(row?.modified_at).not.toBe("2026-01-01T00:00:00.000Z");
-	});
-});
-
 describe("findClusterConfigKeyByKey", () => {
 	it("returns the key for an existing row (existence probe hit)", () => {
 		seedConfig({
@@ -137,16 +95,6 @@ describe("findClusterConfigKeyByKey", () => {
 });
 
 describe("soft-delete semantics", () => {
-	it("live-read finders exclude a soft-deleted row", () => {
-		seedConfig({ key: "emergency_stop", value: "1", modified_at: "2026-01-01T00:00:00.000Z" });
-		softDelete(db, "cluster_config", "emergency_stop", SITE_ID);
-
-		// All three live-read finders must treat a tombstone as absent.
-		expect(findClusterConfigValueByKey(db, "emergency_stop")).toBeNull();
-		expect(findClusterConfigValueWithModifiedAtByKey(db, "emergency_stop")).toBeNull();
-		expect(findClusterConfigKeyByKey(db, "emergency_stop")).toBeNull();
-	});
-
 	it("the include-deleted probe still sees a soft-deleted row", () => {
 		seedConfig({ key: "emergency_stop", value: "1", modified_at: "2026-01-01T00:00:00.000Z" });
 		softDelete(db, "cluster_config", "emergency_stop", SITE_ID);

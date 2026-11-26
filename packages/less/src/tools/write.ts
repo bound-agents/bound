@@ -4,13 +4,8 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { contextFileStaleNote, isContextFile } from "./context-files";
 import { checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
-import {
-	DISABLED_SANDBOX,
-	type ResolvedSandboxConfig,
-	checkWritePath,
-	formatWriteDenied,
-} from "./sandbox-policy";
-import type { ToolHandler, ToolResult } from "./types";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig, guardWriteTarget } from "./sandbox-policy";
+import { TOOL_NAMES, type ToolHandler, type ToolResult } from "./types";
 
 export function createWriteTool(
 	hostname: string,
@@ -77,21 +72,9 @@ async function writeToolImpl(
 		};
 	}
 
-	// In-process write guard: when the sandbox is enabled, confine writes to the
-	// same writable set the kernel guard enforces for the shell. This tool calls
-	// fs directly and never passes through mxc, so without this check it would
-	// silently punch through an enabled sandbox.
-	if (sandbox.enabled) {
-		const check = checkWritePath(file_path, cwd, sandbox);
-		if (!check.allowed) {
-			return {
-				content: [
-					provenance,
-					{ type: "text", text: formatWriteDenied("boundless_write", file_path, check) },
-				],
-				isError: true,
-			};
-		}
+	const writeDenied = guardWriteTarget(TOOL_NAMES.write, file_path, cwd, sandbox);
+	if (writeDenied) {
+		return { content: [provenance, { type: "text", text: writeDenied }], isError: true };
 	}
 
 	try {

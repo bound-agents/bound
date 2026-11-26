@@ -39,7 +39,6 @@
 		return d.tokens_in + d.tokens_out + d.cache_read + d.cache_write;
 	}
 
-	// Filter out models with zero total tokens (AC2.5)
 	const filteredData = $derived.by(() => {
 		return data.filter((d) => rowTotal(d) > 0);
 	});
@@ -66,7 +65,6 @@
 		return Math.max(...sortedData.map(rowTotal), 1);
 	});
 
-	// Create x scale
 	const xScale = $derived.by(() => {
 		return scaleLinear()
 			.domain([0, maxTokens])

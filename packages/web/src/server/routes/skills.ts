@@ -157,7 +157,6 @@ export function createSkillsRoutes(db: Database): Hono {
 				const skillContent = buildSkillFrontmatter(body) + (body.body ?? "");
 				files = [{ path: "SKILL.md", content: skillContent }];
 			} else if (contentType.includes("multipart/form-data")) {
-				// Handle multipart upload
 				const formData = await c.req.formData();
 				const file = formData.get("skillfile");
 
@@ -240,7 +239,6 @@ export function createSkillsRoutes(db: Database): Hono {
 				return c.json({ error: "Invalid Content-Type" }, 400);
 			}
 
-			// Import the skill
 			const result = await importSkillFromFiles(db, siteId, files, {});
 
 			if (!result.ok) {
@@ -331,7 +329,6 @@ export function createSkillsRoutes(db: Database): Hono {
 				);
 			}
 
-			// Update skill row
 			updateRow(
 				db,
 				"skills",

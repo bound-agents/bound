@@ -2,7 +2,7 @@
  * Test-only utilities shared across all packages.
  *
  * NOT exported from the shared barrel — import directly:
- *   import { cleanupTmpDir } from "@bound/shared/src/test-utils.js";
+ *   import { cleanupTmpDir } from "@bound/shared/test-utils";
  */
 
 import { rmSync } from "node:fs";

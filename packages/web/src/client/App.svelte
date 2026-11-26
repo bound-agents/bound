@@ -38,9 +38,8 @@
 		window.addEventListener("hashchange", () => {
 			route = currentRoute();
 		});
-		// Connect to configured MCP App servers and register their tools on the
-		// shared BoundClient (the boundless client-tools pattern). Fire-and-forget:
-		// failures are logged and never block the UI.
+		// Connect to MCP App servers so persisted UI-bearing tool results can
+		// render. Fire-and-forget: failures are logged and never block the UI.
 		void initMcpApps();
 	});
 

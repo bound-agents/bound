@@ -1,5 +1,13 @@
 const ELLIPSIS = "…";
 
+/** Truncate to `max` columns with a trailing ellipsis. */
+export function truncateLabel(label: string, max: number): string {
+	const flat = collapseWhitespace(label);
+	if (max <= 0) return "";
+	if (flat.length <= max) return flat;
+	return max === 1 ? ELLIPSIS : `${flat.slice(0, max - 1)}${ELLIPSIS}`;
+}
+
 /**
  * Collapse all whitespace (newlines, tabs, CR, runs of spaces) in a thread
  * title to single spaces so the label renders on exactly one terminal row.

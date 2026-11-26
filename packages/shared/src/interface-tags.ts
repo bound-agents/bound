@@ -22,10 +22,6 @@ export const NON_USER_FACING_INTERFACES = ["scheduler", "webhook"] as const;
 /**
  * Returns true when a thread interface tag represents a user-facing surface.
  * Returns false for `scheduler`, `webhook`, and for null/undefined/empty.
- *
- * Used by:
- *   - cli/src/commands/start/server.ts (volatile-context platform tag)
- *   - web/src/server/routes/threads.ts (color cycle source set)
  */
 export function isUserFacingInterface(threadInterface: string | null | undefined): boolean {
 	if (!threadInterface) return false;

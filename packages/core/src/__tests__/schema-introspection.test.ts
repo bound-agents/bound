@@ -2,35 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SyncedTableName } from "@bound/shared";
+import { TABLE_REDUCER_MAP } from "@bound/shared";
 import { createDatabase } from "../database";
 import { applyMetricsSchema } from "../metrics-schema";
 import { applySchema } from "../schema";
 import { getSyncedTableSchemas } from "../schema-introspection";
-
-const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
-	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
-	"hosts",
-	"cluster_config",
-	"advisories",
-	"skills",
-	"agents",
-	"memory_edges",
-	"connector_handles",
-	"webhooks",
-	"rss_feeds",
-	"turns",
-	"client_sessions",
-	"mcp_auth_challenges",
-	"model_routing_rules",
-	"route_drains",
-	"model_aliases",
-];
 
 describe("getSyncedTableSchemas", () => {
 	let dbPath: string;
@@ -54,7 +30,7 @@ describe("getSyncedTableSchemas", () => {
 
 		const schemas = getSyncedTableSchemas(db);
 		const names = schemas.map((s) => s.table).sort();
-		const expected = [...EXPECTED_SYNCED_TABLES].sort();
+		const expected = Object.keys(TABLE_REDUCER_MAP).sort();
 
 		expect(names).toEqual(expected);
 

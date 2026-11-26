@@ -3,16 +3,12 @@
 // Crypto and signing
 export {
 	ensureKeypair,
-	generateKeypair,
 	deriveSiteId,
 	exportPublicKey,
-	exportPrivateKey,
 	importPublicKey,
 	importPrivateKey,
 } from "./crypto.js";
 export { signRequest } from "./signing.js";
-// Changeset chunking
-export { chunkChangeset, DEFAULT_MAX_CHUNK_BYTES } from "./changeset.js";
 
 // Pruning
 export { startPruningLoop, drainFreelistOnStartup } from "./pruning.js";
@@ -24,8 +20,6 @@ export {
 	deriveSharedSecret,
 	ed25519ToX25519Public,
 	ed25519ToX25519Private,
-	computeFingerprint,
-	extractRawEd25519Keys,
 } from "./encryption.js";
 export { KeyManager } from "./key-manager.js";
 
@@ -72,16 +66,10 @@ export { WsSyncClient, type WsClientConfig } from "./ws-client.js";
 
 // WebSocket transport (push-on-write changelog replication)
 export { WsTransport, type WsTransportConfig } from "./ws-transport.js";
-export { MicrotaskCoalescer } from "./ws-coalescer.js";
 
 // Reducers and column cache
-export { clearColumnCache, applySnapshotRows, applyLWWReducer } from "./reducers.js";
+export { clearColumnCache, applyLWWReducer } from "./reducers.js";
 
 // Peer sync cursors — getConfirmedSyncWatermark is the sole anchor authority
 // for delegation range segments (R-UD11).
-export {
-	getPeerCursor,
-	updatePeerCursor,
-	getConfirmedSyncWatermark,
-	getMinConfirmedHlc,
-} from "./peer-cursor.js";
+export { getPeerCursor, updatePeerCursor, getConfirmedSyncWatermark } from "./peer-cursor.js";

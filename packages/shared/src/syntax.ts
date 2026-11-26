@@ -124,7 +124,6 @@ const LANG_ALIASES: Record<string, string> = {
 };
 
 /**
- * Highlight code to HTML. Used by the web UI via marked-highlight.
  * Async because callers may invoke before the highlighter has finished
  * loading; subsequent calls hit the cached singleton.
  */

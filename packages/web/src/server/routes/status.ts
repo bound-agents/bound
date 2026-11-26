@@ -10,12 +10,14 @@ import {
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
+	isHostFresh,
 	listDrainedRouteIds,
 	listHostSiteIdNameAndModels,
 	listHostsOrderedByName,
 	listRemoteHostModelLiveness,
 	listSyncState,
 } from "@bound/core";
+import type { EmitToolCancel, RequestConsistency } from "../lib/handler-types";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -26,7 +28,11 @@ import {
 	parseJsonSafe,
 } from "@bound/shared";
 import { Hono } from "hono";
-import { collectSupply, disambiguateDisplayNames, resolveModelDisplayName } from "./routing";
+import {
+	collectSupply,
+	disambiguateDisplayNames,
+	resolveModelDisplayName,
+} from "../lib/model-supply";
 
 export interface ModelInfo {
 	id: string;
@@ -59,12 +65,8 @@ export function createStatusRoutes(
 	siteId: string,
 	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined),
 	logger?: ReturnType<typeof createLogger>,
-	emitToolCancel?: (
-		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
-		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
-	) => void,
-	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>,
+	emitToolCancel?: EmitToolCancel,
+	requestConsistency?: RequestConsistency,
 ): Hono {
 	const log = logger ?? createLogger("@bound/web", "status");
 	const app = new Hono();
@@ -130,8 +132,6 @@ export function createStatusRoutes(
 	});
 
 	app.get("/models", (c) => {
-		const STALE_THRESHOLD_MS = 5 * 60 * 1000;
-
 		// modelsConfig may be a live getter (so SIGHUP reloads propagate to the
 		// discovery endpoint) or a static snapshot — resolve per request.
 		const resolved = typeof modelsConfig === "function" ? modelsConfig() : modelsConfig;
@@ -180,7 +180,6 @@ export function createStatusRoutes(
 			drained: isDrained(m.id),
 		}));
 
-		// AC5.1: Query remote models from hosts table
 		// Exclude local host by site_id (unique key) not host_name (not guaranteed unique)
 		const remoteHosts = listRemoteHostModelLiveness(db, siteId);
 
@@ -200,9 +199,7 @@ export function createStatusRoutes(
 				typeof entry === "string" ? entry : entry.id,
 			);
 
-			// AC5.3: Annotate stale models with "offline?"
-			const freshTs = host.modified_at ?? host.online_at;
-			const isStale = !freshTs || Date.now() - new Date(freshTs).getTime() > STALE_THRESHOLD_MS;
+			const isStale = !isHostFresh(host);
 
 			// #271: same-id models across hosts (or local+remote) collapse to one
 			// entry in the final dedup below. The router resolves the provider
@@ -263,13 +260,11 @@ export function createStatusRoutes(
 
 			const hostNameValue = getHostMetaHostName(db) ?? "unknown";
 
-			// Read pending client tool calls BEFORE expiring them (AC3.1)
+			// Read pending client tool calls BEFORE expiring them: expiry clears the rows tool:cancel needs.
 			const pendingBefore = getPendingClientToolCalls(db, threadId);
 
-			// Expire any pending client tool calls for this thread (AC4.5)
 			const cancelledToolCalls = cancelClientToolCalls(db, threadId);
 
-			// Emit tool:cancel for cancelled entries (AC3.1)
 			if (emitToolCancel && pendingBefore.length > 0) {
 				emitToolCancel(pendingBefore, threadId, "thread_canceled");
 			}

@@ -23,7 +23,7 @@ import {
 	timeout,
 } from "rxjs";
 import { buildCommandOutput } from "./agent-loop-utils";
-import { type UnionResponseEntry, readUnionResponseEntry } from "./relay-await-helpers";
+import { type DurableResponseEntry, readDurableResponseEntry } from "./relay-await-helpers";
 import { type EligibleHost, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 import type { TopologyRole } from "./topology";
@@ -95,9 +95,9 @@ function formatResponseText(response: { kind: string; payload: string }): RelayW
 }
 
 /**
- * 4D-D union-await read for one awaiting request. Thin adapter over the shared
- * {@link readUnionResponseEntry} primitive: the exactly-once claim → deliver →
- * ack lifecycle (with legacy-first ordering, deferred settle, and token fence)
+ * Response read for one awaiting request. Thin adapter over the shared
+ * {@link readDurableResponseEntry} primitive: the exactly-once claim → deliver →
+ * ack lifecycle (deferred settle and token fence)
  * lives there and is shared with the two CLI remotePlatformRequest awaiters so
  * no call site hand-rolls its own poll loop. CRITICAL ORDER (claim → deliver →
  * ack): `settle()` is deferred by the Rx pipeline until AFTER the awaiter has
@@ -106,8 +106,8 @@ function formatResponseText(response: { kind: string; payload: string }): RelayW
  * via its 300s TTL → dead_letter → prune — at-least-once with bounded residue,
  * never silent loss.
  */
-function readUnionResponse(deps: RelayWaitDeps, refId: string): UnionResponseEntry | null {
-	return readUnionResponseEntry(deps.db, refId, deps.siteId);
+function readDurableResponse(deps: RelayWaitDeps, refId: string): DurableResponseEntry | null {
+	return readDurableResponseEntry(deps.db, refId, deps.siteId);
 }
 
 export function createRelayWait$(
@@ -157,17 +157,13 @@ export function createRelayWait$(
 				host: currentHost.host_name,
 			});
 
-			// 4D-D union-await: a response resolves this awaiter whether it arrived
-			// over the LEGACY relay_inbox (the 4D-C status quo) or the DURABLE spool
-			// (this slice). readUnionResponse reads both stores; a durable row is
-			// claimed + delivered + acked (exactly-once via the token fence), a legacy
-			// row is markProcessed as before. A response arriving via EITHER store
-			// resolves the request, so a capability flip mid-flight is transparent.
+			// A durable response row is claimed + delivered + acked exactly once via
+			// the token fence.
 			const response$ = merge(
-				defer(() => of(readUnionResponse(deps, currentOutboxId))),
+				defer(() => of(readDurableResponse(deps, currentOutboxId))),
 				fromEventBus(deps.eventBus, "relay:inbox").pipe(
 					filter((event) => event.ref_id === currentOutboxId),
-					map(() => readUnionResponse(deps, currentOutboxId)),
+					map(() => readDurableResponse(deps, currentOutboxId)),
 				),
 			).pipe(
 				filter(
@@ -196,7 +192,7 @@ export function createRelayWait$(
 					}
 				}),
 				// CRITICAL ORDER (claim → deliver → ack): the durable row was CLAIMED in
-				// readUnionResponse but its ack (or legacy markProcessed) is deferred to
+				// readDurableResponse but its ack (or legacy markProcessed) is deferred to
 				// entry.settle(), fired in finalize() below — which runs only AFTER take(1)
 				// has emitted the value downstream and completed. A crash between delivery
 				// and settle boot-resets the durable row to pending; the redelivered copy
@@ -218,10 +214,9 @@ export function createRelayWait$(
 			const abort$ = aborted$.pipe(
 				take(1),
 				tap(() => {
-					// 4D-D: cancel is a directed active request — route it through the same
-					// helper as the initial dispatch so it rides the durable spool when the
-					// hop advertises capability. The receiving 4D-A lane dispatches a durable
-					// cancel row through the handler map like any request.
+					// Cancel is a directed active request — route it through the same
+					// helper as the initial dispatch. The receiving durable-work lane
+					// dispatches the cancel row like any request.
 					try {
 						routeRelayRequest(deps.db, {
 							targetSiteId: currentHost.site_id,

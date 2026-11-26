@@ -3,6 +3,7 @@ import type { ModelRouter } from "@bound/llm";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import type { MountableFs } from "just-bash";
+import type { EmitToolCancel, RequestConsistency } from "../lib/handler-types";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createConnectorsRoutes } from "./connectors";
 import { createFilesRoutes } from "./files";
@@ -53,12 +54,8 @@ export interface RoutesConfig {
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeLoops?: Set<string>;
-	emitToolCancel?: (
-		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
-		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
-	) => void;
-	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
+	emitToolCancel?: EmitToolCancel;
+	requestConsistency?: RequestConsistency;
 	/**
 	 * Live sandbox cluster filesystem reference. When present, exposes
 	 * `/api/sandbox/file` for arbitrary path read/write — used by the
@@ -78,8 +75,10 @@ export interface RoutesConfig {
 	 * for direct LLM inference over HTTP (no agent loop, no context assembly).
 	 */
 	modelRouter?: ModelRouter | null;
-	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
+	/** This host's cluster role, for durable-relay routing on POST /v1/responses. */
 	topologyRole?: "hub" | "spoke";
+	/** `sync.relay.inference_timeout_ms`, applied to relayed POST /v1/responses inference. */
+	inferenceTimeoutMs?: number;
 	/**
 	 * The resolving host's in-process MCP OAuth resolver bridge (MCP OAuth RFC
 	 * §8, R-MO17/R-MO27). Backs `GET /oauth/mcp/callback`: correlates a callback
@@ -149,7 +148,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			statusForwardCache,
 			activeLoops,
 		),
-		messages: createMessagesRoutes(db, eventBus),
+		messages: createMessagesRoutes(db),
 		oauthMcp: createOauthMcpRoutes(config.oauthMcpBridge ?? null),
 		mcpChallenges: createMcpChallengesRoutes(db, webBindHost, config.oauthMcpBridge ?? null),
 		connectors: createConnectorsRoutes(db),
@@ -195,6 +194,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			siteId,
 			undefined,
 			topologyRole,
+			config.inferenceTimeoutMs,
 		),
 		routing: createRoutingRoutes(db, siteId, modelRouter ?? null, {
 			relayRouteHealth: config.relayRouteHealth,

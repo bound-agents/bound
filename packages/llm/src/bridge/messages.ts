@@ -8,19 +8,10 @@
  * ToModelMessagesOptions — see the individual drivers.
  */
 
-import { type Logger, createLogger } from "@bound/shared";
+import type { Logger } from "@bound/shared";
 import { type ModelMessage, modelMessageSchema } from "ai";
 import type { ContentBlock, LLMMessage } from "../types";
-
-// Lazily created for the same reason as stream.ts: createLogger() opens the
-// log file synchronously, and this module is reachable by importing @bound/llm.
-let promptGuardLogger: Pick<Logger, "warn"> | null = null;
-function getPromptGuardLogger(): Pick<Logger, "warn"> {
-	if (promptGuardLogger === null) {
-		promptGuardLogger = createLogger("llm", "ai-sdk-bridge");
-	}
-	return promptGuardLogger;
-}
+import { getBridgeLogger } from "./logger";
 
 export interface ToModelMessagesOptions {
 	/**
@@ -875,7 +866,7 @@ export function toModelMessages(
 		result.unshift({ role: "user", content: "<system-notification />" });
 	}
 
-	return guardPromptSchema(result, opts.logger ?? getPromptGuardLogger());
+	return guardPromptSchema(result, opts.logger ?? getBridgeLogger());
 }
 
 /**
@@ -1356,8 +1347,7 @@ function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "docume
  *     prompt schema, so a single stale item fails the whole prompt at
  *     validatePrompt (InvalidPromptError) before any provider call — and
  *     because the block lives in persisted history, one bad item wedged
- *     its thread on every subsequent assembly (thread 10e34ac9,
- *     2026-10-10). Downstream, ai's mapToolResultOutput maps `file`
+ *     its thread on every subsequent assembly. Downstream, ai's mapToolResultOutput maps `file`
  *     items via convertPartToLanguageModelPart: the base64 string passes
  *     through zero-copy as `{type:"data"}` inline data and mediaType
  *     forwards to the provider adapter (Anthropic maps image/* to a

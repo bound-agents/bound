@@ -3,8 +3,7 @@
 // The metrics route emits two bucket shapes:
 //  - hourly: `2026-06-10T14:00:00Z` — a UTC instant (the Z is load-bearing:
 //    without it `new Date()` parses the string as LOCAL time and every point
-//    shifts by the viewer's tz offset). Legacy responses lack the Z; we
-//    normalize them to UTC here so old data renders at the right instant.
+//    shifts by the viewer's tz offset).
 //  - daily: `2026-06-10` — a calendar date, NOT an instant. `new Date()`
 //    parses date-only strings as UTC midnight, so calling local getters like
 //    `getDate()` on it shows the PREVIOUS day for any viewer west of UTC.
@@ -20,17 +19,13 @@ export interface BucketPoint {
 }
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
-const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/;
 
 /** Parse a metrics bucket string into a positioned, label-ready point. */
 export function parseBucket(raw: string): BucketPoint {
 	if (DATE_ONLY.test(raw)) {
 		return { raw, dateObj: new Date(`${raw}T00:00:00Z`), daily: true };
 	}
-	// Hourly bucket. Buckets are derived from UTC-stored `created_at`, so a
-	// missing zone suffix (legacy server) still means UTC.
-	const iso = HAS_ZONE.test(raw) ? raw : `${raw}Z`;
-	return { raw, dateObj: new Date(iso), daily: false };
+	return { raw, dateObj: new Date(raw), daily: false };
 }
 
 const pad2 = (n: number): string => String(n).padStart(2, "0");

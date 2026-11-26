@@ -4,7 +4,7 @@
  */
 
 import type { Message } from "@bound/shared";
-import { extractToolUseIds } from "../tool-pair-sanitize/helpers";
+import { extractToolUseIds } from "../tool-pair-sanitize";
 
 export interface SubstitutePurgedMessagesParams {
 	messages: ReadonlyArray<Message>;

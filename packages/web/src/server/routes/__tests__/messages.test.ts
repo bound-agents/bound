@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
-import { TypedEventEmitter } from "@bound/shared";
 import { createMessagesRoutes } from "../messages";
 
 // createMessagesRoutes serves the per-thread message list and the redaction
@@ -78,7 +77,7 @@ describe("messages routes", () => {
 		db = new Database(":memory:");
 		applySchema(db);
 		db.prepare("INSERT INTO host_meta (key, value) VALUES (?, ?)").run("site_id", SITE);
-		app = createMessagesRoutes(db, new TypedEventEmitter());
+		app = createMessagesRoutes(db);
 	});
 
 	afterEach(() => {

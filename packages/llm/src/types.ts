@@ -1,4 +1,5 @@
-import type { ContextSegment } from "@bound/shared";
+import type { inferenceRequestPayloadSchema } from "@bound/shared";
+import type { z } from "zod";
 import type { DiscoveredModel } from "./catalog/discovery";
 import type { DriverFallbackSupport } from "./fallback-policy";
 import type { ModelDeclinedOutcome } from "./model-declined";
@@ -6,7 +7,7 @@ export interface LLMBackend {
 	chat(params: ChatParams): AsyncIterable<StreamChunk>;
 	capabilities(): BackendCapabilities;
 	/**
-	 * Static refusal-fallback protocol capabilities (slice 5, R-MC7, catalog
+	 * Static refusal-fallback protocol capabilities (R-MC7, catalog
 	 * §4.2). Routing and refusal-fallback logic branch on this descriptor rather
 	 * than provider-name conditionals. Every driver declares it; the three flags
 	 * (`server_side_auto`, `publishes_allowed_targets`, `supports_fallback_credit`)
@@ -192,7 +193,7 @@ export interface ChatParams {
 	 */
 	effort?: string;
 	/**
-	 * Resolved refusal-fallback chain for the turn (slice 5, R-RT18). When the
+	 * Resolved refusal-fallback chain for the turn (R-RT18). When the
 	 * loop host resolves a fallback policy + ordered candidate list, it threads
 	 * them here so a relay carrier forwards them on the inference request. Local
 	 * drivers ignore them; the fallback walk happens in the loop/driver layer.
@@ -447,7 +448,7 @@ export type StreamChunk =
 			 * Which pricing layer priced this turn (the `PricingSource` union,
 			 * serialized as a string), stamped by the relay hub so the requester
 			 * records it into `turns.cost_breakdown.source` for provenance
-			 * (requirement 3, catalog §3). Independent of `cost_breakdown` so the
+			 * (catalog §3). Independent of `cost_breakdown` so the
 			 * source survives even when the cost has no component split (a
 			 * plain-number `price(turn)` callback). Optional on the wire — an older
 			 * peer that never sets it, and one that receives it, both stay valid.
@@ -507,7 +508,7 @@ export interface BackendConfig {
 	/**
 	 * Preferred cross-region inference-profile scope for a self-configuring
 	 * `bedrock` / `bedrock-mantle` namespace entry (`global` | `us` | `eu` | …).
-	 * Default `global` (decision 3). Ignored on a concrete (model-bearing) entry.
+	 * Default `global`. Ignored on a concrete (model-bearing) entry.
 	 */
 	crossRegion?: string;
 	model?: string;
@@ -575,7 +576,7 @@ export interface BackendConfig {
 	 * provider (`github-copilot`, `bedrock`, `bedrock-mantle`, `umans`). Keyed by
 	 * provider model id (the bare foundation-model id OR the resolved
 	 * inference-profile id); each value pins just that expanded backend's request
-	 * controls + operator facts WITHOUT listing every model (requirement 5). Absent
+	 * controls + operator facts WITHOUT listing every model. Absent
 	 * / non-namespace → no per-model overrides.
 	 */
 	modelOverrides?: Record<
@@ -623,59 +624,17 @@ export class LLMError extends Error {
 	}
 }
 
-// Inference relay payload types.
-// Mirrors the wire schema in @bound/shared `inferenceRequestPayloadSchema`
-// — both the legacy `{type:"enabled", budget_tokens}` thinking shape and
-// the Opus 4.7 adaptive shape are forwarded to remote hosts. `effort`
-// forwards the top-level output_config.effort knob.
-export interface InferenceRequestPayload {
-	/** Originating Bound thread; absent only on legacy relayed payloads. */
-	threadId?: string;
-	model: string;
-	/**
-	 * The delegated context as segments (R-UD3) — the SINGLE wire representation.
-	 * Replaces the old `messages` array and the `messages_file_ref` files-table
-	 * offload: zero or more `inline` segments plus at most one `range` segment over
-	 * the confirmed-synced history prefix. The consumer resolves these via
-	 * `resolveSegments` and NEVER re-assembles. See
-	 * docs/design/specs/2026-06-29-unified-delegation.md §3.
-	 */
-	segments: ContextSegment[];
-	/**
-	 * The producer's AssemblyClock instant (epoch ms). Threaded into the consumer's
-	 * annotator when resolving range segments so the rendered bytes match the
-	 * producer's exactly (R-UD4).
-	 */
-	nowMs: number;
+// `tools` narrows the schema's `unknown[]` to the driver shape; `timeout_ms` is
+// producer-side only (the schema strips it on parse).
+export type InferenceRequestPayload = Omit<
+	z.infer<typeof inferenceRequestPayloadSchema>,
+	"tools"
+> & {
 	tools?: ToolDefinition[];
-	system?: string;
-	max_tokens?: number;
-	temperature?: number;
-	// Mirrors ChatParams.top_p.
-	top_p?: number;
-	// Mirrors ChatParams.tool_choice (AI-SDK-neutral). Forwarded over the relay;
-	// the executing driver omits it when no tools are present.
-	tool_choice?: "auto" | "none" | "required" | { type: "tool"; toolName: string };
-	thinking?:
-		| { type: "enabled"; budget_tokens: number }
-		| { type: "adaptive"; display?: "omitted" | "summarized" }
-		| { type: "disabled" };
-	// Free-form, provider-validated; see ChatParams.effort.
-	effort?: string;
-	cache_ttl?: string;
-	// Resolved refusal-fallback chain for the turn (R-RT18, Invariant #16).
-	// Mirrors inferenceRequestPayloadSchema. Both optional: an older inference
-	// host ignores them and returns the refusal unchanged. `fallback_models` is
-	// an ordered `LogicalModelId[]` already filtered by turn capabilities.
-	fallback_policy?: { mode: "auto" | "never" | "custom" };
-	fallback_models?: string[];
 	timeout_ms: number;
-}
+};
 
 export interface StreamChunkPayload {
 	chunks: StreamChunk[];
 	seq: number;
 }
-
-// stream_end has the same shape as stream_chunk — the relay kind field distinguishes them
-export type StreamEndPayload = StreamChunkPayload;

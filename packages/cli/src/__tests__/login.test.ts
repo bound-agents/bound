@@ -186,7 +186,6 @@ describe("runLogin — chatgpt browser flow", () => {
 		const origErr = console.error;
 		let exitCode: number | undefined;
 		const errLines: string[] = [];
-		// biome-ignore lint/suspicious/noExplicitAny: test shim for process.exit
 		process.exit = ((code?: number) => {
 			exitCode = code;
 			throw new Error("__exit__");

@@ -1,17 +1,9 @@
 import type { Database } from "bun:sqlite";
-
-/**
- * Cross-table reads over `memory_edges` JOIN `semantic_memory` for knowledge-
- * graph traversal and one-hop neighbor lookup. Powers `traverseGraph` and
- * `getNeighbors` in `packages/agent/src/graph-queries.ts`.
- *
- * See ../index.ts for conventions. Reads only.
- */
+import { agentNamespace } from "./sql-fragments";
 
 /**
  * One row of a recursive graph traversal: a reachable entry resolved against
  * its live `semantic_memory` row, tagged with the edge it was reached through.
- * Column names mirror exactly what `traverseGraph` destructures.
  */
 export interface GraphTraversalRow {
 	key: string;
@@ -41,8 +33,7 @@ export function traverseMemoryGraph(
 	relationParam: string | null,
 	agentId: string | null = null,
 ): GraphTraversalRow[] {
-	const ns = agentId === null ? "IS NULL" : "= ?";
-	const nsParams = agentId === null ? [] : [agentId];
+	const { sql: ns, params: nsParams } = agentNamespace(agentId);
 	return db
 		.prepare(
 			`WITH RECURSIVE reachable(key, depth, path, via_relation, via_weight, via_context) AS (
@@ -77,10 +68,7 @@ export function traverseMemoryGraph(
 		) as GraphTraversalRow[];
 }
 
-/**
- * One neighbor edge resolved against its live `semantic_memory` row. Column
- * names mirror exactly what `getNeighbors` destructures.
- */
+/** One neighbor edge resolved against its live `semantic_memory` row. */
 export interface GraphNeighborRow {
 	key: string;
 	relation: string;
@@ -100,8 +88,7 @@ export function listOutgoingNeighbors(
 	key: string,
 	agentId: string | null = null,
 ): GraphNeighborRow[] {
-	const ns = agentId === null ? "IS NULL" : "= ?";
-	const nsParams = agentId === null ? [] : [agentId];
+	const { sql: ns, params: nsParams } = agentNamespace(agentId);
 	return db
 		.prepare(
 			`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at
@@ -124,8 +111,7 @@ export function listIncomingNeighbors(
 	key: string,
 	agentId: string | null = null,
 ): GraphNeighborRow[] {
-	const ns = agentId === null ? "IS NULL" : "= ?";
-	const nsParams = agentId === null ? [] : [agentId];
+	const { sql: ns, params: nsParams } = agentNamespace(agentId);
 	return db
 		.prepare(
 			`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at

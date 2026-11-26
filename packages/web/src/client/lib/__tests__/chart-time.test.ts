@@ -14,12 +14,6 @@ describe("parseBucket", () => {
 		expect(p.dateObj.toISOString()).toBe("2026-06-10T14:00:00.000Z");
 	});
 
-	it("treats a legacy zoneless hourly bucket as UTC, not local time", () => {
-		const p = parseBucket("2026-06-10T14:00");
-		expect(p.daily).toBe(false);
-		expect(p.dateObj.toISOString()).toBe("2026-06-10T14:00:00.000Z");
-	});
-
 	it("respects an explicit non-UTC offset", () => {
 		const p = parseBucket("2026-06-10T14:00:00+02:00");
 		expect(p.dateObj.toISOString()).toBe("2026-06-10T12:00:00.000Z");

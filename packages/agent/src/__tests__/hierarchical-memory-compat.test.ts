@@ -112,7 +112,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		upsertEdge(db, "topic_statistics", "topic_machine_learning", "related_to", 1.0, siteId);
 
 		// Build enrichment
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10);
 
 		// Verify: no summary entries (L1 empty)
 		expect(enrichment.tiers.L1.length).toBe(0);
@@ -163,7 +163,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10);
 
 		// Verify: pinned entry appears in L0
 		expect(enrichment.tiers.L0.length).toBe(1);
@@ -191,7 +191,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10);
 
 		// Verify: value is truncated
 		const line = deltaLines(enrichment).find((l) => l.includes("long_entry"));
@@ -243,7 +243,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 			siteId,
 		);
 
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
+		const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10);
 
 		// Verify: source resolution includes thread title
 		const line = deltaLines(enrichment).find((l) => l.includes("test_key"));
@@ -276,7 +276,7 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			);
 
 			// Build enrichment with matching keyword
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "neural");
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, "neural");
 
 			// Verify: orphaned detail appears (treated as default for retrieval)
 			const allEntries = [
@@ -338,7 +338,7 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			);
 
 			// Build enrichment with matching keyword
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "forward");
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, "forward");
 
 			// Verify: active detail is excluded from L2/L3 (only appears in L1 if its summary is fresh)
 			const l2l3Entries = [...enrichment.tiers.L2, ...enrichment.tiers.L3];
@@ -391,7 +391,7 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			// Create graph edge from other entry to pinned entry
 			upsertEdge(db, "other_entry_referencing", "_pinned_core_concept", "related_to", 1.0, siteId);
 
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "core");
+			const enrichment = buildVolatileEnrichment(db, baseline, Date.now(), 10, 5, "core");
 
 			// Verify: pinned entry appears only once in L0
 			expect(enrichment.tiers.L0.length).toBe(1);

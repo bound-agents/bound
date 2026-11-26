@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { HLC_ZERO, generateHlc, hlcToDate, mergeHlc, parseHlc } from "../hlc.js";
+import { HLC_ZERO, generateHlc, mergeHlc, parseHlc } from "../hlc.js";
 
 const SITE_A = "aaaa1111aaaa1111aaaa1111aaaa1111";
 const SITE_B = "bbbb2222bbbb2222bbbb2222bbbb2222";
@@ -73,19 +73,6 @@ describe("mergeHlc", () => {
 		expect(mergedTs).toBe(ts);
 		// max(5, 3) + 1 = 6
 		expect(counter).toBe("0006");
-	});
-});
-
-describe("hlcToDate", () => {
-	it("extracts the wall clock as a Date", () => {
-		const hlc = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_A);
-		const date = hlcToDate(hlc);
-		expect(date.toISOString()).toBe("2026-04-11T04:30:00.000Z");
-	});
-
-	it("returns epoch for HLC_ZERO", () => {
-		const date = hlcToDate(HLC_ZERO);
-		expect(date.getTime()).toBe(new Date("0000-00-00T00:00:00.000Z").getTime());
 	});
 });
 

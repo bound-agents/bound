@@ -13,7 +13,7 @@ import type { Database } from "bun:sqlite";
 import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { loopContextStorage } from "@bound/sandbox";
-import { formatError } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/server";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion";
 import { AuthChallengeRaisedError } from "./mcp-auth/oauth-provider";
@@ -27,6 +27,8 @@ import { persistBinaryResource } from "./tool-result-images";
 function capDescription(s: string, maxLen = 80): string {
 	return s.length <= maxLen ? s : `${s.slice(0, maxLen - 1)}…`;
 }
+
+const logger = createLogger("@bound/agent", "mcp-bridge");
 
 const IMAGE_MIME_PREFIX = "image/";
 
@@ -218,7 +220,7 @@ export function getRemoteMcpToolAnnotations(
  * inputSchema rather than a Tool so the relay path — which caches only schemas —
  * can use it too.
  */
-export function formatToolParamLines(inputSchema: unknown): string[] {
+function formatToolParamLines(inputSchema: unknown): string[] {
 	const schema = inputSchema as
 		{ properties?: Record<string, unknown>; required?: string[] } | undefined;
 	const props = schema?.properties ?? {};
@@ -503,8 +505,8 @@ export async function generateMCPCommands(
 
 					// Convert mixed media to JSON ContentBlock[] so the agent loop
 					// and context assembly can pass it through to the LLM. When the
-					// result is text-only, keep the legacy plain-string contract so
-					// nothing else has to parse unnecessarily.
+					// result is text-only, stdout stays a plain string so nothing
+					// downstream has to parse it.
 					let stdout = result.content;
 					const hasMedia =
 						(result.images && result.images.length > 0) ||
@@ -658,8 +660,8 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 
 					try {
 						const content = await client.readResource(uri);
-						// Text resource: legacy plain-string contract. Trailing
-						// newline preserved for shell-pipe friendliness.
+						// Text resource: plain-string stdout with a trailing
+						// newline for shell-pipe friendliness.
 						if (!content.isBinary) {
 							return {
 								stdout: `${content.content}\n`,
@@ -833,8 +835,11 @@ export function generateRemoteMCPProxyCommands(
 						});
 					}
 				}
-			} catch {
-				// Skip unparseable hosts
+			} catch (error) {
+				logger.debug("Skipping host with unparseable mcp_tools", {
+					siteId: row.site_id,
+					error: formatError(error),
+				});
 			}
 		}
 	} catch {

@@ -3,17 +3,13 @@ import type { Database } from "bun:sqlite";
 /**
  * Cross-table read joining the `_internal.file_thread.*` `semantic_memory`
  * entries to the modifying `threads` row and that thread's origin `hosts` row.
- * Powers the Live State file-modification surface (R-VC13/R-VC28) in
- * `packages/agent/src/summary-extraction.ts`.
- *
- * See ../index.ts for conventions. Reads only.
+ * Backs the Live State file-modification surface (R-VC13/R-VC28).
  */
 
 /**
  * One file-modification notice. The `_internal.file_thread.<path>` entry's
  * VALUE is the modifying thread id, resolved here to the thread title and the
- * thread's origin host. Column names mirror exactly what
- * `loadFileModificationsForLiveState` destructures.
+ * thread's origin host.
  */
 export interface FileModificationNoticeRow {
 	/** The full `_internal.file_thread.<path>` key. */
@@ -32,7 +28,7 @@ export interface FileModificationNoticeRow {
  * of remote ones so a remote modification doesn't crowd out a local one under
  * the cap.
  *
- * Semantics preserved exactly:
+ * Semantics:
  *  - Source is `_internal.file_thread.%` keys (live only) whose value is not the
  *    current thread.
  *  - LEFT JOIN threads on `t.id = sm.value`, LEFT JOIN hosts on

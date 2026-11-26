@@ -69,7 +69,7 @@ describe("WebSocket stream:chunk forwarding — property tests", () => {
 
 	beforeEach(() => {
 		eventBus = new TypedEventEmitter();
-		handler = createWebSocketHandler(eventBus);
+		handler = createWebSocketHandler({ eventBus });
 	});
 
 	afterEach(() => {

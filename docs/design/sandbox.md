@@ -64,8 +64,6 @@ Two helpers restore previously persisted files into a fresh filesystem at startu
   hydrateWorkspace(fs: MountableFs, db: Database): Promise<void>
   ```
 
-- **`hydrateRemoteCache(fs, db, hostName)`** — Loads rows whose path matches `/mnt/<hostName>/%`. Used to warm the in-memory cache for a remote worker's file tree.
-
 #### Per-loop snapshot isolation
 
 The bootstrap sequence creates a `loopSandbox` wrapper per `AgentLoop` invocation via `agentLoopFactory`. Each invocation receives its own closure over the `ClusterFsResult`, providing two lifecycle hooks:
@@ -231,22 +229,14 @@ const commands = createDefineCommands(definitions, context);
 
 **Source:** `packages/sandbox/src/sandbox-factory.ts`
 
-`createSandbox` assembles a `Sandbox` wrapping a `just-bash` `Bash` instance from a `ClusterFs`, a set of custom commands, and optional network, execution limit, memory threshold, and URL allowlist configuration. The returned `Sandbox` exposes `bash`, a `checkMemoryThreshold()` helper, the underlying `MemoryTracker`, and a `UrlFilter`.
+`createSandbox` assembles a `Sandbox` wrapping a `just-bash` `Bash` instance from a `ClusterFs`, a set of custom commands, and optional memory threshold and URL allowlist configuration. The returned `Sandbox` exposes `bash`, a `checkMemoryThreshold()` helper, the underlying `MemoryTracker`, and a `UrlFilter`.
 
 ```typescript
 interface SandboxConfig {
   clusterFs: MountableFs;
   commands: CustomCommand[];
-  networkConfig?: NetworkConfig;
-  executionLimits?: ExecutionLimits;
   memoryThresholdBytes?: number;
   allowedUrlPrefixes?: string[];
-}
-
-interface ExecutionLimits {
-  maxCallDepth?: number;
-  maxCommandCount?: number;
-  maxLoopIterations?: number;
 }
 
 interface Sandbox {
@@ -257,19 +247,13 @@ interface Sandbox {
 }
 ```
 
-When `executionLimits` is omitted, the following defaults are applied:
+Execution limits are fixed inside `createSandbox` and are not configurable:
 
-| Limit | Default |
+| Limit | Value |
 |---|---|
 | `maxCallDepth` | 50 |
 | `maxCommandCount` | 10 000 |
 | `maxLoopIterations` | 10 000 |
-
-When `executionLimits` is provided, any omitted fields fall back to those same defaults.
-
-`networkConfig` is passed through directly to `just-bash` and controls whether the sandbox can make outbound network requests.
-
-#### Exec seam
 
 `createSandbox` is the only place a `just-bash` `Bash` is constructed. It builds a private `Bash` subclass whose `exec(cmd, opts)` always calls the parent with `{ ...opts, rawScript: true }`. just-bash's default script normalization `trimStart()`s every non-heredoc line without tracking quotes, which strips indentation inside quoted multiline arguments (a `python3 -c` body, a `printf` literal) while the command still exits 0 (#308). With `rawScript` forced at the seam, every caller's script reaches the interpreter byte-for-byte, and no caller can opt out by omitting a flag.
 
@@ -301,9 +285,6 @@ const commands = createDefineCommands(definitions, context);
 const sandbox = await createSandbox({
   clusterFs,
   commands,
-  executionLimits: {
-    maxCommandCount: 5000,
-  },
 });
 
 // 6. Run the agent's shell script inside the sandbox

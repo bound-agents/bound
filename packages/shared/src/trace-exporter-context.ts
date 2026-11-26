@@ -1,11 +1,8 @@
 import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 
 /**
- * Module-level holder for the global trace exporter.
- * Used to avoid circular imports between cli/telemetry.ts and agent/relay-stream$.ts.
- *
- * CLI calls setTraceExporter() during startup.
- * Agent calls getTraceExporter() when handling trace_data responses.
+ * Module-level holder for the global trace exporter. `initTelemetry` sets it;
+ * trace_data consumers read it without importing the OTel SDK bootstrap.
  */
 let globalTraceExporter: SpanExporter | null = null;
 

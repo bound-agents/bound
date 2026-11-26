@@ -20,7 +20,6 @@ export function formatRelativeTime(isoString: string): string {
 	if (diffDays < 7) {
 		return `${diffDays}d ago`;
 	}
-	// Return formatted date like "Feb 13"
 	return date.toLocaleDateString("en-US", {
 		month: "short",
 		day: "numeric",
@@ -32,8 +31,34 @@ export function isToday(isoString: string): boolean {
 	const now = new Date();
 
 	return (
-		date.getUTCFullYear() === now.getUTCFullYear() &&
-		date.getUTCMonth() === now.getUTCMonth() &&
-		date.getUTCDate() === now.getUTCDate()
+		date.getFullYear() === now.getFullYear() &&
+		date.getMonth() === now.getMonth() &&
+		date.getDate() === now.getDate()
 	);
+}
+
+/** "Feb 13, 2026". Invalid input renders as the empty option. */
+export function formatDate(iso: string, { empty = iso }: { empty?: string } = {}): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return empty;
+	return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** 24-hour "HH:MM" in local time; missing or invalid input renders as the empty option. */
+export function fmtHhmm(
+	iso: string | undefined | null,
+	{ empty = "" }: { empty?: string } = {},
+): string {
+	if (!iso) return empty;
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return empty;
+	return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+export function formatBytes(bytes: number): string {
+	if (bytes === 0) return "0 B";
+	const k = 1024;
+	const sizes = ["B", "KB", "MB", "GB"];
+	const i = Math.floor(Math.log(bytes) / Math.log(k));
+	return `${Math.round((bytes / k ** i) * 10) / 10} ${sizes[i]}`;
 }

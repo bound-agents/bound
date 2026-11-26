@@ -5,49 +5,51 @@ import { MemoryTracker, wrapWithMemoryTracking } from "../memory-tracker";
 describe("MemoryTracker", () => {
 	test("starts with zero memory usage", () => {
 		const tracker = new MemoryTracker();
-		expect(tracker.getMemoryUsage()).toBe(0);
-		expect(tracker.isOverThreshold()).toBe(false);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(0);
+		expect(tracker.checkMemoryThreshold().overThreshold).toBe(false);
 	});
 
 	test("tracks file writes correctly", () => {
 		const tracker = new MemoryTracker();
 		tracker.trackWrite("/home/user/file.txt", "hello world");
-		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(Buffer.byteLength("hello world"));
 	});
 
 	test("handles file overwrites by adjusting total", () => {
 		const tracker = new MemoryTracker();
 		tracker.trackWrite("/home/user/file.txt", "short");
-		const initialUsage = tracker.getMemoryUsage();
+		const initialUsage = tracker.checkMemoryThreshold().usageBytes;
 
 		tracker.trackWrite("/home/user/file.txt", "a much longer string");
-		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("a much longer string"));
-		expect(tracker.getMemoryUsage()).toBeGreaterThan(initialUsage);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(
+			Buffer.byteLength("a much longer string"),
+		);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBeGreaterThan(initialUsage);
 	});
 
 	test("handles file removal by subtracting from total", () => {
 		const tracker = new MemoryTracker();
 		tracker.trackWrite("/home/user/file.txt", "hello");
 		tracker.trackRemove("/home/user/file.txt");
-		expect(tracker.getMemoryUsage()).toBe(0);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(0);
 	});
 
 	test("removing non-existent file is a no-op", () => {
 		const tracker = new MemoryTracker();
 		tracker.trackRemove("/home/user/nonexistent.txt");
-		expect(tracker.getMemoryUsage()).toBe(0);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(0);
 	});
 
-	test("isOverThreshold returns true when usage exceeds threshold", () => {
+	test("overThreshold is true when usage exceeds threshold", () => {
 		const tracker = new MemoryTracker(10); // 10 bytes
 		tracker.trackWrite("/home/user/file.txt", "this is more than ten bytes");
-		expect(tracker.isOverThreshold()).toBe(true);
+		expect(tracker.checkMemoryThreshold().overThreshold).toBe(true);
 	});
 
-	test("isOverThreshold returns false when usage is at threshold", () => {
+	test("overThreshold is false when usage is at threshold", () => {
 		const tracker = new MemoryTracker(10);
 		tracker.trackWrite("/home/user/file.txt", "1234567890"); // exactly 10
-		expect(tracker.isOverThreshold()).toBe(false);
+		expect(tracker.checkMemoryThreshold().overThreshold).toBe(false);
 	});
 
 	test("checkMemoryThreshold returns full status", () => {
@@ -60,26 +62,26 @@ describe("MemoryTracker", () => {
 		expect(result.thresholdBytes).toBe(1024);
 	});
 
-	test("defaults to 50MB threshold", () => {
+	test("defaults to 500MB threshold", () => {
 		const tracker = new MemoryTracker();
-		expect(tracker.getThresholdBytes()).toBe(500 * 1024 * 1024);
+		expect(tracker.checkMemoryThreshold().thresholdBytes).toBe(500 * 1024 * 1024);
 	});
 
 	test("tracks Uint8Array content correctly", () => {
 		const tracker = new MemoryTracker();
 		const buffer = new Uint8Array([1, 2, 3, 4, 5]);
 		tracker.trackWrite("/home/user/file.bin", buffer);
-		expect(tracker.getMemoryUsage()).toBe(5);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(5);
 	});
 
 	test("tracks multiple files independently", () => {
 		const tracker = new MemoryTracker();
 		tracker.trackWrite("/home/user/a.txt", "aaa");
 		tracker.trackWrite("/home/user/b.txt", "bbbbb");
-		expect(tracker.getMemoryUsage()).toBe(8);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(8);
 
 		tracker.trackRemove("/home/user/a.txt");
-		expect(tracker.getMemoryUsage()).toBe(5);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(5);
 	});
 });
 
@@ -90,7 +92,7 @@ describe("wrapWithMemoryTracking", () => {
 		wrapWithMemoryTracking(fs, tracker);
 
 		await fs.writeFile("/test.txt", "hello world");
-		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(Buffer.byteLength("hello world"));
 
 		// Verify the file was actually written
 		const content = await fs.readFile("/test.txt");
@@ -103,10 +105,10 @@ describe("wrapWithMemoryTracking", () => {
 		wrapWithMemoryTracking(fs, tracker);
 
 		await fs.writeFile("/test.txt", "hello world");
-		expect(tracker.getMemoryUsage()).toBeGreaterThan(0);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBeGreaterThan(0);
 
 		await fs.rm("/test.txt");
-		expect(tracker.getMemoryUsage()).toBe(0);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(0);
 	});
 
 	test("intercepts appendFile and updates memory", async () => {
@@ -115,10 +117,10 @@ describe("wrapWithMemoryTracking", () => {
 		wrapWithMemoryTracking(fs, tracker);
 
 		await fs.writeFile("/test.txt", "hello");
-		const beforeAppend = tracker.getMemoryUsage();
+		const beforeAppend = tracker.checkMemoryThreshold().usageBytes;
 
 		await fs.appendFile("/test.txt", " world");
-		expect(tracker.getMemoryUsage()).toBeGreaterThan(beforeAppend);
+		expect(tracker.checkMemoryThreshold().usageBytes).toBeGreaterThan(beforeAppend);
 	});
 
 	test("accounts for an existing untracked file before appending", async () => {
@@ -129,7 +131,7 @@ describe("wrapWithMemoryTracking", () => {
 		wrapWithMemoryTracking(fs, tracker);
 		await fs.appendFile("/test.txt", " world");
 
-		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(Buffer.byteLength("hello world"));
 	});
 
 	test("tracks appended bytes without rereading a known tracked file", async () => {
@@ -143,7 +145,7 @@ describe("wrapWithMemoryTracking", () => {
 		};
 
 		await fs.appendFile("/test.txt", " world");
-		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+		expect(tracker.checkMemoryThreshold().usageBytes).toBe(Buffer.byteLength("hello world"));
 	});
 
 	test("returns the same filesystem reference", () => {

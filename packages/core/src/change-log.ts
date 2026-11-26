@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
 	type SyncedTableName,
 	type SyncedTableRowMap,
+	TABLE_REDUCER_MAP,
 	type TypedEventEmitter,
 	generateHlc,
 	mergeHlc,
@@ -30,27 +31,30 @@ export function setChangelogEventBus(eventBus: TypedEventEmitter | null): void {
 	changelogEventBus = eventBus;
 }
 
-// Primary key column per synced table. Defaults to "id" for all others.
-export const SYNCED_TABLE_NAMES: SyncedTableName[] = [
+export const SYNCED_TABLE_NAMES = Object.keys(TABLE_REDUCER_MAP) as SyncedTableName[];
+
+/**
+ * Tables covered by cross-host consistency checks, table-state digests, and
+ * auto-backfill. Narrower than SYNCED_TABLE_NAMES on purpose: the wire
+ * protocol with live peers compares exactly this set in this order, so
+ * widening it changes consistency/digest/backfill behaviour cluster-wide.
+ */
+export const CONSISTENCY_TABLES: readonly SyncedTableName[] = [
 	"users",
-	"threads",
-	"messages",
-	"semantic_memory",
-	"tasks",
-	"files",
 	"hosts",
 	"cluster_config",
+	"threads",
+	"messages",
+	"turns",
+	"semantic_memory",
+	"memory_edges",
+	"tasks",
+	"files",
 	"advisories",
 	"skills",
-	"agents",
-	"memory_edges",
-	"connector_handles",
-	"webhooks",
-	"rss_feeds",
-	"client_sessions",
-	"turns",
 ];
 
+/** Primary key column per synced table. Defaults to "id" for all others. */
 export const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
 	hosts: "site_id",
 	cluster_config: "key",
@@ -170,7 +174,7 @@ function emitChangeLogEvent(db: Database, event: ChangeLogEvent): void {
 	}
 }
 
-function drainChangeLogEvents(_db: Database, scope: ChangeLogDispatchScope): void {
+function drainChangeLogEvents(scope: ChangeLogDispatchScope): void {
 	scope.draining = true;
 	let firstError: unknown;
 	for (let index = 0; index < scope.events.length; index++) {
@@ -363,7 +367,7 @@ export function withTx<T>(db: Database, fn: () => T): T {
 			// Keep this scope registered until draining is fully complete so
 			// reentrant committed writes join the tail of this FIFO.
 			try {
-				drainChangeLogEvents(db, scope);
+				drainChangeLogEvents(scope);
 			} finally {
 				pendingChangeLogEvents.delete(db);
 			}

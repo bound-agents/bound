@@ -8,8 +8,6 @@ import {
 	findConnectorHandleById,
 	findConnectorHandleForSyncNotification,
 	findConnectorHandleIncludingDeleted,
-	findConnectorHandleServerNameByTaskId,
-	listActiveConnectorHandles,
 	listConnectorHandlesByServer,
 } from "../connector-handles";
 
@@ -103,61 +101,6 @@ describe("connector-handles repository", () => {
 
 			expect(listConnectorHandlesByServer(db, "discord").map((r) => r.id)).toEqual(["d1"]);
 			expect(listConnectorHandlesByServer(db, "unknown")).toEqual([]);
-		});
-	});
-
-	describe("listActiveConnectorHandles", () => {
-		it("returns all live handles across servers", () => {
-			seedHandle(db, { id: "a", server_name: "discord" });
-			seedHandle(db, { id: "b", server_name: "slack" });
-			seedHandle(db, { id: "c", server_name: "github" });
-
-			const active = listActiveConnectorHandles(db);
-			expect(active.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
-		});
-
-		it("excludes soft-deleted rows; returns [] when table empty", () => {
-			expect(listActiveConnectorHandles(db)).toEqual([]);
-
-			seedHandle(db, { id: "a" });
-			seedHandle(db, { id: "b" });
-			softDelete(db, "connector_handles", "a", SITE_ID);
-
-			expect(listActiveConnectorHandles(db).map((r) => r.id)).toEqual(["b"]);
-		});
-	});
-
-	describe("findConnectorHandleServerNameByTaskId", () => {
-		it("returns the server_name projection for a live handle bound to the task", () => {
-			seedHandle(db, { id: "h1", server_name: "discord", task_id: "task-42" });
-
-			const found = findConnectorHandleServerNameByTaskId(db, "task-42");
-			expect(found).not.toBeNull();
-			expect(found?.server_name).toBe("discord");
-			// Projection finder: it selects only server_name, not the whole row.
-			expect(Object.keys(found ?? {})).toEqual(["server_name"]);
-		});
-
-		it("returns null when no handle is bound to the task id", () => {
-			seedHandle(db, { id: "h1", task_id: "task-42" });
-			expect(findConnectorHandleServerNameByTaskId(db, "task-99")).toBeNull();
-		});
-
-		it("returns null once the bound handle is soft-deleted (deleted = 0 filter)", () => {
-			seedHandle(db, { id: "h1", server_name: "slack", task_id: "task-7" });
-			expect(findConnectorHandleServerNameByTaskId(db, "task-7")?.server_name).toBe("slack");
-
-			softDelete(db, "connector_handles", "h1", SITE_ID);
-			expect(findConnectorHandleServerNameByTaskId(db, "task-7")).toBeNull();
-		});
-
-		it("ignores a soft-deleted handle and finds a live sibling with the same task_id", () => {
-			// A task could be re-bound to a new handle row; the live one must win.
-			seedHandle(db, { id: "old", server_name: "discord", task_id: "task-5" });
-			seedHandle(db, { id: "new", server_name: "slack", task_id: "task-5" });
-			softDelete(db, "connector_handles", "old", SITE_ID);
-
-			expect(findConnectorHandleServerNameByTaskId(db, "task-5")?.server_name).toBe("slack");
 		});
 	});
 

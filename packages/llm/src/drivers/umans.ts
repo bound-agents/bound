@@ -50,11 +50,11 @@ import {
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	mapProviderStream,
+	quantizeCacheTtl,
 	resolveProviderFetch,
 	withEmptyRetry,
 } from "./shared";
 
-import { quantizeCacheTtl } from "./bedrock";
 import {
 	type CacheFieldDecision,
 	CacheFieldRecoveryState,
@@ -115,11 +115,6 @@ export class Semaphore {
 	}
 }
 
-/**
- * Shared per-account state. ONE instance per umans api_key. Created by the
- * lineup driver; referenced by every per-model driver so they all gate on the
- * same semaphore and share the usage cache.
- */
 export interface UmansRetryScheduler {
 	schedule(delayMs: number, callback: () => void): { cancel(): void };
 }
@@ -131,6 +126,11 @@ const realRetryScheduler: UmansRetryScheduler = {
 	},
 };
 
+/**
+ * Shared per-account state. ONE instance per umans api_key. Created by the
+ * lineup driver; referenced by every per-model driver so they all gate on the
+ * same semaphore and share the usage cache.
+ */
 export interface UmansAccount {
 	apiKey: string;
 	baseUrl: string;
@@ -466,7 +466,7 @@ export class UmansDriver implements LLMBackend {
 
 		const account = this.account;
 
-		// --- Pre-acquire: lazy usage refresh + boxed_until 429 (never holds a slot). ---
+		// Pre-acquire: lazy usage refresh + boxed_until 429 (never holds a slot).
 		await this.maybeRefreshUsage();
 		const boxedUntil = account.usageCache.value?.boxedUntil;
 		if (boxedUntil !== undefined && boxedUntil > Date.now()) {
@@ -522,7 +522,7 @@ export class UmansDriver implements LLMBackend {
 		);
 		const provider = account.makeProvider(reasoningEffort);
 
-		// --- Semaphore: acquire immediately before the try; release exactly once. ---
+		// Acquire immediately before the try; release exactly once.
 		// The abort listener is registered AFTER acquire() and torn down in the
 		// finally, so it can only ever release a slot we actually hold (a
 		// listener registered before acquire() could fire while still queued and
@@ -614,11 +614,7 @@ export class UmansDriver implements LLMBackend {
 						isAborted: () => params.signal?.aborted ?? false,
 						providerName: PROVIDER_NAME,
 						modelId,
-						onRetry: (attempt) =>
-							this.logger?.warn?.(
-								`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-								{ model: modelId },
-							),
+						logger: this.logger,
 					}),
 			});
 		} finally {

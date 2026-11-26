@@ -205,10 +205,9 @@ function createStreamReducer(
 			activity: false,
 		};
 
-		// 4D-D union: fold the UNION of legacy relay_inbox rows and pending durable
-		// response rows targeted at self for this stream_id. Both are adapted to a
-		// common { id, kind, payload, settle } shape; the seq-dedup / gap-skip logic
-		// below is identical for either source. CRITICAL ORDER (claim → deliver →
+		// Fold the pending durable response rows targeted at self for this
+		// stream_id, adapted to a { id, kind, payload, settle } shape for the
+		// seq-dedup / gap-skip logic below. CRITICAL ORDER (claim → deliver →
 		// ack): a durable row is CLAIMED under a fresh token now, but its ack is
 		// DEFERRED to settle() — invoked only after this seq's chunks are emitted
 		// downstream. A crash between emission and ack boot-resets the row → the
@@ -398,10 +397,9 @@ export function createRelayStream$(
 					? null
 					: splitInferenceRequest(serializedPayload, requestId, maxPayloadBytes);
 			// Multi-part inference REQUESTs (payload exceeds the transport ceiling)
-			// stay 100% legacy for reassembly on the receiver, but the individual part
-			// REQUESTs flip through the router (part-scoped keys) so they ride the durable
-			// spool when toggle + per-hop capability permit. Stream chunks still ride back
-			// by stream_id through the union-aware consumer below.
+			// route each part through the router (part-scoped keys) for reassembly on
+			// the receiver. Stream chunks ride back by stream_id through the consumer
+			// below.
 			let outboxEntry: { id: string };
 			if (requestParts) {
 				// One clock read for the whole part set: the receiver's envelope check
@@ -544,10 +542,9 @@ export function createRelayStream$(
 				}),
 				finalize(() => {
 					if (!hostSucceeded) {
-						// 4D-D: cancel is a directed active request — route it through the same
-						// helper as the initial dispatch so it rides the durable spool when the
-						// hop advertises capability. The receiving 4D-A lane dispatches a durable
-						// cancel row through the handler map like any request.
+						// Cancel is a directed active request — route it through the same
+						// helper as the initial dispatch. The receiving durable-work lane
+						// dispatches the cancel row like any request.
 						try {
 							routeRelayRequest(deps.db, {
 								targetSiteId: host.site_id,

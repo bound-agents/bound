@@ -5,14 +5,13 @@ import type React from "react";
 import { useMemo, useState } from "react";
 import { SelectList } from "../components";
 import { TokenSpan, highlightLineToRows, langFromPath } from "../components/HighlightedCode";
-import { summarizeToolArgs } from "../components/MessageBlock";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { tokens } from "../theme";
-import { extractFullText, parseBlocks } from "../util/message-text";
+import { extractFullText, parseMessageContent } from "../util/message-text";
 import { tildifyPath } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
+import { type ToolResultMeta, buildToolResultMetaMap, summarizeToolArgs } from "../util/transcript";
 import { expandTabs } from "../util/wrap";
-import { type ToolResultMeta, buildToolResultMetaMap } from "./ChatView";
 
 /**
  * InspectorView — the transcript at full fidelity.
@@ -39,10 +38,6 @@ export interface InspectorViewProps {
 	messages: Message[];
 	onClose: () => void;
 }
-
-// Re-exported for consumers that treat the inspector as the home of
-// full-fidelity extraction (tests, future callers).
-export { extractFullText };
 
 /**
  * Detect the oversized-result offload stub ("[Tool result offloaded: N
@@ -86,7 +81,7 @@ export function buildInspectorItems(
 		if (msg.role === "tool_call") {
 			// Label from the first tool_use block: name + first line of the
 			// same args summary the transcript uses.
-			const parsed = parseBlocks(msg.content);
+			const parsed = parseMessageContent(msg.content);
 			let label = firstNonEmptyLine(text);
 			if (typeof parsed !== "string") {
 				const use = parsed.find((b) => b.type === "tool_use");

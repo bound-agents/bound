@@ -3,12 +3,12 @@ import type { Message } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
 import { tokens } from "../tui/theme";
-import { buildToolResultMetaMap } from "../tui/views/ChatView";
+import { extractFullText } from "../tui/util/message-text";
+import { buildToolResultMetaMap } from "../tui/util/transcript";
 import {
 	InspectorView,
 	buildInspectorDetail,
 	buildInspectorItems,
-	extractFullText,
 	resolveOffload,
 } from "../tui/views/InspectorView";
 

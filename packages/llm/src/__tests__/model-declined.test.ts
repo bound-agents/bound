@@ -3,9 +3,7 @@ import {
 	LLMRefusalError,
 	classifyAnthropicRefusal,
 	classifyCopilotFinishReason,
-	classifyGeminiGenerateContent,
 	classifyGeminiInteractions400,
-	classifyOpenAIRefusal,
 } from "../model-declined";
 import { LLMError } from "../types";
 
@@ -58,72 +56,6 @@ describe("classifyAnthropicRefusal", () => {
 		const outcome = classifyAnthropicRefusal("refusal", undefined);
 		expect(outcome?.category).toBeNull();
 		expect(outcome?.substitutable).toBe(true);
-	});
-});
-
-describe("classifyOpenAIRefusal", () => {
-	it("maps a message.refusal string to a substitutable outcome", () => {
-		const outcome = classifyOpenAIRefusal({ messageRefusal: "I can't help with that." });
-		expect(outcome?.kind).toBe("model-declined");
-		expect(outcome?.vendor).toBe("openai");
-		expect(outcome?.substitutable).toBe(true);
-		expect(outcome?.raw_reason).toBe("refusal");
-		expect(outcome?.explanation).toBe("I can't help with that.");
-	});
-
-	it("maps Chat finish_reason=content_filter", () => {
-		const outcome = classifyOpenAIRefusal({ chatFinishReason: "content_filter" });
-		expect(outcome?.vendor).toBe("openai");
-		expect(outcome?.raw_reason).toBe("content_filter");
-		expect(outcome?.substitutable).toBe(true);
-	});
-
-	it("maps Responses status=incomplete with content_filter reason", () => {
-		const outcome = classifyOpenAIRefusal({
-			responsesStatus: "incomplete",
-			responsesIncompleteReason: "content_filter",
-		});
-		expect(outcome?.vendor).toBe("openai");
-		expect(outcome?.raw_reason).toBe("content_filter");
-		expect(outcome?.substitutable).toBe(true);
-	});
-
-	it("returns null for a clean finish", () => {
-		expect(classifyOpenAIRefusal({ chatFinishReason: "stop" })).toBeNull();
-		expect(
-			classifyOpenAIRefusal({
-				responsesStatus: "incomplete",
-				responsesIncompleteReason: "max_output_tokens",
-			}),
-		).toBeNull();
-		expect(classifyOpenAIRefusal({})).toBeNull();
-	});
-});
-
-describe("classifyGeminiGenerateContent", () => {
-	it("maps promptFeedback.blockReason", () => {
-		const outcome = classifyGeminiGenerateContent({ promptBlockReason: "SAFETY" });
-		expect(outcome?.kind).toBe("model-declined");
-		expect(outcome?.vendor).toBe("google");
-		expect(outcome?.category).toBe("SAFETY");
-		expect(outcome?.raw_reason).toBe("SAFETY");
-		expect(outcome?.substitutable).toBe(true);
-	});
-
-	it.each(["SAFETY", "PROHIBITED_CONTENT", "RECITATION", "SPII", "BLOCKLIST", "OTHER"])(
-		"maps finishReason=%s to a refusal",
-		(finishReason) => {
-			const outcome = classifyGeminiGenerateContent({ finishReason });
-			expect(outcome?.vendor).toBe("google");
-			expect(outcome?.category).toBe(finishReason);
-			expect(outcome?.substitutable).toBe(true);
-		},
-	);
-
-	it("returns null for a clean finishReason", () => {
-		expect(classifyGeminiGenerateContent({ finishReason: "STOP" })).toBeNull();
-		expect(classifyGeminiGenerateContent({ finishReason: "MAX_TOKENS" })).toBeNull();
-		expect(classifyGeminiGenerateContent({})).toBeNull();
 	});
 });
 

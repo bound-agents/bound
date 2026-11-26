@@ -1,6 +1,5 @@
 /**
- * `models.dev` fallback-registry cache (slice 6, R-MC5/R-MC6,
- * 2026-11-21-model-catalog.md §5).
+ * `models.dev` fallback-registry cache (R-MC5/R-MC6, 2026-11-21-model-catalog.md §5).
  *
  * `models.dev` is a GAP-FILLING metadata fallback (layer 3 of
  * `resolve-metadata.ts`): it fills fields unset by local config and live
@@ -16,6 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { isRecord } from "../is-record";
 import { modelsDevNamespaceFor, normalizeModelKey } from "./normalize";
 import type { MetadataLayer, PricingTier, ResolvedReasoning } from "./resolve-metadata";
 
@@ -32,17 +32,13 @@ interface CacheFile {
 	payload: unknown;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
 function asFiniteNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
 /**
  * Parse a `models.dev` `cost.tiers[]` array into ascending-by-threshold
- * {@link PricingTier}s (requirement 2). Each tier carries its own four per-M
+ * {@link PricingTier}s. Each tier carries its own four per-M
  * prices and a `tier: {type: "context", size: N}`; `size` becomes `threshold`.
  * Defensive: a non-array, a non-context tier type, or a tier with no finite size
  * is dropped rather than throwing, so one malformed tier never poisons the row.
@@ -73,7 +69,7 @@ function parseContextTiers(raw: unknown): PricingTier[] {
 
 /**
  * Parse a `models.dev` entry's `reasoning` boolean + `reasoning_options` array
- * into {@link ResolvedReasoning} (requirement 1, catalog §3.1). The published
+ * into {@link ResolvedReasoning} (catalog §3.1). The published
  * shapes are `{type:"toggle"}`, `{type:"effort", values:string[]}`, and
  * `{type:"budget_tokens", min, max}`; only `toggle` and `effort` carry signal
  * a driver can act on structurally, so `budget_tokens` is noted (it still means
@@ -134,7 +130,7 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 	const maxContext = asFiniteNumber(limit?.context);
 	const maxInput = asFiniteNumber(limit?.input);
 	const maxOutput = asFiniteNumber(limit?.output);
-	// Honour `limit.input` (requirement 4, catalog §3.1). When the registry reports
+	// Honour `limit.input` (catalog §3.1). When the registry reports
 	// a separate input (prompt) budget, the real prompt room is `input`, not
 	// `context` (which also counts output). Resolve `max_context` so the routing
 	// truncation target `computeBaseTruncationTarget = max_context - max_output`
@@ -175,7 +171,7 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 	const cacheWrite = asFiniteNumber(cost?.cache_write);
 	if (cacheWrite !== undefined) pricing.cache_write_5m_per_m = cacheWrite;
 
-	// Context-based tiers (requirement 2). `cost.tiers[]` carries the
+	// Context-based tiers. `cost.tiers[]` carries the
 	// long-context rate(s); each tier has its own four prices and
 	// `tier: {type: "context", size: N}`. A sibling `cost.context_over_200k` is
 	// IGNORED: across every amazon-bedrock entry in the live snapshot that carries
@@ -210,7 +206,7 @@ function scopedKey(namespace: string, canonicalKey: string): string {
  * two ids that share a canonical key but denote different priced profiles stay
  * distinct — e.g. Bedrock CRIS `global.anthropic.claude-haiku-5-5` (list price)
  * vs in-region `anthropic.claude-haiku-5-5` (list + 10%), which
- * `normalizeModelKey` collapses by stripping the region prefix (requirement 1).
+ * `normalizeModelKey` collapses by stripping the region prefix.
  * The `exact` discriminator segment keeps this key space disjoint from both the
  * bare canonical keys and the scoped-canonical keys in the same map.
  */
@@ -242,13 +238,13 @@ export function indexModelsDevSnapshot(raw: unknown): Map<string, MetadataLayer>
 			// per provider; a cross-provider canonical collision keeps the first.
 			if (!index.has(key)) index.set(key, layer);
 			// Also index under the provider-scoped key so `lookupModelsDevScoped`
-			// (requirement 3) can prefer this provider's own entry over whichever
+			// can prefer this provider's own entry over whichever
 			// provider happened to win the cross-provider canonical slot. First
 			// writer wins within a namespace too (models.dev is per-provider
 			// dedup'd, so collisions here are vanishingly rare).
 			const sk = scopedKey(providerNamespace, key);
 			if (!index.has(sk)) index.set(sk, layer);
-			// And index under the EXACT raw model id (requirement 1) so two ids that
+			// And index under the EXACT raw model id so two ids that
 			// share a canonical key but denote differently-priced profiles stay
 			// distinct. `normalizeModelKey` strips the region prefix, collapsing a
 			// Bedrock CRIS `global.<vendor>.<model>` (list price) and its in-region
@@ -280,14 +276,14 @@ export function lookupModelsDev(
 }
 
 /**
- * Provider-scoped lookup (requirements 1 + 3, catalog §5.2). Resolves in three
+ * Provider-scoped lookup (catalog §5.2). Resolves in three
  * steps, most specific first:
- *   1. EXACT `(namespace, raw model id)` (requirement 1): the row for the exact
+ *   1. EXACT `(namespace, raw model id)`: the row for the exact
  *      provider model id the backend calls. Distinguishes differently-priced
  *      profiles that share a canonical key — a Bedrock CRIS `global.` profile
  *      (list price) vs its in-region sibling (list + 10%), which
  *      `normalizeModelKey` collapses by stripping the region prefix.
- *   2. SCOPED canonical (requirement 3): the backend's OWN `models.dev` provider
+ *   2. SCOPED canonical: the backend's OWN `models.dev` provider
  *      namespace, before the cross-provider index. The canonical index is
  *      first-writer-wins across all 324 providers, so a model id that collides
  *      across providers (e.g. `grok-4.7` on both xAI and github-copilot)
@@ -357,17 +353,6 @@ export class ModelsDevCache {
 	/** Current in-memory canonical index. */
 	getIndex(): ReadonlyMap<string, MetadataLayer> {
 		return this.index;
-	}
-
-	/** Timestamp (epoch ms) of the last successful fetch, or null. */
-	getFetchedAtMs(): number | null {
-		return this.fetchedAtMs;
-	}
-
-	/** Whether a refresh is due at `nowMs` (also true when never fetched). */
-	shouldRefresh(nowMs: number): boolean {
-		if (this.fetchedAtMs === null) return true;
-		return nowMs - this.fetchedAtMs >= this.refreshIntervalMs;
 	}
 
 	/**

@@ -6,7 +6,7 @@ import { ActionBar, ModalOverlay, SelectList, Spinner } from "../components";
 import { MODAL_LIST_RESERVED_ROWS } from "../components/SelectList";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { tokens } from "../theme";
-import { formatThreadPickerLabel } from "./picker-label";
+import { formatThreadPickerLabel, truncateLabel } from "./picker-label";
 
 export type PickerMode = "thread" | "model";
 
@@ -23,14 +23,6 @@ export interface PickerViewProps {
 
 const ACTIVE_SUFFIX = " (active)";
 
-/** Truncate to `max` columns with a trailing ellipsis. */
-export function truncateLabel(label: string, max: number): string {
-	const flat = label.replace(/\s+/g, " ").trim();
-	if (max <= 0) return "";
-	if (flat.length <= max) return flat;
-	return max === 1 ? "…" : `${flat.slice(0, max - 1)}…`;
-}
-
 interface PickerItem {
 	id: string;
 	/** Model display name; for threads, the raw title (labels are computed at render). */
@@ -42,7 +34,6 @@ interface PickerItem {
 /**
  * PickerView: Reusable modal for selecting threads or models.
  *
- * Implements AC9.5 (/model picker), AC9.6 (/attach picker)
  */
 export function PickerView({
 	mode,

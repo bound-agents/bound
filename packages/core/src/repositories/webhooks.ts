@@ -1,10 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Webhook } from "@bound/shared";
 
-/**
- * Read repository for the `webhooks` table. See ./index.ts for conventions.
- */
-
 export function findWebhookByName(db: Database, name: string): Webhook | null {
 	return db
 		.query("SELECT * FROM webhooks WHERE name = ? AND deleted = 0")

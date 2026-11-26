@@ -5,7 +5,6 @@ import { createCoreTestDb } from "../../__tests__/test-database";
 import { insertRow, softDelete } from "../../index";
 import {
 	findActiveRssFeedByThreadId,
-	findRssFeedByName,
 	findRssFeedDeletedFlagById,
 	findRssFeedIdByName,
 	findRssFeedIdsById,
@@ -43,25 +42,6 @@ describe("rss-feeds repository", () => {
 
 	afterEach(() => {
 		db.close();
-	});
-
-	describe("findRssFeedByName", () => {
-		it("returns the full row for a live feed", () => {
-			seedFeed(db, { id: "f1", name: "blog", url: "https://blog.example/rss" });
-			const row = findRssFeedByName(db, "blog");
-			expect(row?.id).toBe("f1");
-			expect(row?.url).toBe("https://blog.example/rss");
-		});
-
-		it("returns null for an unknown name", () => {
-			expect(findRssFeedByName(db, "ghost")).toBeNull();
-		});
-
-		it("returns null for a soft-deleted feed", () => {
-			seedFeed(db, { id: "f1", name: "blog" });
-			softDelete(db, "rss_feeds", "f1", SITE_ID);
-			expect(findRssFeedByName(db, "blog")).toBeNull();
-		});
 	});
 
 	describe("findRssFeedIdByName", () => {

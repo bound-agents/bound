@@ -1,5 +1,5 @@
 /**
- * Layered metadata resolution + `field_sources` (slice 6, R-MC2/R-MC3/R-MC4,
+ * Layered metadata resolution + `field_sources` (R-MC2/R-MC3/R-MC4,
  * 2026-11-21-model-catalog.md §3).
  *
  * PURE merge layer: given the three metadata inputs for one backend — local
@@ -32,7 +32,7 @@ export type FieldSource = "config" | "provider" | "models_dev" | "driver_default
  * - `adaptive` — the source advertises model-controlled adaptive thinking.
  *   Today only GitHub Copilot's catalog publishes this (`supports.adaptive_thinking`);
  *   `models.dev` never does, so a driver that needs it for a non-Copilot route
- *   must fall back to its own protocol rules or report the gap (requirement 2).
+ *   must fall back to its own protocol rules or report the gap.
  */
 export interface ResolvedReasoning {
 	supported: boolean;
@@ -56,14 +56,14 @@ export interface ResolvedCapabilities {
 	 * published effort ladder in registry order; `adaptive` means the provider
 	 * advertises model-controlled adaptive thinking (today only GitHub Copilot's
 	 * `supports.adaptive_thinking`). A driver derives its reasoning request from
-	 * these fields plus its own protocol rules (requirement 2).
+	 * these fields plus its own protocol rules.
 	 */
 	reasoning?: ResolvedReasoning;
 	max_context?: number;
 }
 
 /**
- * A context-based pricing tier (requirement 2, catalog §3). `models.dev` carries
+ * A context-based pricing tier (catalog §3). `models.dev` carries
  * these as `cost.tiers[]`, each with its own four per-M prices and a
  * `tier: {type: "context", size: N}`. `threshold` is that `size`: the tier
  * applies to a turn whose request size (input + cache_read + cache_write tokens)

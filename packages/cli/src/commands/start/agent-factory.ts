@@ -14,7 +14,7 @@ import {
 	resolveClientSessionHost,
 } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
-import { isRelayRequest } from "@bound/agent";
+import { isRelayRequest, resolveTopologyRole } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
 import { listClientSessionSiteIdsByThreadId } from "@bound/core";
 import type { AppContext } from "@bound/core";
@@ -22,12 +22,14 @@ import type { ModelRouter, ToolDefinition } from "@bound/llm";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import {
 	type ClusterFsResult,
+	type McpAppBinding,
 	createVfsRehydrator,
 	diffWorkspace,
 	loopContextStorage,
 	persistWorkspaceChanges,
 	snapshotWorkspace,
 } from "@bound/sandbox";
+import type { SandboxResult } from "./sandbox.js";
 
 /** The single bash tool definition shared by all agent loops. */
 export const sandboxTool: ToolDefinition = {
@@ -166,11 +168,27 @@ export function createToolRegistry(
 	return registry;
 }
 
+type SandboxExecResult = Awaited<ReturnType<NonNullable<SandboxResult["sandbox"]>["bash"]["exec"]>>;
+
+/** bash first, then the built-in VFS file tools. */
+function baseToolDefinitions(builtInTools: Map<string, BuiltInTool> | undefined): ToolDefinition[] {
+	return [
+		sandboxTool,
+		...(builtInTools ? Array.from(builtInTools.values(), (t) => t.toolDefinition) : []),
+	];
+}
+
+function resolveMemoryLimits(appContext: AppContext): ToolContext["memoryLimits"] {
+	const result = appContext.optionalConfig.memory;
+	if (!result?.ok || !result.value) return undefined;
+	const memory = result.value as { pinned_count_cap: number; pinned_size_cap: number };
+	return { pinnedCountCap: memory.pinned_count_cap, pinnedSizeCap: memory.pinned_size_cap };
+}
+
 export function createAgentLoopFactory(
 	appContext: AppContext,
 	modelRouter: ModelRouter,
-	// biome-ignore lint/suspicious/noExplicitAny: sandbox type is opaque from @bound/sandbox createSandbox
-	sandbox: any,
+	sandbox: SandboxResult["sandbox"],
 	clusterFsObj: ClusterFsResult | null,
 ): AgentLoopFactory {
 	// Process-lifetime VFS re-hydration closure, shared by every agent loop this
@@ -183,96 +201,99 @@ export function createAgentLoopFactory(
 		? createVfsRehydrator(clusterFsObj.fs, appContext.db)
 		: undefined;
 
+	/**
+	 * The sandbox adapter one agent loop drives. Each call owns its
+	 * pre-snapshot, so concurrent loops (and an aux nested in a main loop) never
+	 * share FS-persist baselines.
+	 */
+	const createLoopSandbox = (store: { threadId: string; taskId?: string }) => {
+		let preSnapshot: Map<string, string> | null = null;
+		// Built from the same VFS handle the memory tracker wraps, so writes
+		// through these tools reach FS_PERSIST.
+		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
+		return {
+			// Runs inside loopContextStorage so command handlers see the loop's
+			// threadId/taskId. just-bash normalizes results to
+			// {stdout, stderr, exitCode, env}, so a relay request (remote MCP proxy
+			// commands) or an MCP Apps binding rides the store side-channel and is
+			// lifted back onto the result here.
+			exec: sandbox
+				? async (cmd: string, opts?: Record<string, unknown>): Promise<SandboxExecResult> => {
+						const loopStore = {
+							threadId: store.threadId,
+							taskId: store.taskId,
+							relayRequest: undefined as unknown | undefined,
+							mcpApp: undefined as McpAppBinding | undefined,
+						};
+						const result = await loopContextStorage.run(loopStore, () =>
+							sandbox.bash.exec(cmd, opts),
+						);
+						if (loopStore.relayRequest && isRelayRequest(loopStore.relayRequest)) {
+							const req = loopStore.relayRequest;
+							loopStore.relayRequest = undefined;
+							// The agent loop detects the relay request by shape (isRelayRequest).
+							return req as unknown as SandboxExecResult;
+						}
+						if (loopStore.mcpApp) {
+							return { ...result, mcpApp: loopStore.mcpApp } as SandboxExecResult;
+						}
+						return result;
+					}
+				: undefined,
+			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+			// Runs at HYDRATE_FS before capturePreSnapshot, so the re-pull becomes
+			// the OCC baseline and is never mistaken for an agent edit (invariant #5).
+			rehydrateFs,
+			writeFile: clusterFsObj
+				? async (path: string, content: string): Promise<void> => {
+						await clusterFsObj.fs.writeFile(path, content);
+					}
+				: undefined,
+			capturePreSnapshot: async (): Promise<void> => {
+				if (!clusterFsObj) return;
+				preSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+					paths: clusterFsObj.getInMemoryPaths(),
+				});
+			},
+			persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
+				if (!clusterFsObj || !preSnapshot) {
+					return { changes: 0 };
+				}
+				const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+					paths: clusterFsObj.getInMemoryPaths(),
+				});
+				const changedPaths = diffWorkspace(preSnapshot, postSnapshot).map((c) => c.path);
+				const result = await persistWorkspaceChanges(
+					appContext.db,
+					appContext.siteId,
+					preSnapshot,
+					postSnapshot,
+					appContext.eventBus,
+					undefined,
+					clusterFsObj.fs,
+				);
+				preSnapshot = postSnapshot;
+				if (!result.ok) {
+					return { changes: 0 };
+				}
+				return { changes: result.value.changes, changedPaths };
+			},
+			builtInTools,
+		};
+	};
+
 	const createAuxLoopRunner = (
 		parent: AuxLoopParentContext,
 	): NonNullable<ToolContext["auxLoopRunner"]> => {
 		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
-		const builtInToolDefs = builtInTools
-			? Array.from(builtInTools.values(), (tool) => tool.toolDefinition)
-			: [];
-		const memoryConfigResult = appContext.optionalConfig.memory;
-		const memoryLimits =
-			memoryConfigResult?.ok && memoryConfigResult.value
-				? {
-						pinnedCountCap: (memoryConfigResult.value as { pinned_count_cap: number })
-							.pinned_count_cap,
-						pinnedSizeCap: (memoryConfigResult.value as { pinned_size_cap: number })
-							.pinned_size_cap,
-					}
-				: undefined;
-		const syncResult = appContext.optionalConfig.sync;
-		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
-		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
-		// #201 Car C: aux loop runner — constructs and runs an AuxAgentLoop
-		// for an auxiliary agent invocation. Shares the VFS and underlying
-		// sandbox, but has its own snapshot state to avoid collision with
-		// the parent loop's FS persist.
+		const memoryLimits = resolveMemoryLimits(appContext);
+		const topologyRole = resolveTopologyRole(appContext.optionalConfig) ?? "hub";
+		// #201: an aux loop shares the VFS and sandbox but keeps its own
+		// snapshot state so its FS persist cannot collide with the parent's.
 		const auxCap = new ConcurrentCap(20);
 
 		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
-			let auxPreSnapshot: Map<string, string> | null = null;
-
-			const auxSandbox = {
-				exec: sandbox
-					? async (cmd: string, opts?: Record<string, unknown>) => {
-							const store = {
-								threadId: params.threadId,
-								taskId: undefined as string | undefined,
-								relayRequest: undefined as unknown | undefined,
-								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
-							};
-							const result = await loopContextStorage.run(store, () =>
-								sandbox.bash.exec(cmd, opts),
-							);
-							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
-								const req = store.relayRequest;
-								store.relayRequest = undefined;
-								return req;
-							}
-							if (store.mcpApp) {
-								return { ...(result as object), mcpApp: store.mcpApp };
-							}
-							return result;
-						}
-					: undefined,
-				checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
-				rehydrateFs,
-				writeFile: clusterFsObj
-					? async (path: string, content: string): Promise<void> => {
-							await clusterFsObj.fs.writeFile(path, content);
-						}
-					: undefined,
-				capturePreSnapshot: async (): Promise<void> => {
-					if (!clusterFsObj) return;
-					auxPreSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-						paths: clusterFsObj.getInMemoryPaths(),
-					});
-				},
-				persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
-					if (!clusterFsObj || !auxPreSnapshot) {
-						return { changes: 0 };
-					}
-					const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-						paths: clusterFsObj.getInMemoryPaths(),
-					});
-					const changedPaths = diffWorkspace(auxPreSnapshot, postSnapshot).map((c) => c.path);
-					const result = await persistWorkspaceChanges(
-						appContext.db,
-						appContext.siteId,
-						auxPreSnapshot,
-						postSnapshot,
-						appContext.eventBus,
-						undefined,
-						clusterFsObj.fs,
-					);
-					auxPreSnapshot = postSnapshot;
-					if (!result.ok) {
-						return { changes: 0 };
-					}
-					return { changes: result.value.changes, changedPaths };
-				},
-				builtInTools,
-			};
+			const auxSandbox = createLoopSandbox({ threadId: params.threadId });
 
 			// Aux ToolContext with agentId set for memory namespace scoping.
 			// Same lazy-registry pattern as the main path below: yard dispatches
@@ -360,7 +381,7 @@ export function createAgentLoopFactory(
 			// remote session host to relay to (invariant #21).
 			const serverToolNames = new Set([
 				sandboxTool.function.name,
-				...builtInToolDefs.map((def) => def.function.name),
+				...(builtInTools ? builtInTools.keys() : []),
 				...allAgentTools.map((t) => t.toolDefinition.function.name),
 			]);
 			const needsClientTools =
@@ -401,14 +422,11 @@ export function createAgentLoopFactory(
 				// Preserve the parent surface's complete injected context verbatim —
 				// notably boundless cwd/git/context-file blocks.
 				systemPromptAddition: parent.systemPromptAddition,
-				// The aux identity REPLACES the main persona in the stable prefix.
-				// It used to be appended to systemPromptAddition instead, which left
-				// the main persona loaded from cluster_config underneath — every aux
-				// thread spoke as the main agent with its own persona as a footnote.
+				// The aux identity replaces the main persona in the stable prefix.
 				personaOverride: params.persona,
 				platformInstructions: parent.platformInstructions,
 				platform: parent.platform ?? "aux",
-				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
+				tools: [...baseToolDefinitions(builtInTools), ...auxToolDefs, ...auxClientToolDefs],
 				toolRegistry: auxToolRegistry,
 				clientTools: auxClientTools,
 				// Carries the parent's WS connection so the inline client-tool
@@ -458,103 +476,9 @@ export function createAgentLoopFactory(
 	};
 
 	const factory = (config: AgentLoopConfig): MainAgentLoop => {
-		// Per-invocation snapshot state. Each call gets its own
-		// closure so concurrent agent loops do not share preSnapshot.
-		let preSnapshot: Map<string, string> | null = null;
+		const loopSandbox = createLoopSandbox({ threadId: config.threadId, taskId: config.taskId });
+		const builtInTools = loopSandbox.builtInTools;
 
-		// Built-in file tools (read, write, edit) operating on the VFS.
-		// Created from the same IFileSystem handle wrapped by wrapWithMemoryTracking,
-		// so writes through these tools flow through memory tracking + FS_PERSIST.
-		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
-
-		const loopSandbox = {
-			// Delegate exec to the underlying sandbox, wrapping the call in
-			// loopContextStorage.run so that command handlers can access the
-			// per-loop threadId and taskId via ctx.threadId / ctx.taskId.
-			// The store object is checked after .run() returns: if a command
-			// handler set store.relayRequest (remote MCP proxy commands do this),
-			// return the relay request instead of the stripped just-bash result.
-			// just-bash normalizes return values to {stdout, stderr, exitCode, env},
-			// discarding extra fields like outboxEntryId that isRelayRequest() needs.
-			exec: sandbox
-				? async (cmd: string, opts?: Record<string, unknown>) => {
-						const store = {
-							threadId: config.threadId,
-							taskId: config.taskId,
-							relayRequest: undefined as unknown | undefined,
-							mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
-						};
-						const result = await loopContextStorage.run(store, () => sandbox.bash.exec(cmd, opts));
-						if (store.relayRequest && isRelayRequest(store.relayRequest)) {
-							const req = store.relayRequest;
-							store.relayRequest = undefined;
-							return req;
-						}
-						// Lift the MCP Apps binding (if a UI-bearing tool was dispatched)
-						// onto the result so the agent loop can stamp it into metadata.
-						// just-bash strips extra fields, so it rides the store side-channel.
-						if (store.mcpApp) {
-							return { ...(result as object), mcpApp: store.mcpApp };
-						}
-						return result;
-					}
-				: undefined,
-			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
-
-			// Called at HYDRATE_FS, before capturePreSnapshot: pull files-table rows
-			// written since the last turn into the live VFS (Invariant #5 ordering —
-			// the re-pull becomes the OCC baseline, never mistaken for an agent edit).
-			rehydrateFs,
-
-			// Write a file to the VFS (used for tool result offloading).
-			writeFile: clusterFsObj
-				? async (path: string, content: string): Promise<void> => {
-						await clusterFsObj.fs.writeFile(path, content);
-					}
-				: undefined,
-
-			// Called at HYDRATE_FS: record the filesystem state before any tool calls.
-			capturePreSnapshot: async (): Promise<void> => {
-				if (!clusterFsObj) return;
-				preSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-					paths: clusterFsObj.getInMemoryPaths(),
-				});
-			},
-
-			// Called at FS_PERSIST: diff pre vs post, persist changes, return count.
-			persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
-				if (!clusterFsObj || !preSnapshot) {
-					return { changes: 0 };
-				}
-				const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-					paths: clusterFsObj.getInMemoryPaths(),
-				});
-				// Compute changedPaths synchronously for file-thread tracking.
-				const changedPaths = diffWorkspace(preSnapshot, postSnapshot).map((c) => c.path);
-				const result = await persistWorkspaceChanges(
-					appContext.db,
-					appContext.siteId,
-					preSnapshot,
-					postSnapshot,
-					appContext.eventBus,
-					undefined,
-					clusterFsObj.fs,
-				);
-				preSnapshot = postSnapshot;
-				if (!result.ok) {
-					return { changes: 0 };
-				}
-				return { changes: result.value.changes, changedPaths };
-			},
-
-			builtInTools,
-		};
-
-		const builtInToolDefs = builtInTools
-			? Array.from(builtInTools.values(), (t) => t.toolDefinition)
-			: [];
-		// sandboxTool (bash) is always included first; built-in file tools next;
-		// then platform tools. Extract ToolDefinitions for LLM visibility.
 		const platformToolDefs =
 			config.platformTools?.map((tool) => ({
 				type: "function" as const,
@@ -565,22 +489,8 @@ export function createAgentLoopFactory(
 				},
 			})) ?? [];
 
-		// Create ToolContext for native agent tools
-		const memoryConfigResult = appContext.optionalConfig.memory;
-		const memoryLimits =
-			memoryConfigResult?.ok && memoryConfigResult.value
-				? {
-						pinnedCountCap: (memoryConfigResult.value as { pinned_count_cap: number })
-							.pinned_count_cap,
-						pinnedSizeCap: (memoryConfigResult.value as { pinned_size_cap: number })
-							.pinned_size_cap,
-					}
-				: undefined;
-		// Topology role: spoke when a hub URL is configured, hub otherwise
-		// (mirrors agent-loop's topologyRole derivation for the orientation block).
-		const syncResult = appContext.optionalConfig.sync;
-		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
-		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
+		const memoryLimits = resolveMemoryLimits(appContext);
+		const topologyRole = resolveTopologyRole(appContext.optionalConfig) ?? "hub";
 		const auxLoopRunner = createAuxLoopRunner({
 			clientTools: config.clientTools,
 			connectionId: config.connectionId,
@@ -643,7 +553,7 @@ export function createAgentLoopFactory(
 
 		return new MainAgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
-			tools: [sandboxTool, ...builtInToolDefs, ...platformToolDefs],
+			tools: [...baseToolDefinitions(builtInTools), ...platformToolDefs],
 			toolRegistry,
 		});
 	};

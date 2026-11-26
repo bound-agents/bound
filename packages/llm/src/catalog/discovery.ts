@@ -1,5 +1,5 @@
 /**
- * Provider-discovery hook contract (slice 6, R-MC3, 2026-11-21-model-catalog.md
+ * Provider-discovery hook contract (R-MC3, 2026-11-21-model-catalog.md
  * §4.1).
  *
  * A driver MAY implement `discoverModels()` to query its provider's native
@@ -42,7 +42,7 @@ export interface DiscoveredModel {
 	 * `inferenceAPIsSupported` (which wire protocols the model serves) and
 	 * `explicitPromptCaching`, plus the documented `modelLifecycle.status`,
 	 * `inferenceTypesSupported`, and modality lists. The namespace lineup filter
-	 * (`bedrock-lineup.ts`, requirement 1/2/7) reads these to decide callability
+	 * (`bedrock-lineup.ts`) reads these to decide callability
 	 * and protocol without a model-ID branch; absent for non-Bedrock providers.
 	 */
 	bedrock?: BedrockDiscoveryFields;

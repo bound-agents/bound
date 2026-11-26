@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { formatWithHashes } from "@bound/shared";
+import { formatWithHashes, isLikelyBinary } from "@bound/shared";
 import { checkDbRead } from "./db-guard";
 import { formatProvenance } from "./provenance";
-import type { ToolHandler, ToolResult } from "./types";
-
-type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+import { type ImageMediaType, TOOL_NAMES, type ToolHandler, type ToolResult } from "./types";
 
 /**
  * Detect image type from file magic bytes.
@@ -61,7 +59,7 @@ async function readToolImpl(
 		limit?: number;
 	};
 
-	const provenance = formatProvenance(hostname, cwd, "boundless_read");
+	const provenance = formatProvenance(hostname, cwd, TOOL_NAMES.read);
 
 	if (!file_path || typeof file_path !== "string") {
 		const result: ToolResult = {
@@ -86,11 +84,7 @@ async function readToolImpl(
 	try {
 		const buffer = readFileSync(resolvedPath);
 
-		// Binary detection: check for null bytes in first 8KB
-		const isBinary = buffer.indexOf(0) !== -1 && buffer.indexOf(0) < 8192;
-
-		if (isBinary) {
-			// Check if this is an image file we can return as a visual ContentBlock
+		if (isLikelyBinary(buffer.subarray(0, 8192).toString("utf8"))) {
 			const imageType = detectImageType(buffer);
 			if (imageType) {
 				const result: ToolResult = {

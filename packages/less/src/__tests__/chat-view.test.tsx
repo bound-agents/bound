@@ -5,13 +5,11 @@ import React from "react";
 import { MessageBlock } from "../tui/components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../tui/hooks/useMessages";
 import {
-	ChatView,
-	type ChatViewProps,
 	buildToolResultMetaMap,
 	buildTranscriptMargins,
 	buildTurnActivityMap,
-	partitionPendingMessage,
-} from "../tui/views/ChatView";
+} from "../tui/util/transcript";
+import { ChatView, type ChatViewProps, partitionPendingMessage } from "../tui/views/ChatView";
 import {
 	messageFixture as msg,
 	renderMessageBlock,

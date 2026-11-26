@@ -1,14 +1,12 @@
 /**
  * Yard client-tool bookkeeping rows must never reach LLM context.
  *
- * Incident (thread adb65d85, 2026-08-16): Yard's awaitable client dispatch
+ * Yard's awaitable client dispatch
  * (`dispatchAwaitableClientTool`) persists one `tool_result` row per effect
  * with `tool_name = yard-client-<uuid>` and NO declaring tool_call — the
- * aggregate `yard` tool_result already carries their content. On cold
- * reassembly the Stage 5 annotator's fallback stamped each such orphan with
- * the LAST tool_call's first tool_use id, producing N tool_results for one
- * tool_use — Bedrock 400 "each tool_use must have a single result", and
- * every retry rebuilt the same poisoned context.
+ * aggregate `yard` tool_result already carries their content. Left in
+ * context, they pair N tool_results with one tool_use, which Bedrock rejects
+ * with a 400 "each tool_use must have a single result".
  *
  * Contract pinned here:
  *   F1 Cold path (assembleContext Stage 1) drops bookkeeping rows and never

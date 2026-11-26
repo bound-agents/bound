@@ -37,6 +37,23 @@ export interface DispatchEntry {
 export const CLIENT_TOOL_CALL = "client_tool_call";
 export const TOOL_RESULT = "tool_result";
 
+function toolResultIdempotencyKey(threadId: string, callId: string): string {
+	return `tool-result:${threadId}:${callId}`;
+}
+
+/**
+ * Identity shared by the legacy queue and the durable spool: tool results key
+ * on `(thread_id, call_id)` so a re-driven result is a no-op (R-UD9); every
+ * other event keys on its message id.
+ */
+function dispatchIdentity(
+	entry: Pick<DispatchEntry, "message_id" | "thread_id" | "event_type" | "event_payload">,
+): string {
+	return entry.event_type === TOOL_RESULT
+		? toolResultIdempotencyKey(entry.thread_id, JSON.parse(entry.event_payload ?? "{}").call_id)
+		: entry.message_id;
+}
+
 /** Dispatch wakeups share one durable kind; the event type stays in the payload. */
 function enqueueDurableDispatch(
 	db: Database,
@@ -149,13 +166,13 @@ export function enqueueToolResult(db: Database, threadId: string, callId: string
 			messageId,
 			TOOL_RESULT,
 			payload,
-			`tool-result:${threadId}:${callId}`,
+			toolResultIdempotencyKey(threadId, callId),
 		);
 		const existing = db
 			.query(
 				"SELECT payload FROM durable_work WHERE kind = 'dispatch_message' AND idempotency_key = ?",
 			)
-			.get(`tool-result:${threadId}:${callId}`) as { payload: string } | null;
+			.get(toolResultIdempotencyKey(threadId, callId)) as { payload: string } | null;
 		return existing
 			? (JSON.parse(existing.payload) as { message_id: string }).message_id
 			: messageId;
@@ -353,23 +370,16 @@ export function claimPending(db: Database, threadId: string, claimedBy: string):
 			)
 			.all(LOCAL_WORK_TARGET, threadId) as Array<{ payload: string }>;
 		const fenced = new Set(
-			durableFenceRows.map(({ payload }) => {
-				const entry = JSON.parse(payload) as Pick<
-					DispatchEntry,
-					"message_id" | "thread_id" | "event_type" | "event_payload"
-				>;
-				return entry.event_type === "tool_result"
-					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
-					: entry.message_id;
-			}),
+			durableFenceRows.map(({ payload }) =>
+				dispatchIdentity(
+					JSON.parse(payload) as Pick<
+						DispatchEntry,
+						"message_id" | "thread_id" | "event_type" | "event_payload"
+					>,
+				),
+			),
 		);
-		const legacy = pending.filter((entry) => {
-			const identity =
-				entry.event_type === "tool_result"
-					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
-					: entry.message_id;
-			return !fenced.has(identity);
-		});
+		const legacy = pending.filter((entry) => !fenced.has(dispatchIdentity(entry)));
 		const suppressed = pending.filter((entry) => !legacy.includes(entry));
 		if (suppressed.length) {
 			const ids = suppressed.map((row) => row.message_id);
@@ -816,6 +826,6 @@ export function acknowledgeToolResultForCall(db: Database, threadId: string, cal
 		   AND status IN ('pending', 'processing')`,
 	).run(now, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }));
 	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
-		consumePendingDispatchByIdempotencyKey(db, `tool-result:${threadId}:${callId}`, now);
+		consumePendingDispatchByIdempotencyKey(db, toolResultIdempotencyKey(threadId, callId), now);
 	}
 }

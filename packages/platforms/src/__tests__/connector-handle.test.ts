@@ -1,14 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema } from "@bound/core";
+import { applySchema, softDelete } from "@bound/core";
 import { connectorHandleId } from "../connector-handle-id.js";
 import {
 	createConnectorHandle,
-	deleteConnectorHandle,
 	getAllActiveConnectorHandles,
 	getConnectorHandle,
 	getConnectorHandlesByServer,
-	linkConnectorHandleTask,
 	updateConnectorHandleCursor,
 } from "../connector-handle.js";
 
@@ -55,7 +53,7 @@ describe("connector-handle CRUD", () => {
 			taskId: "task-old",
 			cursor: "stale-cursor",
 		});
-		deleteConnectorHandle(db, siteId, id1);
+		softDelete(db, "connector_handles", id1, siteId);
 
 		// Same (server, event, args) → same deterministic ID. Must not throw
 		// UNIQUE constraint failed; must revive the tombstone with fresh fields.
@@ -90,35 +88,6 @@ describe("connector-handle CRUD", () => {
 		const row = getConnectorHandle(db, id);
 		if (!row) throw new Error("row should not be null");
 		expect(row.cursor).toBe("cursor-abc");
-	});
-
-	it("links task to handle", () => {
-		const id = createConnectorHandle(db, siteId, {
-			serverName: "discord",
-			eventName: "message.received",
-			eventArgs: { channel_id: "789" },
-			deliveryMode: "poll",
-			taskId: null,
-		});
-
-		linkConnectorHandleTask(db, siteId, id, "task-001");
-		const row = getConnectorHandle(db, id);
-		if (!row) throw new Error("row should not be null");
-		expect(row.task_id).toBe("task-001");
-	});
-
-	it("soft-deletes a handle", () => {
-		const id = createConnectorHandle(db, siteId, {
-			serverName: "discord",
-			eventName: "message.received",
-			eventArgs: { channel_id: "999" },
-			deliveryMode: "push",
-			taskId: null,
-		});
-
-		deleteConnectorHandle(db, siteId, id);
-		const row = getConnectorHandle(db, id);
-		expect(row).toBeNull(); // hidden by deleted=0 filter
 	});
 
 	it("lists handles by server", () => {
@@ -166,7 +135,7 @@ describe("connector-handle CRUD", () => {
 			deliveryMode: "push",
 			taskId: null,
 		});
-		deleteConnectorHandle(db, siteId, deletedId);
+		softDelete(db, "connector_handles", deletedId, siteId);
 
 		const all = getAllActiveConnectorHandles(db);
 		expect(all.length).toBe(1);

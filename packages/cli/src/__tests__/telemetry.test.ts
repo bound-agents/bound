@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { SITE_ID_ATTR } from "@bound/shared";
+import { initTelemetry, setTelemetrySiteId, shutdownTelemetry } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import {
-	initTelemetry,
-	setTelemetrySiteId,
-	shutdownTelemetry,
-} from "../commands/start/telemetry.js";
 
 describe("telemetry", () => {
 	beforeEach(() => {
@@ -56,7 +52,7 @@ describe("telemetry", () => {
 		const exporter = new InMemorySpanExporter();
 
 		// Act: Initialize telemetry with test exporter
-		initTelemetry("test-service", exporter);
+		initTelemetry("test-service", { traceExporter: exporter });
 
 		// Get a tracer from the global trace API
 		const tracer = trace.getTracer("test-tracer");
@@ -84,7 +80,7 @@ describe("telemetry", () => {
 		const exporter = new InMemorySpanExporter();
 
 		// Initialize telemetry (registers the module-level provider)
-		initTelemetry("test-service", exporter);
+		initTelemetry("test-service", { traceExporter: exporter });
 
 		// Create a span to verify the provider is working
 		const tracer = trace.getTracer("test-tracer");
@@ -122,7 +118,7 @@ describe("telemetry", () => {
 		// Arrange
 		process.env.OTEL_ENABLED = "1";
 		const exporter = new InMemorySpanExporter();
-		initTelemetry("test-service", exporter);
+		initTelemetry("test-service", { traceExporter: exporter });
 
 		// Act: populate the site ID (mirrors the post-bootstrap call in runStart)
 		setTelemetrySiteId("site-abc-123");
@@ -144,7 +140,7 @@ describe("telemetry", () => {
 		// ID is not yet known (bootstrap derives it from the keypair in Phase 1).
 		process.env.OTEL_ENABLED = "1";
 		const exporter = new InMemorySpanExporter();
-		initTelemetry("test-service", exporter);
+		initTelemetry("test-service", { traceExporter: exporter });
 
 		const tracer = trace.getTracer("test-tracer");
 		const span = tracer.startSpan("bootstrap-span");

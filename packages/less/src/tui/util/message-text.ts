@@ -1,10 +1,9 @@
 import type { Message } from "@bound/shared";
 
 /**
- * Message-content text extraction, shared by the inspector (full-fidelity
- * detail pane) and the chat input's history recall. Lives in util/ because
- * ChatView and InspectorView both need it and InspectorView already imports
- * from ChatView — a second edge back would close an import cycle.
+ * Message-content decoding and text extraction shared by ChatView,
+ * MessageBlock and InspectorView. Lives in util/ because InspectorView already
+ * imports from ChatView, so a second edge back would close an import cycle.
  */
 
 export type ContentBlockLite = {
@@ -14,15 +13,18 @@ export type ContentBlockLite = {
 	input?: unknown;
 };
 
-/** Parse a message's content column: JSON block array or raw string. */
-export function parseBlocks(content: string): ContentBlockLite[] | string {
+/**
+ * Decode a persisted `content` column: a JSON block array, or raw text. Only
+ * text that starts with `[` is tried, so ordinary JSON text stays a string.
+ */
+export function parseMessageContent<T = ContentBlockLite>(content: string): T[] | string {
+	if (!content.startsWith("[")) return content;
 	try {
 		const parsed: unknown = JSON.parse(content);
-		if (Array.isArray(parsed)) return parsed as ContentBlockLite[];
+		return Array.isArray(parsed) ? (parsed as T[]) : content;
 	} catch {
-		// raw string content
+		return content;
 	}
-	return content;
 }
 
 /**
@@ -32,7 +34,7 @@ export function parseBlocks(content: string): ContentBlockLite[] | string {
  * you open an inspector to check.
  */
 export function extractFullText(msg: Message): string {
-	const parsed = parseBlocks(msg.content);
+	const parsed = parseMessageContent(msg.content);
 	if (typeof parsed === "string") return parsed;
 	const parts: string[] = [];
 	for (const block of parsed) {

@@ -3,6 +3,7 @@ import {
 	type BackendCapabilities,
 	type CapabilityRequirements,
 	type ChatParams,
+	DEFAULT_BACKEND_CAPABILITIES,
 	type LLMBackend,
 	type ModelRouter,
 	normalizeModelKey,
@@ -109,13 +110,14 @@ export function resolveTargetCapabilities(
 		// supports them.
 		const caps = resolution.hosts[0]?.capabilities;
 		if (!caps) return null;
+		const d = DEFAULT_BACKEND_CAPABILITIES;
 		return {
-			streaming: caps.streaming ?? false,
-			tool_use: caps.tool_use ?? false,
-			system_prompt: caps.system_prompt ?? false,
-			prompt_caching: caps.prompt_caching ?? false,
-			vision: caps.vision ?? false,
-			extended_thinking: false,
+			streaming: caps.streaming ?? d.streaming,
+			tool_use: caps.tool_use ?? d.tool_use,
+			system_prompt: caps.system_prompt ?? d.system_prompt,
+			prompt_caching: caps.prompt_caching ?? d.prompt_caching,
+			vision: caps.vision ?? d.vision,
+			extended_thinking: d.extended_thinking,
 			max_context: caps.max_context,
 		};
 	}
@@ -183,7 +185,7 @@ function buildLocalResolution(
  * Backward-compatible: when requirements is undefined (text-only requests), the qualify
  * phase is a no-op and resolution behaves identically to before.
  */
-export const MODEL_RECONNECT_POLL_INTERVAL_MS = 1_000;
+const MODEL_RECONNECT_POLL_INTERVAL_MS = 1_000;
 export const MAX_MODEL_RECONNECT_WAIT_MS = 120_000;
 
 export interface WaitForModelResolutionOptions {

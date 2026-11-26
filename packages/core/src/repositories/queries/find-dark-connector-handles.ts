@@ -9,9 +9,8 @@ import type { Database } from "bun:sqlite";
  *  - `missing`   — no task row with that id exists at all.
  *
  * Note the states deliberately NOT here: a `failed` cron/event task is
- * RECOVERABLE, not dark — the scheduler's healer (`listStuckRecoverableTasks`)
- * reschedules `type IN ('cron','event') AND status = 'failed'`, so flagging it
- * would raise a churn advisory for a task that self-heals on the next tick.
+ * RECOVERABLE, not dark — the scheduler's stuck-task healer reschedules
+ * `type IN ('cron','event') AND status = 'failed'`, so flagging it would raise a churn advisory for a task that self-heals on the next tick.
  */
 export type DarkConnectorHandleReason = "cancelled" | "deleted" | "missing";
 

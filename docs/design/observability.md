@@ -146,7 +146,7 @@ Pino mixin injects `trace_id`, `span_id`, `trace_flags` into every log line when
 
 ## Key exports
 
-- From `@bound/shared`: `createScopedTraceCollector`, `extractTraceContext`, `injectTraceContext`, `runInTraceContext`, `SerializedSpan`, `setTraceExporter`, `getTraceExporter` (the last two via a module-level holder that avoids circular imports).
+- From `@bound/shared`: `createScopedTraceCollector`, `extractTraceContext`, `injectTraceContext`, `SerializedSpan`, `setTraceExporter`, `getTraceExporter` (the last two via a module-level holder that avoids circular imports).
 - From `@bound/client`: `createClientTracingSession`.
 - From `@bound/agent`: `HandleMessageTracker`, `DEFAULT_WATCHDOG_TIMEOUT_MS`, `DEFAULT_WATCHDOG_INTERVAL_MS`.
 

@@ -302,11 +302,6 @@ export interface SyncState {
 	sync_errors: number;
 }
 
-export interface HostMeta {
-	key: string;
-	value: string;
-}
-
 export interface Advisory extends SoftDeletable {
 	id: string;
 	type: AdvisoryType;
@@ -496,7 +491,7 @@ export interface Turn extends SoftDeletable {
 }
 
 /**
- * Per-model refusal-fallback policy (slice 5, 2026-11-21-model-catalog.md §7.1).
+ * Per-model refusal-fallback policy (2026-11-21-model-catalog.md §7.1).
  * Serialized into `model_routing_rules.fallback_policy`. An absent row means
  * `{ mode: "auto" }`.
  */
@@ -666,13 +661,10 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	route_drains: "lww",
 	model_aliases: "lww",
 	// turns are append-only facts about what the model did on a given host.
-	// Recorded once when the turn completes; never mutated after insert except
-	// for local-only columns (context_debug, relay_target, relay_latency_ms)
-	// that are excluded from replicated row_data.
+	// Post-insert writes (recordContextDebug, recordTurnRelayMetrics) bump
+	// modified_at, and every column replicates.
 	turns: "append-only",
 };
-
-// --- Relay transport types (local-only, not synced) ---
 
 /**
  * Relay dispatch modes (CQRS-inspired):
@@ -829,7 +821,16 @@ export const RELAY_KIND_REGISTRY = {
 
 export type RelayKind = keyof typeof RELAY_KIND_REGISTRY;
 
-// Derived arrays and types — kept for backward compat with existing code
+export type {
+	ErrorPayload,
+	PlatformRequestPayload,
+	PromptInvokePayload,
+	ResourceReadPayload,
+	ResultPayload,
+	StatusForwardPayload,
+	ToolCallPayload,
+} from "./relay-schemas.js";
+
 export const RELAY_REQUEST_KINDS = (
 	Object.entries(RELAY_KIND_REGISTRY) as [RelayKind, RelayKindMeta][]
 )
@@ -859,12 +860,28 @@ export const RELAY_KINDS = Object.keys(RELAY_KIND_REGISTRY) as RelayKind[];
 export type RelayRequestKind = {
 	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? never : K;
 }[RelayKind];
-export type RelayResponseKind = {
-	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? K : never;
-}[RelayKind];
 export type RelayPassiveKind = {
 	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "passive" ? K : never;
 }[RelayKind];
+
+export const PASSIVE_INTAKE_KINDS = [
+	"webhook_intake",
+	"connector_intake",
+	"rss_intake",
+] as const satisfies readonly RelayPassiveKind[];
+
+/** Retention assigned by every passive-intake producer. */
+export const PASSIVE_INTAKE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * RPC-class TTL for relay request kinds (bounded by the ~300s relay inference
+ * timeout) so the expiry sweep dead-letters a stale request before it can be
+ * dispatched — an expired durable request must never execute.
+ */
+export const RPC_REQUEST_TTL_MS = 5 * 60 * 1000;
+
+/** Window a stream response row stays claimable. */
+export const STREAM_RESPONSE_TTL_MS = 5 * 60 * 1000;
 
 export interface RelayOutboxEntry {
 	id: string;
@@ -895,48 +912,6 @@ export interface RelayInboxEntry {
 	trace_context: string | null;
 }
 
-export interface RelayMessage {
-	id: string;
-	target_site_id: string;
-	source_site_id: string;
-	kind: RelayKind;
-	ref_id: string | null;
-	idempotency_key: string | null;
-	stream_id: string | null;
-	payload: string;
-	created_at: string;
-	expires_at: string;
-}
-
-// Request payloads (requester -> target)
-export interface ToolCallPayload {
-	tool: string;
-	args: Record<string, unknown>;
-	timeout_ms: number;
-}
-
-export interface ResourceReadPayload {
-	resource_uri: string;
-	timeout_ms: number;
-}
-
-export interface PromptInvokePayload {
-	prompt_name: string;
-	prompt_args: Record<string, unknown>;
-	timeout_ms: number;
-}
-
-export interface CacheWarmPayload {
-	timeout_ms: number;
-}
-
-export interface PlatformRequestPayload {
-	server_name: string;
-	method: string;
-	params: Record<string, unknown>;
-	timeout_ms: number;
-}
-
 /**
  * `client_tool` relay request: relays a client (boundless/WS) tool call to the
  * host holding the thread's live WS session. `thread_id` resolves the session
@@ -960,28 +935,6 @@ export interface ClientResultPayload {
 	call_id: string;
 	content: string;
 	is_error: boolean;
-}
-
-// Response payloads (target -> requester)
-export interface ResultPayload {
-	stdout: string;
-	stderr: string;
-	exit_code: number;
-	execution_ms: number;
-}
-
-export interface ErrorPayload {
-	error: string;
-	retriable: boolean;
-	/**
-	 * True when the hub or originator can attest that the target tool DEFINITELY
-	 * did not execute (e.g. hub fast-fail because target spoke was offline). The
-	 * agent loop uses this to retry safely regardless of tool idempotency.
-	 *
-	 * Leave undefined/false for full timeouts and target-side errors — the
-	 * target may have started executing before the failure surfaced.
-	 */
-	definitely_not_executed?: boolean;
 }
 
 /**
@@ -1031,33 +984,6 @@ export type ContextSegment =
 			 */
 			count: number;
 	  };
-
-// Loop delegation payloads
-export interface StatusForwardPayload {
-	thread_id: string;
-	status: string; // "idle" | "thinking" | "tool_call" | etc.
-	detail: string | null; // e.g. tool name
-	tokens: number;
-}
-
-export interface AttachmentPayload {
-	filename: string;
-	content_type: string; // MIME type, e.g. "image/jpeg"
-	size: number; // bytes
-	url: string; // platform CDN URL for download
-	description?: string; // optional caption from the platform
-}
-
-export interface IntakePayload {
-	platform: string;
-	platform_event_id: string;
-	thread_id: string;
-	message_id: string;
-	content: string;
-	attachments?: AttachmentPayload[];
-}
-
-// --- Context Debug Types ---
 
 export interface ContextSection {
 	name: string;
@@ -1382,6 +1308,22 @@ export interface CacheMarker {
 	 * as informational ticks only.
 	 */
 	capabilityEnabled: boolean;
+}
+
+/**
+ * MCP Apps binding for a UI-bearing tool call. When an MCP tool carries
+ * `_meta.ui.resourceUri` (the `io.modelcontextprotocol/ui` capability), the
+ * command handler records this triple so the agent loop can stamp it onto the
+ * persisted tool_result row's metadata — letting a UI-capable surface render
+ * the tool result as an interactive app, independent of where the call came
+ * from.
+ */
+export interface McpAppBinding {
+	server: string;
+	tool: string;
+	uiResourceUri: string;
+	/** Native arguments dispatched to the MCP tool, used to reconstruct the app after reload. */
+	input?: Record<string, unknown>;
 }
 
 /** Minimal shape for commands displayed in the agent's orientation block. */

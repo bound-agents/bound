@@ -724,20 +724,6 @@ export const memoryConfigSchema = z
 	})
 	.strict();
 
-export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
-
-// Config type union
-export type ConfigType =
-	| AllowlistConfig
-	| ModelBackendsConfig
-	| NetworkConfig
-	| PlatformsConfig
-	| SyncConfig
-	| KeyringConfig
-	| McpConfig
-	| MemoryConfig
-	| CacheWarmingConfig;
-
 // Schema map for programmatic validation
 export const configSchemaMap = {
 	"allowlist.json": allowlistSchema,

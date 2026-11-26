@@ -169,6 +169,59 @@ describe("withSilenceTimeout", () => {
 		expect(consumed).toEqual([1]);
 		expect(source.wasReturned()).toBe(true);
 	});
+
+	it("clears the heartbeat and timeout before awaiting a pending return() after a chunk rejection", async () => {
+		let releaseReturn: (() => void) | null = null;
+		let returnCalled = false;
+		const iterable: AsyncIterable<string> = {
+			[Symbol.asyncIterator]() {
+				return {
+					next: () => Promise.reject(new Error("provider boom")),
+					return(): Promise<IteratorResult<string>> {
+						returnCalled = true;
+						return new Promise((resolve) => {
+							releaseReturn = () => resolve({ value: undefined as never, done: true });
+						});
+					},
+				};
+			},
+		};
+
+		let beats = 0;
+		let timeouts = 0;
+		const run = (async () => {
+			for await (const chunk of withSilenceTimeout(
+				iterable,
+				20,
+				() => {
+					beats++;
+				},
+				5,
+				() => {
+					timeouts++;
+				},
+			)) {
+				void chunk;
+			}
+		})();
+		const settled = run.then(
+			() => undefined,
+			(err: unknown) => err,
+		);
+
+		// Hold return() pending well past both the heartbeat interval and the timeout.
+		await new Promise((r) => setTimeout(r, 60));
+		expect(returnCalled).toBe(true);
+		expect(beats).toBe(0);
+		expect(timeouts).toBe(0);
+
+		(releaseReturn as (() => void) | null)?.();
+		const caught = await settled;
+		expect(caught).toBeInstanceOf(Error);
+		expect((caught as Error).message).toBe("provider boom");
+		expect(beats).toBe(0);
+		expect(timeouts).toBe(0);
+	});
 });
 
 // Defensive: ensure no interval/timer leaks across the file's tests. All timers

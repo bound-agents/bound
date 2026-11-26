@@ -3,8 +3,7 @@ import type { ModelAliasRow, ModelRoutingRuleRow, RouteDrainRow } from "@bound/s
 
 /**
  * Read repository for the three synced routing-preference tables
- * (`model_routing_rules`, `route_drains`, `model_aliases`). See ./index.ts for
- * conventions. Writes go through insertRow/updateRow/softDelete (invariant #1).
+ * (`model_routing_rules`, `route_drains`, `model_aliases`).
  *
  * These tables carry cluster-wide routing PREFERENCE — route priority per
  * logical model, operator drains per RouteId, and alias overrides per provider
@@ -34,7 +33,6 @@ export function findModelRoutingRuleIncludingDeleted(
 		.get(logicalModel) as { logical_model: string } | null;
 }
 
-/** All live `model_routing_rules`, ascending by logical_model. */
 export function listModelRoutingRules(db: Database): ModelRoutingRuleRow[] {
 	return db
 		.query("SELECT * FROM model_routing_rules WHERE deleted = 0 ORDER BY logical_model ASC")
@@ -58,7 +56,6 @@ export function findRouteDrainIncludingDeleted(
 	} | null;
 }
 
-/** RouteIds of every currently-drained route (deleted = 0). */
 export function listDrainedRouteIds(db: Database): string[] {
 	const rows = db.query("SELECT route_id FROM route_drains WHERE deleted = 0").all() as Array<{
 		route_id: string;
@@ -75,13 +72,6 @@ export function listRouteDrains(
 		.all() as Array<{ route_id: string; drained_at: string; reason: string | null }>;
 }
 
-/** Live alias override for a provider_key (`${provider}:${provider_model_id}`), or null. */
-export function findModelAlias(db: Database, providerKey: string): ModelAliasRow | null {
-	return db
-		.query("SELECT * FROM model_aliases WHERE provider_key = ? AND deleted = 0 LIMIT 1")
-		.get(providerKey) as ModelAliasRow | null;
-}
-
 /** Existence check INCLUDING tombstones for the alias write path. */
 export function findModelAliasIncludingDeleted(
 	db: Database,
@@ -94,7 +84,6 @@ export function findModelAliasIncludingDeleted(
 	} | null;
 }
 
-/** All live alias overrides, ascending by provider_key. */
 export function listModelAliases(db: Database): ModelAliasRow[] {
 	return db
 		.query("SELECT * FROM model_aliases WHERE deleted = 0 ORDER BY provider_key ASC")

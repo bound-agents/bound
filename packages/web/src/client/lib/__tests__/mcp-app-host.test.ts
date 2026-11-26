@@ -136,76 +136,14 @@ describe("McpAppHost", () => {
 		const defs = host.registerServer("excalidraw", client, [textTool("create_view")]);
 		expect(defs).toHaveLength(1);
 		expect(defs[0].function.name).toBe("mcp__excalidraw__create_view");
-		expect(host.getToolDefinitions().map((d) => d.function.name)).toEqual([
-			"mcp__excalidraw__create_view",
-		]);
-	});
-
-	it("dispatches a bound tool call to the owning server with the original tool name", async () => {
-		const host = new McpAppHost();
-		const client = new FakeMcpClient(textResult("rendered"));
-		host.registerServer("excalidraw", client, [textTool("create_view")]);
-		const res = await host.dispatch({
-			call_id: "c1",
-			thread_id: "t1",
-			tool_name: "mcp__excalidraw__create_view",
-			arguments: { x: "1" },
-		});
-		expect(client.calls).toEqual([{ name: "create_view", arguments: { x: "1" } }]);
-		expect(res).toEqual({
-			call_id: "c1",
-			thread_id: "t1",
-			content: "rendered",
-			is_error: false,
-		});
-	});
-
-	it("returns an error result for an unknown tool name", async () => {
-		const host = new McpAppHost();
-		const res = await host.dispatch({
-			call_id: "c2",
-			thread_id: "t1",
-			tool_name: "mcp__nope__nope",
-			arguments: {},
-		});
-		expect(res.is_error).toBe(true);
-		expect(String(res.content)).toContain("mcp__nope__nope");
-	});
-
-	it("captures a thrown callTool error as an error result rather than rejecting", async () => {
-		const host = new McpAppHost();
-		const client = new FakeMcpClient(new Error("boom"));
-		host.registerServer("s", client, [textTool("t")]);
-		const res = await host.dispatch({
-			call_id: "c3",
-			thread_id: "t1",
-			tool_name: "mcp__s__t",
-			arguments: {},
-		});
-		expect(res.is_error).toBe(true);
-		expect(String(res.content)).toContain("boom");
-	});
-
-	it("propagates an MCP isError result as is_error", async () => {
-		const host = new McpAppHost();
-		const errResult = { content: [{ type: "text", text: "bad" }], isError: true } as CallToolResult;
-		const client = new FakeMcpClient(errResult);
-		host.registerServer("s", client, [textTool("t")]);
-		const res = await host.dispatch({
-			call_id: "c4",
-			thread_id: "t1",
-			tool_name: "mcp__s__t",
-			arguments: {},
-		});
-		expect(res.is_error).toBe(true);
-		expect(res.content).toBe("bad");
 	});
 
 	it("dedupes colliding bound names across servers", () => {
 		const host = new McpAppHost();
-		host.registerServer("dup", new FakeMcpClient(textResult("a")), [textTool("tool")]);
-		host.registerServer("dup", new FakeMcpClient(textResult("b")), [textTool("tool")]);
-		const names = host.getToolDefinitions().map((d) => d.function.name);
+		const names = [
+			...host.registerServer("dup", new FakeMcpClient(textResult("a")), [textTool("tool")]),
+			...host.registerServer("dup", new FakeMcpClient(textResult("b")), [textTool("tool")]),
+		].map((d) => d.function.name);
 		expect(new Set(names).size).toBe(names.length);
 		expect(names).toHaveLength(2);
 	});
@@ -216,9 +154,10 @@ describe("McpAppHost", () => {
 			uiTool("create_view", "ui://excalidraw/mcp-app.html"),
 			textTool("plain"),
 		]);
-		expect(host.isUiBearing("mcp__excalidraw__create_view")).toBe(true);
-		expect(host.isUiBearing("mcp__excalidraw__plain")).toBe(false);
-		expect(host.uiResourceUri("mcp__excalidraw__create_view")).toBe("ui://excalidraw/mcp-app.html");
+		expect(host.resolve("mcp__excalidraw__create_view")?.uiResourceUri).toBe(
+			"ui://excalidraw/mcp-app.html",
+		);
+		expect(host.resolve("mcp__excalidraw__plain")?.uiResourceUri).toBeUndefined();
 	});
 
 	it("resolves the originating server + tool for a bound name", () => {

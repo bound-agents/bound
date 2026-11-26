@@ -64,10 +64,6 @@ export interface UmansUsage {
 	boxedUntil?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Zod parsers — lenient (no .strict()).
-// ---------------------------------------------------------------------------
-
 // All optional fields are ALSO `.nullable()`: the live umans wire uses an
 // explicit `null` (not omission) for unset values — e.g. `default_level: null`
 // on models with no preset reasoning level. A bare `.optional()` accepts a
@@ -166,10 +162,6 @@ const usageResponseSchema = z.object({
 		})
 		.nullish(),
 });
-
-// ---------------------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------------------
 
 function normalizeVision(v: boolean | string | null | undefined): boolean {
 	if (typeof v === "boolean") return v;

@@ -19,7 +19,6 @@ This document covers the two foundational packages in the Bound agent system: `@
    - [Schema — 19 STRICT Tables](#schema--19-strict-tables)
    - [Change Log and Transactional Outbox](#change-log-and-transactional-outbox)
    - [Config Loader](#config-loader)
-   - [Dependency Injection Container](#dependency-injection-container)
    - [AppContext Factory](#appcontext-factory)
    - [Metrics Schema](#metrics-schema)
 
@@ -430,7 +429,7 @@ Maps each filename to its schema. Use this for programmatic validation when iter
 
 ## @bound/core
 
-The `@bound/core` package owns the SQLite database lifecycle, the transactional change-log outbox, configuration loading with environment variable expansion, the tsyringe dependency injection container, and the `AppContext` factory that bootstraps a fully wired application.
+The `@bound/core` package owns the SQLite database lifecycle, the transactional change-log outbox, configuration loading with environment variable expansion, and the `AppContext` factory that bootstraps a fully wired application.
 
 ---
 
@@ -847,76 +846,9 @@ if ("platforms" in optionals) {
 
 ---
 
-### Dependency Injection Container
-
-`container.ts` uses [tsyringe](https://github.com/microsoft/tsyringe) to wire the four core services as singletons. The container is the global tsyringe container instance.
-
-#### Service Classes
-
-All four services are decorated with `@injectable()` and `@singleton()`.
-
-**`DatabaseService`**
-```typescript
-class DatabaseService {
-  setDatabase(db: Database): void
-  getDatabase(): Database
-}
-```
-Holds the single `bun:sqlite` `Database` instance.
-
-**`ConfigService`**
-```typescript
-class ConfigService {
-  setConfig(config: RequiredConfig): void
-  getConfig(): RequiredConfig
-}
-```
-Holds the validated required configuration.
-
-**`EventBusService`**
-```typescript
-class EventBusService {
-  getEventBus(): TypedEventEmitter
-}
-```
-Owns the shared `TypedEventEmitter` instance. The emitter is created at construction time; no setter is needed.
-
-**`LoggerService`**
-```typescript
-class LoggerService {
-  getLogger(pkg: string, component: string): Logger
-}
-```
-Factory wrapper around `createLogger`. Does not cache logger instances.
-
-#### `bootstrapContainer`
-
-```typescript
-function bootstrapContainer(configDir: string, dbPath: string): typeof container
-```
-
-The single entry point for container initialization. It performs the following steps in order:
-
-1. Calls `loadRequiredConfigs` — throws if either required config is missing or invalid.
-2. Calls `createDatabase(dbPath)`, then `applySchema(db)` and `applyMetricsSchema(db)`.
-3. Registers all four service classes as singletons via `container.registerSingleton`.
-4. Resolves `DatabaseService` and `ConfigService` and injects the database and config instances (the `EventBusService` and `LoggerService` need no setters — they are ready on construction).
-5. Returns the fully initialized container.
-
-Throws an `Error` with a descriptive message if any required config fails to load.
-
-```typescript
-import { bootstrapContainer } from "@bound/core";
-
-const container = bootstrapContainer("/etc/bound/config", "/data/bound.db");
-const db = container.resolve(DatabaseService).getDatabase();
-```
-
----
-
 ### AppContext Factory
 
-`app-context.ts` provides the highest-level bootstrap abstraction. Callers that do not need fine-grained DI control should use `createAppContext` rather than calling `bootstrapContainer` directly.
+`app-context.ts` is the bootstrap entry point. It constructs every dependency directly.
 
 ```typescript
 interface AppContext {
@@ -927,24 +859,32 @@ interface AppContext {
   logger: Logger;
   siteId: string;
   hostName: string;
+  turnStateStore: TurnStateStore;
+  commandRegistry: CommandRegistryEntry[];
 }
 
-function createAppContext(configDir: string, dbPath: string): AppContext
+function createAppContext(
+  configDir: string,
+  dbPath: string,
+  modelBackends?: ModelBackendsConfig,
+): Promise<AppContext>
 ```
 
-In addition to calling `bootstrapContainer`, `createAppContext`:
+`createAppContext`:
 
-- Reads or generates the `site_id` from the `host_meta` table. On first run a random UUID is generated and persisted. On subsequent runs the existing value is read, ensuring the node's identity is stable across restarts.
+- Calls `loadRequiredConfigs` and throws a descriptive `Error` if either required config is missing or invalid. A caller-supplied `modelBackends` replaces the on-disk file.
+- Calls `createDatabase(dbPath)`, then `applySchema(db)` and `applyMetricsSchema(db)`.
+- Reads or mints the `site_id` through `ensureHostMetaSiteId` (`repositories/host-meta.ts`). On first run a random UUID is persisted to `host_meta`; later runs read it back, so the node's identity is stable across restarts.
 - Resolves `hostName` from `os.hostname()`, falling back to `"localhost"`.
 - Calls `loadOptionalConfigs(configDir)` and attaches the result as `optionalConfig`.
-- Creates the root logger for the application with package `"@bound/core"` and component `"app-context"`.
+- Creates a fresh `TypedEventEmitter` and the logger for package `"@bound/core"`, component `"app-context"`.
 
 **Usage:**
 
 ```typescript
 import { createAppContext } from "@bound/core";
 
-const ctx = createAppContext("/etc/bound/config", "/data/bound.db");
+const ctx = await createAppContext("/etc/bound/config", "/data/bound.db");
 
 ctx.logger.info("Application started", { siteId: ctx.siteId, host: ctx.hostName });
 
@@ -953,7 +893,7 @@ ctx.eventBus.on("message:created", ({ message, thread_id }) => {
 });
 ```
 
-The `AppContext` object is intended to be passed as a dependency to subsystems rather than resolved from the container. It is a plain object, not a class, and carries no lifecycle methods.
+The `AppContext` object is passed as a dependency to subsystems. It is a plain object, not a class, and carries no lifecycle methods.
 
 ---
 
@@ -1025,15 +965,10 @@ function recordContextDebug(db: Database, turnId: number, debug: ContextDebugInf
 ```
 Attaches a JSON-encoded `ContextDebugInfo` blob to an existing `turns` row via `UPDATE`. Called after `recordTurn` has returned the row ID — the same post-insert-update pattern used by the relay metrics helpers.
 
-```typescript
-function getDailySpend(db: Database, date: string): number
-```
-Returns the total USD cost recorded for `date` (format `"YYYY-MM-DD"`), or `0` if no data exists for that date.
-
 **Usage:**
 
 ```typescript
-import { applyMetricsSchema, recordTurn, getDailySpend } from "@bound/core";
+import { applyMetricsSchema, recordTurn } from "@bound/core";
 
 applyMetricsSchema(db);
 
@@ -1048,9 +983,6 @@ recordTurn(db, {
                               // cache_read * cache_read_rate + cache_write * cache_write_rate
   created_at: new Date().toISOString(),
 });
-
-const todaySpend = getDailySpend(db, "2026-03-23");
-console.log(`Today's spend: $${todaySpend.toFixed(4)}`);
 ```
 
 ---

@@ -20,6 +20,8 @@ export {
 	writeMessageMetadata,
 	validateColumnName,
 	getPkColumn,
+	SYNCED_TABLE_NAMES,
+	CONSISTENCY_TABLES,
 } from "./change-log";
 export {
 	getCachedRowStateHashes,
@@ -34,7 +36,6 @@ export {
 	getBackfillableEntriesSorted,
 	mergeDiffPks,
 	mergeDiffEntries,
-	hashRow,
 	compareAllTables,
 	countUnsyncableLocalOnly,
 	computeTableStateDigest,
@@ -45,33 +46,22 @@ export {
 	type ConsistencyDiff,
 } from "./consistency";
 export {
-	loadConfigFile,
 	loadConfigWithPrecedence,
 	loadModelBackendsConfig,
 	loadRequiredConfigs,
 	loadOptionalConfigs,
-	expandEnvVars,
 	resolveRelayConfig,
 	type ConfigError,
 	type RequiredConfig,
 	type OptionalConfigs,
 } from "./config-loader";
-export { setInterruptBudget, DEFAULT_CONFIG_INTERRUPT_BUDGET } from "./quickjs-interrupt-budget";
-export {
-	bootstrapContainer,
-	DatabaseService,
-	ConfigService,
-	EventBusService,
-	LoggerService,
-	container,
-} from "./container";
+export { setInterruptBudget } from "./quickjs-interrupt-budget";
 export { createAppContext, type AppContext } from "./app-context";
 export { InMemoryTurnStateStore, type TurnStateStore } from "./turn-state-store";
 export {
 	applyMetricsSchema,
 	recordTurn,
 	recordContextDebug,
-	getDailySpend,
 	type TurnRecord,
 } from "./metrics-schema";
 export {
@@ -81,10 +71,6 @@ export {
 	type RelayCycleEntry,
 } from "./relay-metrics";
 export { PayloadTooLargeError } from "./relay";
-export {
-	countPendingPeerTargetedDurableWork,
-	readDurablePartsByStreamId,
-} from "./repositories/durable-work";
 export {
 	enqueueMessage,
 	setDurableDispatchEnqueueEnabledForTesting,
@@ -153,6 +139,12 @@ export {
 	type DurableWorkClaimState,
 	type WorkClaimDiscipline,
 	type WorkRetirementRule,
+	redriveDeadLetterDurableWork,
+	redriveTransferringDurableWork,
+	reclassifyTransferExhaustedDeadLetters,
+	TRANSFER_EXHAUSTED_LAST_ERROR,
+	TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET,
+	type DurableWorkInspectionRow,
 } from "./durable-work";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
 export {
@@ -171,18 +163,7 @@ export {
 	type CanonicalRelation,
 	isCanonicalRelation,
 	InvalidRelationError,
-	SPELLING_VARIANTS,
-	FALLBACK_RELATION,
 	normalizeRelationValue,
 } from "./memory-relations";
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";
-// Read repository layer (synced-table SELECT helpers). Writes go through change-log.ts.
 export * from "./repositories";
-export {
-	redriveDeadLetterDurableWork,
-	redriveTransferringDurableWork,
-	reclassifyTransferExhaustedDeadLetters,
-	TRANSFER_EXHAUSTED_LAST_ERROR,
-	TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET,
-	type DurableWorkInspectionRow,
-} from "./durable-work";

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { createFileRefResolver, createRelayInferenceStream, resolveModel } from "@bound/agent";
+import { resolveRelayConfig } from "@bound/core";
 import type {
 	ContentBlock,
 	InferenceRequestPayload,
@@ -71,6 +72,7 @@ export function createResponsesRoutes(
 	siteId: string,
 	logger?: Logger,
 	topologyRole?: "hub" | "spoke",
+	inferenceTimeoutMs: number = resolveRelayConfig(undefined).inference_timeout_ms,
 ) {
 	const app = new Hono();
 	const log = logger ?? createLogger("web", "responses");
@@ -200,7 +202,7 @@ export function createResponsesRoutes(
 				max_tokens: requestedMaxTokens,
 				temperature,
 				effort,
-				timeout_ms: 300_000,
+				timeout_ms: inferenceTimeoutMs,
 			};
 			log.info("RESPONSES_RELAY: starting", {
 				model: modelId,
@@ -257,8 +259,6 @@ export function createResponsesRoutes(
 
 	return app;
 }
-
-// ── Request types ────────────────────────────────────────────────────────
 
 interface ResponsesRequestBody {
 	model?: string;
@@ -317,8 +317,6 @@ interface ResponsesTool {
 	description?: string;
 	parameters?: Record<string, unknown>;
 }
-
-// ── Request translation ──────────────────────────────────────────────────
 
 /**
  * Translate a Responses `input` into bound `LLMMessage[]`. A bare string is a
@@ -628,7 +626,7 @@ function responsesToolChoiceToChatParam(
 	return undefined;
 }
 
-// ── Output assembly (shared by streaming + non-streaming) ──────────────────
+// Output assembly (shared by streaming + non-streaming)
 
 interface AssembledToolCall {
 	id: string;
@@ -855,8 +853,6 @@ async function collectResponse(
 		usage: usageToResponsesShape(usage),
 	};
 }
-
-// ── Streaming translation ──────────────────────────────────────────────────
 
 type SseWriter = {
 	writeSSE(msg: { event?: string; data: string; id?: string }): Promise<void>;
@@ -1226,8 +1222,6 @@ export class SseEmitter {
 	}
 }
 
-// ── Transient retry ───────────────────────────────────────────────────────
-
 const RESPONSES_MAX_TRANSIENT_RETRIES = 2;
 const RESPONSES_RETRY_BASE_MS = 1000;
 
@@ -1316,8 +1310,6 @@ async function* withFailureLog(
 	}
 }
 
-// ── Error classification ─────────────────────────────────────────────────
-
 /**
  * Classify an error message from the upstream model into an OpenAI-style error
  * type. Context-length and message-ordering rejections are client errors
@@ -1338,8 +1330,6 @@ export function classifyErrorType(message: string): string {
 	}
 	return "server_error";
 }
-
-// ── Error object ────────────────────────────────────────────────────────
 
 function errorObject(message: string, type: string): Record<string, unknown> {
 	return { error: { message, type, param: null, code: null } };

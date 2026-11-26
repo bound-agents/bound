@@ -1,8 +1,7 @@
 import type { Database } from "bun:sqlite";
 
 /**
- * Read repository for the `cluster_config` table. See ./index.ts for conventions.
- * Note: `cluster_config` is keyed by `key`, not `id`.
+ * `cluster_config` is keyed by `key`, not `id`.
  *
  * cluster_config now soft-deletes (invariant #2): live reads filter `deleted = 0`.
  * The existence-probe variant below intentionally does NOT filter — writers use it
@@ -20,22 +19,6 @@ export function findClusterConfigValueByKey(db: Database, key: string): { value:
 			"SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1",
 		)
 		.get(key) as { value: string } | null;
-}
-
-/**
- * Resolve a single LIVE cluster_config row's `value` and `modified_at` by key, or null
- * if absent/tombstoned. (web persona route read)
- */
-export function findClusterConfigValueWithModifiedAtByKey(
-	db: Database,
-	key: string,
-): { value: string; modified_at: string } | null {
-	return db
-		.query("SELECT value, modified_at FROM cluster_config WHERE key = ? AND deleted = 0")
-		.get(key) as {
-		value: string;
-		modified_at: string;
-	} | null;
 }
 
 /**

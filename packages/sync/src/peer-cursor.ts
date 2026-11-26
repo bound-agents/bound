@@ -23,7 +23,6 @@ export function updatePeerCursor(
 ): void {
 	const now = new Date().toISOString();
 
-	// Build UPDATE clause for conflicts
 	const updateKeys = Object.keys(updates);
 	const setClauses = [...updateKeys.map((key) => `${key} = ?`), "last_sync_at = ?"];
 	const setValues: (number | string)[] = [

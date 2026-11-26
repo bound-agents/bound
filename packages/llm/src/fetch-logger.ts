@@ -6,7 +6,8 @@
 
 import type { Logger } from "@bound/shared";
 
-const MAX_TOOL_NAMES = 10;
+/** Upper bound on tool names surfaced in a request summary. */
+export const MAX_TOOL_NAMES = 10;
 
 type RequestSummary = Record<string, unknown>;
 

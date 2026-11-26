@@ -300,6 +300,7 @@ describe("FTS5-based graph-seeded retrieval", () => {
 			const enrichment = buildVolatileEnrichment(
 				db,
 				baseline,
+				Date.now(),
 				10,
 				5,
 				"I just deployed the new version",
@@ -330,6 +331,7 @@ describe("FTS5-based graph-seeded retrieval", () => {
 			const enrichment = buildVolatileEnrichment(
 				db,
 				baseline,
+				Date.now(),
 				10,
 				5,
 				"How do I set up the Go project?",

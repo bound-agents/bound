@@ -25,9 +25,7 @@ describe("handleWebhookRequest", () => {
 		);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC2.1: Valid signature writes durable_work entry and returns 202
-	// ──────────────────────────────────────────────────────────────────
 	test("AC2.1: POST with valid GitHub signature returns 202 and writes durable_work", async () => {
 		// Create a webhook row
 		const webhookId = randomUUID();
@@ -153,9 +151,7 @@ describe("handleWebhookRequest", () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC2.2: Unknown webhook name returns 404
-	// ──────────────────────────────────────────────────────────────────
 	test("AC2.2: POST to unknown webhook name returns 404", async () => {
 		const body = Buffer.from('{"action":"opened"}');
 		const request = new Request("http://localhost:3000/webhook/nonexistent", {
@@ -170,6 +166,7 @@ describe("handleWebhookRequest", () => {
 		const response = await handleWebhookRequest(request, "nonexistent", {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response.status).toBe(404);
@@ -194,6 +191,7 @@ describe("handleWebhookRequest", () => {
 		const response = await handleWebhookRequest(request, "nonexistent", {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response.status).toBe(404);
@@ -239,15 +237,14 @@ describe("handleWebhookRequest", () => {
 		const response = await handleWebhookRequest(request, webhookName, {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response.status).toBe(404);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC2.3: Empty body returns 404 (uniform with unknown-name / bad-signature
 	// to avoid a webhook-name enumeration oracle)
-	// ──────────────────────────────────────────────────────────────────
 	test("AC2.3: POST with empty body returns 404", async () => {
 		// Create a webhook row
 		const webhookId = randomUUID();
@@ -292,9 +289,7 @@ describe("handleWebhookRequest", () => {
 		expect(text).toBe("");
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC2.4: Non-POST methods return 404
-	// ──────────────────────────────────────────────────────────────────
 	test("AC2.4: GET to /webhook/:name returns 404", async () => {
 		const request = new Request("http://localhost:3000/webhook/test", {
 			method: "GET",
@@ -304,6 +299,7 @@ describe("handleWebhookRequest", () => {
 		const response = await handleWebhookRequest(request, "test", {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response.status).toBe(404);
@@ -319,14 +315,13 @@ describe("handleWebhookRequest", () => {
 		const response = await handleWebhookRequest(request, "test", {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response.status).toBe(404);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC2.5: Body bytes are preserved exactly
-	// ──────────────────────────────────────────────────────────────────
 	test("AC2.5: Body bytes preserved exactly in durable_work payload", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -380,9 +375,7 @@ describe("handleWebhookRequest", () => {
 		expect(payload.body).toBe(originalBody.toString("utf-8"));
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.5: Invalid signature returns 401
-	// ──────────────────────────────────────────────────────────────────
 	test("AC1.5: POST with invalid signature returns 404", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -435,9 +428,7 @@ describe("handleWebhookRequest", () => {
 		expect(inboxEntries.length).toBe(0);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// Additional tests for Stripe and Slack formats
-	// ──────────────────────────────────────────────────────────────────
 	test("POST with valid Stripe signature returns 202", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -609,9 +600,7 @@ describe("handleWebhookRequest", () => {
 		expect(envelope.headers["x-hub-signature"]).toBeUndefined();
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC3.4: Delivery-header deduplication
-	// ──────────────────────────────────────────────────────────────────
 	test("AC3.4: Two requests with same X-GitHub-Delivery header produce one durable_work entry", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -653,6 +642,7 @@ describe("handleWebhookRequest", () => {
 		const response1 = await handleWebhookRequest(request1, webhookName, {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response1.status).toBe(202);
@@ -671,6 +661,7 @@ describe("handleWebhookRequest", () => {
 		const response2 = await handleWebhookRequest(request2, webhookName, {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response2.status).toBe(202);
@@ -784,6 +775,7 @@ describe("handleWebhookRequest", () => {
 		const response1 = await handleWebhookRequest(request1, webhookName, {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response1.status).toBe(202);
@@ -801,6 +793,7 @@ describe("handleWebhookRequest", () => {
 		const response2 = await handleWebhookRequest(request2, webhookName, {
 			db,
 			siteId,
+			eventBus,
 		});
 
 		expect(response2.status).toBe(202);
@@ -875,9 +868,7 @@ describe("handleWebhookRequest", () => {
 		expect(entry.idempotency_key).toBe(`stripe-${idempotencyKey}`);
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// AC3.2 (expanded): Signature headers are excluded from envelope
-	// ──────────────────────────────────────────────────────────────────
 	test("AC3.2: GitHub signature header is excluded from envelope", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";

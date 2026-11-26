@@ -1,33 +1,12 @@
 /**
- * `composeStableVolatileSubsection` — pure renderer for the R-VC24
+ * `composeStableVolatileSubsection` — the sole renderer for the R-VC24
  * stable subsection of the volatile context.
  *
- * This is the seam established to make the byte-stability contract
- * **type-enforceable** (no `nowMs` parameter, no DB handle, no
- * `Date.now()` call) and **property-testable** (single function
- * boundary that fast-check can falsify). See `types.ts` for the
- * full input declaration and the JSDoc rationale.
- *
- * **Why this duplicates a small amount of rendering logic.** The
- * production renderers `renderWorkingKnowledge` and
- * `renderDiscoverableArchive` accept richer types than the stable
- * path actually reads (they also produce a varying-side output
- * channel that reads `modifiedAt`, `tag`, `source`, etc.). To keep
- * `StableVolatileInputs` truly minimal — and to make the type
- * system enforce the purity contract rather than merely document it
- * — this module renders the stable subsection directly from the
- * narrow views. The resulting output MUST stay byte-equivalent to
- * the production renderers' stable channels; that equivalence is
- * pinned by the regression test
- * `__tests__/parity-with-production.test.ts`. Header / footer /
- * gloss-max constants are imported from `summary-extraction.ts` so
- * a change there propagates here mechanically.
- *
- * **Determinism contract**: for a fixed `StableVolatileInputs`
- * object, this function returns byte-identical output across calls
- * within and across processes. Property tests under
- * `__tests__/compose.property.test.ts` exercise the contract;
- * production drift is caught by the validator at
+ * The byte-stability contract is type-enforced: no `nowMs` parameter, no DB
+ * handle, no `Date.now()` call. Every production path (cold assembly, the
+ * no-history path, the budget-pressure rebuild, and the per-thread cache)
+ * renders through this function, so there is no second renderer to drift
+ * from. Production drift is caught post-hoc by
  * `validation/run-stable-prefix-drift-validation.ts`.
  */
 
@@ -35,55 +14,62 @@ import { compareBytewise, escapeXmlAttr } from "@bound/shared";
 import {
 	DISCOVERABLE_FOOTER,
 	DISCOVERABLE_HEADER,
-	UNCATEGORIZED_CLUSTER_NAME,
+	type DiscoverableArchiveInput,
 	VC15_TIER1_THRESHOLD,
-	VC15_UNCATEGORIZED_BACKLOG_THRESHOLD,
+	WORKING_KNOWLEDGE_DEMOTED_HEADER,
 	WORKING_KNOWLEDGE_FOOTER,
 	WORKING_KNOWLEDGE_HEADER,
-	appendOlderSummariesSubBlock,
 	capWorkingKnowledgeSummaries,
+	clusterNameForEntry,
 	formatCalendarDate,
-	formatStableDetailLine,
-	sortDetailEntriesForRender,
 	truncateGlossForSummary,
 } from "../summary-extraction";
 import type { DetailEntryView, MemoryEntryView, StableVolatileInputs } from "./types";
 
 /**
- * Render the stable volatile subsection (Working Knowledge bodies +
- * Discoverable Archive titles + skill index) as an array of lines,
- * suitable for joining onto `systemParts` by the caller.
- *
- * The function is **pure** in `inputs` alone. No reads from `db`,
- * `Date.now()`, `process.env`, the filesystem, or any other ambient
- * source. This is the property the abstraction exists to enforce.
+ * Stable lines that are not part of `StableVolatileInputs`. Scenario A's
+ * frozen cross-thread summary seed is per-thread, so it is fingerprinted
+ * separately and never rides the thread-agnostic cache.
  */
-export function composeStableVolatileSubsection(inputs: StableVolatileInputs): string[] {
-	const lines: string[] = [];
-	lines.push("");
-	lines.push(...renderWorkingKnowledgeStable(inputs.pinned, inputs.summaries));
-	lines.push(...renderDiscoverableArchiveStable(inputs));
-	lines.push(...renderSkillIndex(inputs.skillIndex).split("\n"));
+export interface StableSubsectionSeed {
+	/** Rendered after the Discoverable Archive, preceded by a blank line. */
+	crossThreadLines?: ReadonlyArray<string>;
+}
+
+export function composeStableVolatileSubsection(
+	inputs: StableVolatileInputs,
+	seed: StableSubsectionSeed = {},
+): string[] {
+	const lines: string[] = [""];
+	lines.push(...renderWorkingKnowledge(inputs.pinned, inputs.summaries));
+	lines.push(
+		...renderDiscoverableArchive({
+			entries: inputs.detailEntries,
+			parentSummaryByKey: inputs.parentSummaryByKey,
+			staleChildKeysInWorkingKnowledge: inputs.staleChildKeysInWorkingKnowledge,
+			budgetPressure: inputs.budgetPressure,
+			tunables: inputs.tunables,
+			// R-VC29: summary-tier overflow renders title-only in the Archive.
+			demotedSummaries: capWorkingKnowledgeSummaries(inputs.summaries).demoted,
+		}),
+	);
+	if (seed.crossThreadLines !== undefined) {
+		lines.push("", ...seed.crossThreadLines);
+	}
+	if (inputs.skillIndex.length > 0) {
+		lines.push(...renderSkillIndex(inputs.skillIndex).split("\n"));
+	}
 	lines.push(...renderClusterModels(inputs.clusterModels));
 	return lines;
 }
 
 /**
- * Single source of truth for the `<stable-context>` cluster-model topology
- * block. Used both by `composeStableVolatileSubsection` (the R-VC25 purity
- * seam / property test) and by the production stable-prefix fold in
- * `context-assembly.ts`, so the two channels stay byte-equivalent.
+ * The `<stable-context>` cluster-model topology block. Input arrays are
+ * pre-sorted upstream (see `loadClusterModels`), so this is a straight
+ * projection. Empty input adds no bytes.
  *
- * Pure in `models` alone. Input arrays are pre-sorted upstream (bytewise by
- * `name`, hosts bytewise within each entry — see `loadClusterModels`), so no
- * sorting happens here; this renderer is a straight projection. Returns an
- * empty array when there are no models (no host topology yet), mirroring
- * `renderSkillIndex`'s suppress-when-empty behavior so an empty cluster adds
- * no bytes.
- *
- * Every attribute value routes through `escapeXmlAttr`: model aliases are
- * tame today, but host_names and future alias schemes are not guaranteed
- * XML-safe, and an unescaped `&` would make the fragment ill-formed.
+ * Every attribute value routes through `escapeXmlAttr`: host_names and future
+ * alias schemes are not guaranteed XML-safe.
  */
 export function renderClusterModels(
 	models: ReadonlyArray<{
@@ -98,13 +84,10 @@ export function renderClusterModels(
 	}>,
 ): string[] {
 	if (models.length === 0) return [];
-	// The legend rides the opening tag so the metadata is self-describing. Slice 6
-	// (R-MC12): `tier` is retired. The capability signal is now the named cluster
-	// `role` (default/heavy/fast) plus resolved `context`/`max_output`; prefer
-	// explicit metadata over model-name vibes. Pricing is deliberately NOT
-	// advertised: the sole production collector (`loadClusterModels`) reads only
-	// capability fields from the synced `hosts.models` JSON, which carries no
-	// pricing, so a price legend would be a promise the data path cannot keep.
+	// R-MC12: the capability signal is the cluster `role` plus resolved
+	// `context`/`max_output`. Pricing is deliberately NOT advertised: the
+	// synced `hosts.models` JSON carries no pricing, so a price legend would be
+	// a promise the data path cannot keep.
 	const lines: string[] = [
 		'<stable-context note="name is the logical model (or alias) to pass as aux model / model_hint / infer() model — it routes across every host and provider serving it; role is the model\'s cluster assignment (default/heavy/fast); context and max_output are token counts; prefer explicit metadata and role over model-name vibes when picking aux/infer() models">',
 	];
@@ -112,9 +95,8 @@ export function renderClusterModels(
 		let attrs =
 			`<model name="${escapeXmlAttr(m.name)}" local="${m.local}"` +
 			` hosts="${escapeXmlAttr(m.hosts.join(","))}"`;
-		// Decision metadata (optional — absent for string-alias host rows).
 		// Numerics are validated finite upstream (loadClusterModels), so plain
-		// interpolation is XML-safe without escaping.
+		// interpolation is XML-safe.
 		if (m.role !== undefined) attrs += ` role="${m.role}"`;
 		if (m.contextWindow !== undefined) attrs += ` context="${m.contextWindow}"`;
 		if (m.maxOutput !== undefined) attrs += ` max_output="${m.maxOutput}"`;
@@ -127,26 +109,21 @@ export function renderClusterModels(
 }
 
 /**
- * Stable-side Working Knowledge: header + pinned bodies + summary
- * bodies (with truncated gloss) + footer. Mirrors the
- * `renderWorkingKnowledge.stableLines` channel of the production
- * renderer — which reads only `key` and `value` on its stable path.
+ * Working Knowledge bodies (R-VC3): pinned entries in full, the first
+ * `WORKING_KNOWLEDGE_SUMMARY_CAP` summaries with a truncated gloss. The
+ * `modified` capture date (#71) advances only on a real body rewrite — the
+ * same event that already busts the prefix cache.
  */
-function renderWorkingKnowledgeStable(
+export function renderWorkingKnowledge(
 	pinned: ReadonlyArray<MemoryEntryView>,
 	summaries: ReadonlyArray<MemoryEntryView>,
 ): string[] {
-	const out: string[] = [];
-	out.push(WORKING_KNOWLEDGE_HEADER);
+	const out: string[] = [WORKING_KNOWLEDGE_HEADER];
 	for (const entry of pinned) {
 		out.push(
 			`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" modified="${formatCalendarDate(entry.modifiedAt)}">${escapeXmlAttr(entry.value)}</memory>`,
 		);
 	}
-	// Identical cap to renderWorkingKnowledge's stable channel — via the SAME
-	// shared helper so the two paths cannot drift (R-VC25 parity, pinned by
-	// parity-with-production.test.ts). R-VC29: the `demoted` overflow no longer
-	// renders here; it moves to the Discoverable Archive (renderDiscoverableArchiveStable).
 	const { kept } = capWorkingKnowledgeSummaries(summaries);
 	for (const summary of kept) {
 		out.push(
@@ -158,81 +135,72 @@ function renderWorkingKnowledgeStable(
 }
 
 /**
- * Stable-side Discoverable Archive: header + title lines (Tier 1) or
- * cluster-compressed listing (Tier 2/3) + footer. Mirrors the body
- * of `renderDiscoverableArchive` in `summary-extraction.ts`. Since
- * the production renderer is itself stable-side-only after the
- * `nowMs` removal, the duplication here is a deliberate seam — not
- * a divergence — and is pinned by the parity regression test.
+ * Discoverable Archive titles with R-VC15 three-tier compression: flat list
+ * (Tier 1), cluster compression (Tier 2), heading-only with the M most
+ * recently accessed per cluster (Tier 3).
  *
- * Returns lines (not a `RenderedSection`) to keep this module
- * boundary uniform with the rest of `composeStableVolatileSubsection`.
+ * Lines are rendered key-sorted and carry no `last_accessed_at`-derived
+ * fragment: that column is bumped on every cold assembly
+ * (`bumpRenderedDetailEntries`), so rendering any function of it — date or
+ * order — would bust the provider cache for no information change. Access
+ * time survives only as the Tier-3 selection key.
  */
-function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[] {
-	const out: string[] = [];
-	out.push(DISCOVERABLE_HEADER);
+export function renderDiscoverableArchive(input: DiscoverableArchiveInput): string[] {
+	const lines: string[] = [DISCOVERABLE_HEADER];
 
-	const visible = inputs.detailEntries.filter(
-		(e) => !inputs.staleChildKeysInWorkingKnowledge.has(e.key),
-	);
+	// §5.2 step 2 — drop entries also rendered as stale children in Working Knowledge.
+	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
 	const total = visible.length;
 
 	if (total === 0) {
-		// No detail body; the common tail (sub-block + footer) still renders below.
+		// The common tail (sub-block + footer) still renders below.
 	} else if (total <= VC15_TIER1_THRESHOLD) {
-		// Key-sorted render (mirrors production renderDiscoverableArchive).
 		for (const entry of sortDetailEntriesForRender(visible)) {
-			out.push(formatStableDetailLine(entry, inputs.budgetPressure));
+			lines.push(formatDetailLine(entry));
+		}
+	} else if (total <= input.tunables.n) {
+		for (const cluster of sortClusters(groupByCluster(visible, input.parentSummaryByKey))) {
+			lines.push(
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
+			);
+			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
+				lines.push(formatDetailLine(entry));
+			}
+			lines.push("</cluster>");
 		}
 	} else {
-		const clusters = groupByCluster(visible, inputs.parentSummaryByKey);
-		const sorted = sortClusters(clusters);
-
-		if (total <= inputs.tunables.n) {
-			// Tier 2: cluster compression. Within-cluster lines key-sorted.
-			for (const cluster of sorted) {
-				out.push(
-					`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
-				);
-				for (const entry of sortDetailEntriesForRender(cluster.entries)) {
-					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
-				}
-				out.push("</cluster>");
+		// Entries arrive last_accessed_at DESC, so slice(0, m) keeps the M
+		// most-recently-accessed per cluster.
+		for (const cluster of sortClusters(groupByCluster(visible, input.parentSummaryByKey))) {
+			const tail = cluster.entries.slice(0, input.tunables.m);
+			lines.push(
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}" showing="${input.tunables.m}">`,
+			);
+			for (const entry of sortDetailEntriesForRender(tail)) {
+				lines.push(formatDetailLine(entry));
 			}
-		} else {
-			// Tier 3: heading-only with M most-recent per cluster. Recency SELECTION
-			// (slice), key-sorted RENDER (mirrors production).
-			for (const cluster of sorted) {
-				const totalCount = cluster.entries.length;
-				const tail = cluster.entries.slice(0, inputs.tunables.m);
-				out.push(
-					`<cluster name="${escapeXmlAttr(cluster.name)}" count="${totalCount}" showing="${inputs.tunables.m}">`,
-				);
-				for (const entry of sortDetailEntriesForRender(tail)) {
-					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
-				}
-				out.push("</cluster>");
-				if (
-					cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
-					totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
-				) {
-					// Production renderer surfaces a synthesisBacklogCount here
-					// for the varying-side `[synthesis-backlog]` Live-State line;
-					// the count itself does not appear in the stable output.
-				}
-			}
+			lines.push("</cluster>");
 		}
 	}
 
-	// R-VC29: demoted summary-overflow titles render inside the Archive. Derived
-	// from inputs.summaries through the SAME capWorkingKnowledgeSummaries +
-	// appendOlderSummariesSubBlock the production renderer uses, so the stable
-	// channel and its mirror cannot drift (pinned by parity-with-production.test.ts).
-	const { demoted } = capWorkingKnowledgeSummaries(inputs.summaries);
-	appendOlderSummariesSubBlock(out, demoted);
+	if (input.demotedSummaries && input.demotedSummaries.length > 0) {
+		lines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+		for (const summary of input.demotedSummaries) {
+			lines.push(`<entry key="${escapeXmlAttr(summary.key)}"/>`);
+		}
+		lines.push("</older-summaries>");
+	}
 
-	out.push(DISCOVERABLE_FOOTER);
-	return out;
+	lines.push(DISCOVERABLE_FOOTER);
+	return lines;
+}
+
+function formatDetailLine(entry: DetailEntryView): string {
+	return `<entry key="${escapeXmlAttr(entry.key)}"/>`;
+}
+
+function sortDetailEntriesForRender<T extends { key: string }>(entries: ReadonlyArray<T>): T[] {
+	return entries.slice().sort((a, b) => compareBytewise(a.key, b.key));
 }
 
 interface Cluster {
@@ -246,7 +214,7 @@ function groupByCluster(
 ): Cluster[] {
 	const map = new Map<string, DetailEntryView[]>();
 	for (const entry of entries) {
-		const name = parentSummaryByKey.get(entry.key) ?? UNCATEGORIZED_CLUSTER_NAME;
+		const name = clusterNameForEntry(entry.key, parentSummaryByKey);
 		const bucket = map.get(name) ?? [];
 		bucket.push(entry);
 		map.set(name, bucket);
@@ -262,23 +230,14 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 		if (a.entries.length !== b.entries.length) {
 			return b.entries.length - a.entries.length;
 		}
-		// Bytewise tiebreak, mirroring the production sorter in
-		// summary-extraction.ts — locale-dependent ordering would leak the
-		// host ICU config into R-VC25-pure bytes.
+		// Bytewise, NOT localeCompare: locale-dependent ordering would let two
+		// hosts with different ICU configs render different prefixes for
+		// identical synced state.
 		return compareBytewise(a.name, b.name);
 	});
 }
 
-/**
- * Render the active-skills XML index. Pure in `skills` alone.
- *
- * Single source of truth for the skill-index byte layout. Used both
- * by `composeStableVolatileSubsection` (property-test seam) and by
- * the production stable-prefix folding in
- * `context-assembly.buildVolatileContext`. Both call sites import
- * this function so a future format change propagates everywhere
- * without a "keep in lockstep" coupling.
- */
+/** The active-skills XML index. */
 export function renderSkillIndex(
 	skills: ReadonlyArray<{ name: string; description: string }>,
 ): string {

@@ -14,8 +14,6 @@ export {
 	getConnectorHandlesByServer,
 	getAllActiveConnectorHandles,
 	updateConnectorHandleCursor,
-	linkConnectorHandleTask,
-	deleteConnectorHandle,
 } from "./connector-handle.js";
 export type { ConnectorHandleCreateParams, ConnectorHandleRecord } from "./connector-handle.js";
 export { createConnectorTool } from "./connector-tool.js";
@@ -29,6 +27,6 @@ export type {
 	PlatformCommandInvocation,
 	PlatformCommandHandler,
 } from "./platform-commands.js";
-export { SUBSCRIPTION_REJECTED_CODE, isSubscriptionRejected } from "./subscription-errors.js";
-export { RssPoller, parseFeed, MIN_POLL_INTERVAL_SECONDS } from "./rss-poller.js";
+export { isSubscriptionRejected } from "./subscription-errors.js";
+export { RssPoller, MIN_POLL_INTERVAL_SECONDS } from "./rss-poller.js";
 export type { RssItem, RssPollerDeps } from "./rss-poller.js";

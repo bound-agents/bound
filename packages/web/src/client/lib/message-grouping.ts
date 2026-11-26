@@ -38,6 +38,20 @@ interface MaybeTextBlock {
 	text?: unknown;
 }
 
+/** A message's content as content blocks, from either the JSON-string or parsed form (invariant #10). */
+export function parseContentBlocks(content: string | unknown[]): Array<Record<string, unknown>> {
+	let blocks: unknown = content;
+	if (typeof content === "string") {
+		try {
+			blocks = JSON.parse(content);
+		} catch {
+			return [];
+		}
+	}
+	if (!Array.isArray(blocks)) return [];
+	return blocks.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null);
+}
+
 /**
  * True when a persisted message's content carries a non-empty `text`
  * ContentBlock — i.e. the agent emitted normal, user-facing output on this
@@ -48,14 +62,7 @@ interface MaybeTextBlock {
  */
 export function messageHasUserFacingText(content: string | null | undefined): boolean {
 	if (!content || !content.includes('"text"')) return false;
-	let blocks: unknown;
-	try {
-		blocks = JSON.parse(content);
-	} catch {
-		return false;
-	}
-	if (!Array.isArray(blocks)) return false;
-	for (const block of blocks as MaybeTextBlock[]) {
+	for (const block of parseContentBlocks(content) as MaybeTextBlock[]) {
 		if (block && block.type === "text" && typeof block.text === "string" && block.text.trim()) {
 			return true;
 		}
@@ -110,15 +117,8 @@ export function contentPreviewText(content: string | null | undefined): string {
  */
 export function toolUseIdsInContent(content: string | null | undefined): string[] {
 	if (!content || !content.includes('"tool_use"')) return [];
-	let blocks: unknown;
-	try {
-		blocks = JSON.parse(content);
-	} catch {
-		return [];
-	}
-	if (!Array.isArray(blocks)) return [];
 	const ids: string[] = [];
-	for (const block of blocks as Array<{ type?: string; id?: unknown }>) {
+	for (const block of parseContentBlocks(content)) {
 		if (block && block.type === "tool_use" && typeof block.id === "string") {
 			ids.push(block.id);
 		}

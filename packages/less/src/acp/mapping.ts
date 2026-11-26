@@ -11,12 +11,6 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-// Canonical shell-tool-name predicate lives in ../tools/shell, co-located with
-// the names resolveShell mints. Imported for internal use and re-exported so
-// existing acp consumers keep importing it from mapping.
-import { isShellToolName } from "../tools/shell";
-
-export { isShellToolName };
 import type {
 	ContentBlock as AcpContentBlock,
 	PermissionOption,
@@ -25,10 +19,12 @@ import type {
 	ToolCallLocation,
 	ToolKind,
 } from "@agentclientprotocol/sdk";
-import type { ImageMediaType, ContentBlock as LlmContentBlock } from "@bound/llm";
+import type { ContentBlock as LlmContentBlock } from "@bound/llm";
 import type { Message, WsStreamChunk } from "@bound/shared";
 import { type HashlineEdit, applyHashlineEdits, parseAnchor, resolveAnchor } from "@bound/shared";
 import { parseContentBlocks } from "../session/tool-call-pairing";
+import { isShellToolName } from "../tools/shell";
+import { TOOL_NAMES, isImageMediaType } from "../tools/types";
 
 /**
  * The four permission options offered to the client for every gated tool call.
@@ -77,13 +73,19 @@ export function formatDaemonNotice(text: string): string {
 }
 
 export function toolNameToKind(toolName: string): ToolKind {
-	if (toolName === "boundless_read") return "read";
-	if (toolName === "boundless_write" || toolName === "boundless_edit") return "edit";
-	if (toolName === "boundless_copy") return "move";
-	// Shell tool: resolveShell names it boundless_bash / boundless_sh / boundless_pwsh / boundless_cmd.
-	if (isShellToolName(toolName)) return "execute";
-	if (toolName.startsWith("boundless_mcp_")) return "other";
-	return "other";
+	switch (toolName) {
+		case TOOL_NAMES.read:
+		case TOOL_NAMES.readStructure:
+			return "read";
+		case TOOL_NAMES.write:
+		case TOOL_NAMES.edit:
+			return "edit";
+		case TOOL_NAMES.search:
+			return "search";
+		case TOOL_NAMES.copy:
+			return "move";
+	}
+	return isShellToolName(toolName) ? "execute" : "other";
 }
 
 export function toolCallTitle(toolName: string, args: Record<string, unknown>): string {
@@ -328,22 +330,6 @@ export function toolCallMeta(
 }
 
 /**
- * The four image IANA types bound can represent as an image content block
- * (the AI-SDK-supported set; see ImageMediaType in @bound/llm). Image blocks
- * with any other media type can't round-trip as images and are elided.
- */
-const SUPPORTED_IMAGE_MEDIA_TYPES = new Set<string>([
-	"image/jpeg",
-	"image/png",
-	"image/gif",
-	"image/webp",
-]);
-
-function isSupportedImageMediaType(mime: string): mime is ImageMediaType {
-	return SUPPORTED_IMAGE_MEDIA_TYPES.has(mime);
-}
-
-/**
  * Maps a single ACP block to its bound text representation, or null when the
  * block contributes no text. Shared by promptToText and promptToContent so the
  * text/resource handling can't drift between the two. Image/audio map to
@@ -440,7 +426,7 @@ export function promptToContent(blocks: AcpContentBlock[]): string | LlmContentB
 	const out: LlmContentBlock[] = [];
 	for (const block of blocks) {
 		if (block.type === "image") {
-			if (isSupportedImageMediaType(block.mimeType)) {
+			if (isImageMediaType(block.mimeType)) {
 				out.push({
 					type: "image",
 					source: { type: "base64", media_type: block.mimeType, data: block.data },

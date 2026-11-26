@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { findConnectorHandleIncludingDeleted, insertRow, softDelete, updateRow } from "@bound/core";
+import { findConnectorHandleIncludingDeleted, insertRow, updateRow } from "@bound/core";
 import { connectorHandleId } from "./connector-handle-id.js";
 
 export interface ConnectorHandleCreateParams {
@@ -90,25 +90,6 @@ export function updateConnectorHandleCursor(
 	cursor: string,
 ): void {
 	updateRow(db, "connector_handles", handleId, { cursor }, siteId);
-}
-
-/**
- * Links a connector handle to its event task.
- */
-export function linkConnectorHandleTask(
-	db: Database,
-	siteId: string,
-	handleId: string,
-	taskId: string,
-): void {
-	updateRow(db, "connector_handles", handleId, { task_id: taskId }, siteId);
-}
-
-/**
- * Soft-deletes a connector handle.
- */
-export function deleteConnectorHandle(db: Database, siteId: string, handleId: string): void {
-	softDelete(db, "connector_handles", handleId, siteId);
 }
 
 /**

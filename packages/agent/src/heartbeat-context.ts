@@ -95,10 +95,9 @@ export function buildHeartbeatContext(
 				options.logger?.info(
 					`[heartbeat] Stable-prefix drift: ${report.composeDriftCount} compose, ${report.collectDriftCount} collect leaks detected over ${report.pairsExamined} pairs (${report.unknownCount} unclassifiable)`,
 				);
-				// One structured record per leak. This is the durable home
-				// for drift findings (they used to be written to
-				// semantic_memory, which grew unbounded with no consumer) —
-				// rare bug-signals you query from logs when they fire.
+				// One structured record per leak. Logs are the durable home for
+				// drift findings: rare bug-signals queried when they fire, kept
+				// out of semantic_memory so that namespace stays bounded.
 				for (const leak of report.leaks) {
 					options.logger?.warn("[heartbeat] Stable-prefix drift leak", {
 						flavor: leak.flavor,

@@ -1,30 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { compareBytewise, escapeXmlAttr, safeSlice, truncateStreamOutput } from "../strings";
-
-describe("truncateStreamOutput", () => {
-	it("returns input unchanged when within budget", () => {
-		expect(truncateStreamOutput("short", 1000)).toBe("short");
-	});
-
-	it("middle-truncates oversized output, keeping head and tail with a marker", () => {
-		const input = "A".repeat(100) + "B".repeat(100);
-		const out = truncateStreamOutput(input, 40);
-		expect(out).toContain("... [truncated");
-		expect(out).toContain("bytes from middle] ...");
-		expect(out.startsWith("A")).toBe(true);
-		expect(out.endsWith("B")).toBe(true);
-		// Dropped-byte count is total minus the retained budget.
-		expect(out).toContain("[truncated 160 bytes from middle]");
-	});
-
-	it("never splits a multi-byte character at the head boundary", () => {
-		// '€' is 3 UTF-8 bytes. A budget forcing a cut must stop on a char boundary.
-		const input = "€".repeat(50);
-		const out = truncateStreamOutput(input, 30);
-		// Every retained run of content is whole euro signs — no replacement char.
-		expect(out).not.toContain("\uFFFD");
-	});
-});
+import { compareBytewise, escapeXmlAttr, safeSlice } from "../strings";
 
 describe("compareBytewise", () => {
 	it("orders by UTF-16 code units, not host locale", () => {

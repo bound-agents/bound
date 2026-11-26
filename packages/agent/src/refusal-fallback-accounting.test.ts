@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import {
 	type AttemptRecord,
 	buildTurnCostBreakdownWithAttempts,
-	summarizeServedAttempt,
 } from "./refusal-fallback-accounting";
 
 /**
@@ -103,18 +102,5 @@ describe("buildTurnCostBreakdownWithAttempts", () => {
 		});
 		expect(breakdown.attempts?.[0]?.cost_usd).toBeNull();
 		expect(breakdown.attempts?.[1]?.cost_usd).toBe(0.02);
-	});
-});
-
-describe("summarizeServedAttempt", () => {
-	it("marks the ok attempt as served and carries its route", () => {
-		const s = summarizeServedAttempt([refusedPrimary, fallbackServed]);
-		expect(s?.model_id).toBe("sonnet");
-		expect(s?.route_id).toBe("siteA:anthropic:sonnet");
-	});
-
-	it("returns null when no attempt succeeded", () => {
-		const s = summarizeServedAttempt([refusedPrimary]);
-		expect(s).toBeNull();
 	});
 });

@@ -38,15 +38,11 @@ describe("buildToolSet MCP handler", () => {
 			getClient: () => mockClient,
 		} as unknown as McpServerManager;
 
-		const { handlers } = buildToolSet(
-			"/cwd",
-			"test-host",
-			makeMcpTools(),
-			undefined,
-			undefined,
-			undefined,
-			manager,
-		);
+		const { handlers } = buildToolSet({
+			hostname: "test-host",
+			mcpTools: makeMcpTools(),
+			mcpManager: manager,
+		});
 
 		const handler = handlers.get("boundless_mcp_proxysrv_echo");
 		expect(handler).toBeDefined();
@@ -65,7 +61,7 @@ describe("buildToolSet MCP handler", () => {
 	});
 
 	it("falls back to a clear error when no manager is wired", async () => {
-		const { handlers } = buildToolSet("/cwd", "host", makeMcpTools());
+		const { handlers } = buildToolSet({ hostname: "host", mcpTools: makeMcpTools() });
 		const handler = handlers.get("boundless_mcp_proxysrv_echo");
 		const result = await handler?.({}, new AbortController().signal, "/cwd");
 		expect(result?.isError).toBe(true);

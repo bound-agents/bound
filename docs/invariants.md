@@ -10,8 +10,10 @@ All writes to synced tables MUST use `insertRow()`, `updateRow()`, or `softDelet
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-cluster_config, advisories, skills, memory_edges,
-connector_handles, webhooks, turns, client_sessions
+cluster_config, advisories, skills, agents, memory_edges,
+connector_handles, webhooks, rss_feeds, client_sessions,
+mcp_auth_challenges, model_routing_rules, route_drains, model_aliases,
+turns
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
@@ -167,6 +169,7 @@ cross-host correctness invariant.
 | `packages/agent/src/summary-extraction.ts` (`bumpRenderedDetailEntries`) | semantic_memory.last_accessed_at | Per-host relevance hint; routing through `updateRow` would advance `modified_at` and cascade into stale-child detection (see Section A). |
 | `packages/cli/src/commands/start/bootstrap.ts` (`STALE_TASK_RESET_SQL` execution) | tasks (status, lease_id, claimed_by, claimed_at) | Per-host crash recovery scoped to `claimed_by = ?siteId` (see Section A). |
 | `packages/core/src/relay-metrics.ts` (`recordTurnRelayMetrics`, no-siteId branch) | turns.relay_target, turns.relay_latency_ms | Local-only instrumentation columns on a synced table; per-host relay metrics are not synced. |
+| `packages/core/src/metrics-schema.ts` (`recordTurn` and `recordContextDebug`, no-siteId branches) | turns (insert), turns.context_debug | Local-only fallback for tests and utility scripts that call without a `siteId`; production callers pass one and write through the outbox. |
 | `packages/agent/src/task-resolution.ts` (heartbeat migration) | tasks.no_history | One-time, idempotent, self-converging startup migration of a per-host semantic flag. |
 
 Scheduler CAS task transitions, host registration, and cluster_config CLI commands are NOT in this

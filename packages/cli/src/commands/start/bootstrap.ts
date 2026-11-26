@@ -12,7 +12,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { loadModelBackendsConfig, seedBundledSkills } from "@bound/agent";
 import {
 	INTERRUPTED_TOOL_USE_SCAN_SQL,
@@ -42,6 +42,7 @@ import {
 	loadBuildInfo,
 } from "@bound/shared";
 import { clearColumnCache, ensureKeypair } from "@bound/sync";
+import { resolveDataDir } from "../../lib/db";
 
 // Build metadata (generated at compile time, gitignored). The shared loader
 // idempotently dynamically-imports the generated file with a "dev"/"unknown"
@@ -135,13 +136,7 @@ export async function initBootstrap(
 ): Promise<BootstrapResult> {
 	const installSignalHandlers = options.installSignalHandlers ?? false;
 	const configDir = args.configDir || "config";
-	// Data directory is assumed to be a sibling of the config directory, matching
-	// the layout produced by `bound init` and the convention used by other
-	// `boundctl` commands (drain, set-hub, sync-status, ...). When configDir is
-	// the default "config", this resolves to `<cwd>/data` — identical to the
-	// previous hard-coded behavior. When tests pass a temp-dir configDir, this
-	// keeps the data/PID lockfile/keypair next to it instead of polluting cwd.
-	const dataDir = join(dirname(resolve(configDir)), "data");
+	const dataDir = resolveDataDir(configDir);
 
 	bootstrapLogger.info("Starting Bound orchestrator", {
 		commit: COMMIT_HASH,
@@ -289,7 +284,7 @@ export async function initBootstrap(
 		});
 	}
 
-	// 3-4. Database and DI container (initialized by createAppContext above)
+	// 3-4. Database (initialized by createAppContext above)
 	appContext.logger.info("Initializing database...");
 	appContext.logger.info("Setting up services...");
 

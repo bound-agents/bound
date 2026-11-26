@@ -2,13 +2,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { checkDbRead, checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
-import {
-	DISABLED_SANDBOX,
-	type ResolvedSandboxConfig,
-	checkWritePath,
-	formatWriteDenied,
-} from "./sandbox-policy";
-import type { ToolHandler, ToolResult } from "./types";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig, guardWriteTarget } from "./sandbox-policy";
+import { TOOL_NAMES, type ToolHandler, type ToolResult } from "./types";
 
 // "satellite" is the Boundless Satellite Station -- the host disk where
 // boundless runs. "main" is the Bound Main Station -- the virtualized VFS
@@ -188,7 +183,7 @@ export function createCopyTool(deps: CopyToolDeps): ToolHandler {
 }
 
 async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Promise<ToolResult> {
-	const provenance = formatProvenance(deps.hostname, cwd, "boundless_copy");
+	const provenance = formatProvenance(deps.hostname, cwd, TOOL_NAMES.copy);
 
 	// Argument validation
 	const source = normalizeFilesystem(args.source);
@@ -214,7 +209,7 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 	// A satellite-source copy OF the database is a read; advise toward `query`
 	// below without blocking.
 	if (target === "satellite") {
-		const dbDenied = checkDbWrite("boundless_copy", targetPath, cwd);
+		const dbDenied = checkDbWrite(TOOL_NAMES.copy, targetPath, cwd);
 		if (dbDenied) {
 			return errorResult(provenance, dbDenied);
 		}
@@ -226,16 +221,16 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 		return errorResult(provenance, `Error: ${readResult.error}`);
 	}
 
-	// In-process write guard: a satellite target write calls fs directly and never
-	// passes through mxc, so when the sandbox is enabled, confine it to the same
-	// writable set. The main (VFS) target is out of scope — it round-trips through
-	// bound's HTTP API, which owns its own containment.
-	const sandbox = deps.sandbox ?? DISABLED_SANDBOX;
-	if (target === "satellite" && sandbox.enabled) {
-		const check = checkWritePath(targetPath, cwd, sandbox);
-		if (!check.allowed) {
-			return errorResult(provenance, formatWriteDenied("boundless_copy", targetPath, check));
-		}
+	// The main (VFS) target round-trips through bound's HTTP API, which owns its
+	// own containment; only satellite writes need the in-process guard.
+	if (target === "satellite") {
+		const writeDenied = guardWriteTarget(
+			"boundless_copy",
+			targetPath,
+			cwd,
+			deps.sandbox ?? DISABLED_SANDBOX,
+		);
+		if (writeDenied) return errorResult(provenance, writeDenied);
 	}
 
 	const writeResult = await writeTarget(target, targetPath, cwd, deps.boundUrl, readResult.bytes);
@@ -251,9 +246,3 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 	});
 	return { content: blocks };
 }
-
-/** Default-bound handler used by tests — production code routes through createCopyTool. */
-export const copyTool: ToolHandler = createCopyTool({
-	hostname: "unknown",
-	boundUrl: "http://localhost:3001",
-});

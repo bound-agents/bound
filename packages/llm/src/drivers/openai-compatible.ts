@@ -95,7 +95,7 @@ export class OpenAICompatibleDriver implements LLMBackend, SupportsModelDiscover
 	private model: string;
 	private contextWindow: number;
 	private providerName: string;
-	// Discovery (slice 6, R-MC3): raw endpoint + key for on-demand `/v1/models`.
+	// Discovery (R-MC3): raw endpoint + key for on-demand `/v1/models`.
 	private readonly discoveryBaseUrl: string;
 	private readonly discoveryApiKey: string;
 	private readonly discoveryHeaders?: Record<string, string>;
@@ -151,7 +151,7 @@ export class OpenAICompatibleDriver implements LLMBackend, SupportsModelDiscover
 	}
 
 	/**
-	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): query the OpenAI-
+	 * Live provider discovery (R-MC3, catalog §4.1): query the OpenAI-
 	 * compatible `/v1/models` endpoint with this host's own key. These endpoints
 	 * expose only model ids; capability/pricing metadata fills from `models.dev`
 	 * + local config via the layered resolver. Throws on a non-OK response or

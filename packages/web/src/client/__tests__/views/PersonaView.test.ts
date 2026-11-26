@@ -47,7 +47,7 @@ describe("PersonaView", () => {
 
 	it("surfaces a load error when the GET fails", async () => {
 		const { target } = await mountWith(() => new Response("boom", { status: 500 }));
-		expect(target.querySelector(".err")?.textContent).toContain("GET /api/persona failed: 500");
+		expect(target.querySelector(".err")?.textContent).toContain("HTTP 500");
 		// Editor still renders (loading finished).
 		expect(target.querySelector("textarea.editor")).not.toBeNull();
 	});

@@ -1,5 +1,13 @@
 import type { WorkClaimDiscipline, WorkRetirementRule } from "@bound/core";
-import { RELAY_KINDS, RELAY_KIND_REGISTRY, type RelayKind } from "@bound/shared";
+import {
+	PASSIVE_INTAKE_KINDS,
+	PASSIVE_INTAKE_TTL_MS,
+	RELAY_KINDS,
+	RELAY_KIND_REGISTRY,
+	RPC_REQUEST_TTL_MS,
+	type RelayKind,
+	STREAM_RESPONSE_TTL_MS,
+} from "@bound/shared";
 
 export interface DurableWorkSubtype {
 	type: "user_message" | "notification" | "tool_result";
@@ -20,15 +28,7 @@ export interface DurableWorkRegistration {
 	subtypes?: readonly DurableWorkSubtype[];
 }
 
-/**
- * RPC request kinds carry an RPC-class TTL so the expiry sweep dead-letters a
- * stale request BEFORE the 4D-A lane can dispatch it — an expired durable
- * request must never execute. The value mirrors today's legacy relay_outbox
- * `expires_at` class for each kind (bounded by the relay inference timeout,
- * ~300s), NOT the 7-day intake TTL. Stream response kinds keep their 5-minute
- * window; passive intake kinds (webhook/rss/connector) keep 7 days.
- */
-const RPC_REQUEST_TTL_MS = 5 * 60 * 1000; // 300s — relay inference-timeout class
+const PASSIVE_KIND_SET = new Set<string>(PASSIVE_INTAKE_KINDS);
 
 const relayRegistration = (kind: RelayKind): DurableWorkRegistration => ({
 	kind,
@@ -37,16 +37,15 @@ const relayRegistration = (kind: RelayKind): DurableWorkRegistration => ({
 	backing: "local",
 	ttlMs:
 		kind === "stream_chunk" || kind === "stream_end"
-			? 5 * 60 * 1000
-			: kind === "webhook_intake" || kind === "rss_intake" || kind === "connector_intake"
-				? 7 * 24 * 60 * 60 * 1000
+			? STREAM_RESPONSE_TTL_MS
+			: PASSIVE_KIND_SET.has(kind)
+				? PASSIVE_INTAKE_TTL_MS
 				: RPC_REQUEST_TTL_MS,
 	deadLetterPolicy: "retain-7d",
 	idempotencyKey: (identity) => identity.idempotency_key ?? `${kind}:${identity.id}`,
 	consumer: RELAY_KIND_REGISTRY[kind].dispatch === "passive" ? "scheduler" : "relay",
 });
 
-/** Additive declaration only in 4A: production continues to use legacy tables. */
 export const DURABLE_WORK_REGISTRY: readonly DurableWorkRegistration[] = [
 	...RELAY_KINDS.map(relayRegistration),
 	{
@@ -77,5 +76,3 @@ export const DURABLE_WORK_REGISTRY: readonly DurableWorkRegistration[] = [
 		consumer: "task",
 	},
 ] as const;
-
-export const DURABLE_WORK_KINDS = DURABLE_WORK_REGISTRY.map((registration) => registration.kind);

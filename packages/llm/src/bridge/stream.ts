@@ -7,7 +7,6 @@
  * extractUsage folds provider usage metadata into the terminal `done` chunk.
  */
 
-import { type Logger, createLogger } from "@bound/shared";
 import {
 	type AnthropicStopDetails,
 	classifyAnthropicRefusal,
@@ -16,23 +15,8 @@ import {
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { mapError } from "./errors";
+import { getBridgeLogger } from "./logger";
 import { MAX_TOOL_USE_ID_LENGTH } from "./messages";
-
-// Lazily created, not at module scope: `createLogger()` materializes the pino
-// root, which mkdirs `logs/` and opens `logs/bound.log` under process.cwd()
-// synchronously. This module is reachable by just importing @bound/llm (which
-// boundless does for image-budget constants) — an eager logger here dropped a
-// 0-byte logs/bound.log into whatever directory boundless ran from, even
-// though boundless never logs through pino (it has its own AppLogger). The
-// file only appears if this logger actually fires, which is exactly when a
-// log file is warranted.
-let logger: Logger | null = null;
-function getLogger(): Logger {
-	if (logger === null) {
-		logger = createLogger("llm", "ai-sdk-bridge");
-	}
-	return logger;
-}
 
 export interface MapChunksOptions {
 	/**
@@ -311,7 +295,7 @@ export async function* mapChunks(
 	// split; a concrete array (possibly empty) means at least one step did.
 	const cacheWriteSplitAccum = new Map<string, number>();
 	let cacheWriteSplitSeen = false;
-	// Last finish-step's raw Anthropic stop block (R-RT18, slice 5). The AI SDK
+	// Last finish-step's raw Anthropic stop block (R-RT18). The AI SDK
 	// collapses a 200-shaped Anthropic `stop_reason: "refusal"` to
 	// finishReason="content-filter" at the `finish` layer, but the raw stop block —
 	// carrying the refusal `category` and the provider's `fallback_credit_token` —
@@ -408,13 +392,16 @@ export async function* mapChunks(
 				// envelope. Charset diffs are expected steady state and not
 				// logged.
 				if (id.length > MAX_TOOL_USE_ID_LENGTH || name.length > MAX_TOOL_USE_ID_LENGTH) {
-					getLogger().warn("oversized tool_use streamed; will be truncated at read boundary", {
-						provider: opts.providerName,
-						id,
-						name,
-						idLength: id.length,
-						nameLength: name.length,
-					});
+					getBridgeLogger().warn(
+						"oversized tool_use streamed; will be truncated at read boundary",
+						{
+							provider: opts.providerName,
+							id,
+							name,
+							idLength: id.length,
+							nameLength: name.length,
+						},
+					);
 				}
 				toolNameById.set(id, name);
 				// Count the tool name towards output size so a plain
@@ -465,7 +452,7 @@ export async function* mapChunks(
 						cacheWrite1hSeen = true;
 					}
 				}
-				// Capture a raw Anthropic refusal stop block (R-RT18, slice 5). The
+				// Capture a raw Anthropic refusal stop block (R-RT18). The
 				// anthropic/bedrock adapters surface `stop_reason` + `stop_details` on
 				// the finish-step providerMetadata; a 200-shaped `refusal` carries the
 				// provider's `fallback_credit_token` here. Held for the `finish`
@@ -513,7 +500,7 @@ export async function* mapChunks(
 				// as a thrown LLMRefusalError from mapError instead.
 				//
 				// When a preceding finish-step carried a raw Anthropic `refusal` stop
-				// block (R-RT18, slice 5), prefer that classification: it recovers the
+				// block (R-RT18), prefer that classification: it recovers the
 				// refusal `category` and the provider's `fallback_credit_token` that the
 				// content-filter collapse discards, stamping the credit's endpoint from
 				// this deployment's `reasoningOrigin` for the later co-location check.

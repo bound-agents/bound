@@ -34,7 +34,6 @@ export function normalizeEdgeRelations(db: Database, siteId: string): Normalizat
 		total_scanned: 0,
 	};
 
-	// Build the NOT IN clause from canonical set
 	const canonicalList = CANONICAL_RELATIONS.map((r) => `'${r}'`).join(", ");
 
 	// Select all rows with non-canonical relations — active AND soft-deleted.

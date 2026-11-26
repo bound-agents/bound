@@ -1,20 +1,18 @@
-// The browser is both an MCP Apps *host* and a bound tool-provider *client*
-// (the boundless pattern). This module is the host half's connection manager:
+// Connection manager for the browser's MCP App servers. The browser renders
+// MCP App UIs; it does not execute agent tool calls. This module connects to
+// the servers GET /api/mcp-apps hands out, records each tool and its
+// `_meta.ui.resourceUri` binding, and resolves a stamped (server, tool) pair
+// back to its connected client. The iframe/AppBridge glue lives in
+// mcp-app-bridge.ts.
+import type { ToolDefinition } from "@bound/client";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult, ClientCapabilities, Tool } from "@modelcontextprotocol/client";
-
-// it connects to the MCP App servers handed to the browser by
-// GET /api/mcp-apps, lists their tools, maps each to a bound ToolDefinition so
-// the agent can call them, and dispatches an inbound bound tool call to the
-// owning MCP server. UI-bearing tools (ext-apps `_meta.ui.resourceUri`) are
-// flagged here; the iframe/AppBridge rendering glue lives in mcp-app-bridge.ts.
-import type { ToolCallRequest, ToolCallResult, ToolDefinition } from "@bound/client";
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge";
 /** Bedrock caps tool names at 64 chars; keep generated names within that. */
 const TOOL_NAME_MAX = 64;
 const TOOL_NAME_PREFIX = "mcp";
 
-const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };
+export const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };
 
 /**
  * The MCP Apps UI capability extension id. Kept as a browser-safe literal so
@@ -120,11 +118,7 @@ export function callToolResultToContent(result: CallToolResult): string {
 	return parts.join("\n");
 }
 
-/**
- * Holds the browser's connected MCP App servers and bridges them to the bound
- * tool-provider protocol: `getToolDefinitions()` feeds `client.configureTools`,
- * `dispatch()` is wired to `client.onToolCall`.
- */
+/** The browser's connected MCP App servers, indexed by namespaced bound tool name. */
 export class McpAppHost {
 	private readonly byBoundName = new Map<string, RegisteredTool>();
 
@@ -151,13 +145,6 @@ export class McpAppHost {
 		return defs;
 	}
 
-	/** All registered tools as bound ToolDefinitions, in registration order. */
-	getToolDefinitions(): ToolDefinition[] {
-		return Array.from(this.byBoundName.values(), (reg) =>
-			mcpToolToDefinition(reg.boundName, reg.tool),
-		);
-	}
-
 	/** Resolve a bound tool name back to its server + original tool. */
 	resolve(boundName: string): RegisteredTool | undefined {
 		return this.byBoundName.get(boundName);
@@ -177,52 +164,6 @@ export class McpAppHost {
 			if (reg.serverName === serverName && reg.originalName === toolName) return reg;
 		}
 		return undefined;
-	}
-
-	/** True if the bound tool carries an MCP App UI (ext-apps resource binding). */
-	isUiBearing(boundName: string): boolean {
-		return this.byBoundName.get(boundName)?.uiResourceUri != null;
-	}
-
-	/** The `ui://` resource URI bound to a tool, if any. */
-	uiResourceUri(boundName: string): string | undefined {
-		return this.byBoundName.get(boundName)?.uiResourceUri;
-	}
-
-	/**
-	 * Dispatch a bound tool call to the owning MCP server and map the result
-	 * back. Errors (unknown tool, transport/tool failure) are returned as
-	 * `is_error` results rather than thrown, so the bound agent loop can resume.
-	 */
-	async dispatch(call: ToolCallRequest): Promise<ToolCallResult> {
-		const reg = this.byBoundName.get(call.tool_name);
-		if (!reg) {
-			return {
-				call_id: call.call_id,
-				thread_id: call.thread_id,
-				content: `Unknown MCP tool: ${call.tool_name}`,
-				is_error: true,
-			};
-		}
-		try {
-			const result = await reg.client.callTool({
-				name: reg.originalName,
-				arguments: call.arguments ?? {},
-			});
-			return {
-				call_id: call.call_id,
-				thread_id: call.thread_id,
-				content: callToolResultToContent(result),
-				is_error: result.isError === true,
-			};
-		} catch (err) {
-			return {
-				call_id: call.call_id,
-				thread_id: call.thread_id,
-				content: err instanceof Error ? err.message : String(err),
-				is_error: true,
-			};
-		}
 	}
 
 	private uniqueBoundName(serverName: string, toolName: string): string {

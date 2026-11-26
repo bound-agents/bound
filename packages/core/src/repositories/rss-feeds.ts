@@ -1,21 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { RssFeed } from "@bound/shared";
 
-/**
- * Read repository for the `rss_feeds` table. See ./index.ts for conventions.
- *
- * Mirrors ./webhooks.ts — RSS feeds share the webhook binding shape (feed row
- * + delivery thread + event task), so the finder surface is intentionally
- * parallel. The extra reads here serve the poller (`listActiveRssFeeds`) and
- * the stale-intake reconciler (`findActiveRssFeedByThreadId`).
- */
-
-export function findRssFeedByName(db: Database, name: string): RssFeed | null {
-	return db
-		.query("SELECT * FROM rss_feeds WHERE name = ? AND deleted = 0")
-		.get(name) as RssFeed | null;
-}
-
 export function findRssFeedIdByName(db: Database, name: string): { id: string } | null {
 	return db.query("SELECT id FROM rss_feeds WHERE name = ? AND deleted = 0").get(name) as {
 		id: string;

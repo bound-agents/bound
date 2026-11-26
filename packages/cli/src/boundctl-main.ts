@@ -1,9 +1,6 @@
 #!/usr/bin/env bun
-// Real entry point for the `boundctl` command, loaded by the boundctl.ts
-// shim AFTER reflect-metadata has been evaluated. See boundctl.ts for why
-// this split exists.
-//
-// Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
+// Implementation of the `boundctl` command; boundctl.ts is the binary entry
+// point. Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
 
 import { getSiteId } from "@bound/core";
 import { runConfigReload } from "./commands/config-reload.js";

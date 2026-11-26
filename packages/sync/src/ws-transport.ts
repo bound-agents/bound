@@ -19,6 +19,7 @@ import {
 	sweepStaleTransferringDurableWork,
 } from "@bound/core";
 import {
+	CONSISTENCY_TABLES,
 	type ConsistencyEntry,
 	computeTableStateDigest,
 	createChangeLogEntry,
@@ -53,6 +54,7 @@ import {
 	applySnapshotRows,
 	getPkColumn,
 	replayEvents,
+	rollbackKeepingOriginalError,
 	validateTableName,
 } from "./reducers.js";
 import {
@@ -67,6 +69,21 @@ import {
 	validateConsistencyTraceCarrier,
 } from "./telemetry.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
+import type {
+	ChangelogAckPayload,
+	ChangelogPushPayload,
+	RelayAckPayload,
+	RelayDeliverPayload,
+	RelaySendPayload,
+	RowPullRequestPayload,
+	RowPullResponsePayload,
+	SnapshotAckPayload,
+	SnapshotChunkPayload,
+	SnapshotEndPayload,
+	SpoolTransferAckPayload,
+	SpoolTransferPayload,
+} from "./ws-frames.js";
+import { WsMessageType, encodeFrame } from "./ws-frames.js";
 
 const MAX_FORWARDED_TRACE_DATA_BYTES = 64 * 1024;
 const MAX_FORWARDED_TRACE_SPANS = 4;
@@ -132,21 +149,6 @@ function forwardConsistencyTraceData(
 		// Observability forwarding must never disrupt consistency handling.
 	}
 }
-import type {
-	ChangelogAckPayload,
-	ChangelogPushPayload,
-	RelayAckPayload,
-	RelayDeliverPayload,
-	RelaySendPayload,
-	RowPullRequestPayload,
-	RowPullResponsePayload,
-	SnapshotAckPayload,
-	SnapshotChunkPayload,
-	SnapshotEndPayload,
-	SpoolTransferAckPayload,
-	SpoolTransferPayload,
-} from "./ws-frames.js";
-import { WsMessageType, encodeFrame } from "./ws-frames.js";
 
 export interface WsTransportConfig {
 	db: Database;
@@ -231,7 +233,14 @@ function encodeChangelogFrames(
 	];
 }
 
-const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
+/** Resolves to T only when T lists every SyncedTableName. */
+type CoversEverySyncedTable<T extends readonly SyncedTableName[]> = [
+	Exclude<SyncedTableName, T[number]>,
+] extends [never]
+	? T
+	: { missingSyncedTables: Exclude<SyncedTableName, T[number]> };
+
+const SNAPSHOT_TABLE_ORDER = [
 	"users",
 	"hosts",
 	"cluster_config",
@@ -253,7 +262,8 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"advisories",
 	"skills",
 	"agents",
-];
+] as const satisfies readonly SyncedTableName[];
+SNAPSHOT_TABLE_ORDER satisfies CoversEverySyncedTable<typeof SNAPSHOT_TABLE_ORDER>;
 
 /** Per-peer snapshot seeding progress (hub-side). */
 interface SnapshotState {
@@ -333,7 +343,6 @@ export class WsTransport {
 	private changelogResendNeeded = new Set<string>();
 
 	constructor(private config: WsTransportConfig) {
-		// Create coalescer with flush callback
 		this.changelogCoalescer = new MicrotaskCoalescer((entries) => {
 			this.flushChangelogEntries(entries);
 		});
@@ -636,7 +645,6 @@ export class WsTransport {
 			skipped,
 		});
 
-		// Update last_received cursor to highest HLC
 		const highestHlc = entries[entries.length - 1].hlc;
 		updatePeerCursor(this.config.db, peerSiteId, {
 			last_received: highestHlc,
@@ -731,7 +739,6 @@ export class WsTransport {
 				return;
 			}
 
-			// Get last_sent cursor for this peer
 			const cursor = getPeerCursor(this.config.db, peerSiteId);
 			const lastSent = cursor?.last_sent ?? HLC_ZERO;
 
@@ -1539,7 +1546,6 @@ export class WsTransport {
 		// and kills the connection mid-seed.
 		peer.ping();
 
-		// Iterate tables
 		while (state.tableIndex < SNAPSHOT_TABLE_ORDER.length) {
 			const table = SNAPSHOT_TABLE_ORDER[state.tableIndex];
 			if (!this.sendSnapshotTableChunks(peerSiteId, table)) {
@@ -1590,24 +1596,16 @@ export class WsTransport {
 
 		if (!state.stmt) {
 			try {
-				// Raw read justification: snapshot seeding reads a runtime-selected validated table.
 				// Raw read justification: snapshot seeding reads a runtime-selected synchronized table.
 				state.stmt = this.config.db.prepare(
 					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
 				);
 			} catch {
-				try {
-					// Raw read justification: snapshot seeding falls back for tables without deleted.
-					state.stmt = this.config.db.prepare(
-						`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
-					);
-				} catch {
-					this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
-						table,
-						peerSiteId,
-					});
-					return true;
-				}
+				this.config.logger?.warn("[snapshot] Skipping missing table during seed", {
+					table,
+					peerSiteId,
+				});
+				return true;
 			}
 		}
 
@@ -1887,8 +1885,6 @@ export class WsTransport {
 		const state = this.snapshotStates.get(peerSiteId);
 		if (!state) return;
 
-		// Count total rows seeded across all tables for the payload.
-		// Missing tables (e.g. in test DBs) contribute 0.
 		const totalRows = SNAPSHOT_TABLE_ORDER.reduce((sum, table) => {
 			try {
 				const row = this.config.db
@@ -1896,6 +1892,10 @@ export class WsTransport {
 					.get() as { cnt: number } | null;
 				return sum + (row?.cnt ?? 0);
 			} catch {
+				this.config.logger?.warn("[snapshot] Skipping missing table during row count", {
+					table,
+					peerSiteId,
+				});
 				return sum;
 			}
 		}, 0);
@@ -1931,23 +1931,8 @@ export class WsTransport {
 	): void {
 		if (!this.config.isHub) return;
 
-		const allTables: SyncedTableName[] = [
-			"users",
-			"hosts",
-			"cluster_config",
-			"threads",
-			"messages",
-			"turns",
-			"semantic_memory",
-			"memory_edges",
-			"tasks",
-			"files",
-			"advisories",
-			"skills",
-		];
-
-		const requestedNames = payload.tables.length > 0 ? payload.tables : allTables.map(String);
-		const tables = allTables.filter((t) => requestedNames.includes(t));
+		const requestedNames = payload.tables.length > 0 ? payload.tables : [...CONSISTENCY_TABLES];
+		const tables = CONSISTENCY_TABLES.filter((t) => requestedNames.includes(t));
 
 		if (tables.length === 0) {
 			this.config.logger?.warn("[consistency] No valid tables in request", {
@@ -2446,7 +2431,7 @@ export class WsTransport {
 	private computeLocalTableDigests(tables: readonly string[]): Map<string, string> {
 		const digests = new Map<string, string>();
 		const wanted = tables.length > 0 ? new Set(tables) : undefined;
-		for (const table of WsTransport.SYNCED_TABLES) {
+		for (const table of CONSISTENCY_TABLES) {
 			if (wanted && !wanted.has(table)) continue;
 			try {
 				digests.set(table, computeTableStateDigest(this.config.db, table).digest);
@@ -2575,37 +2560,18 @@ export class WsTransport {
 
 	private static readonly BACKFILL_BATCH_SIZE = 1000;
 
-	private static readonly SYNCED_TABLES: SyncedTableName[] = [
-		"users",
-		"hosts",
-		"cluster_config",
-		"threads",
-		"messages",
-		"turns",
-		"semantic_memory",
-		"memory_edges",
-		"tasks",
-		"files",
-		"advisories",
-		"skills",
-	];
-
 	clearSyncedTables(): void {
 		this.config.db.exec("BEGIN IMMEDIATE");
 		try {
-			for (const table of WsTransport.SYNCED_TABLES) {
+			for (const table of CONSISTENCY_TABLES) {
 				this.config.db.exec(`DELETE FROM ${table}`);
 			}
 			this.config.db.exec("COMMIT");
 		} catch (err) {
-			try {
-				this.config.db.exec("ROLLBACK");
-			} catch {
-				// original error takes priority
-			}
+			rollbackKeepingOriginalError(this.config.db);
 			throw err;
 		}
-		this.config.logger?.info("[reseed] All synced tables cleared");
+		this.config.logger?.info("[reseed] Consistency tables cleared");
 	}
 	/**
 	 * Recent window for the #253 reconnect auto-redrive leg. On reconnect,
@@ -2783,13 +2749,11 @@ export class WsTransport {
 		}
 		const remoteTables = consistencyResult.tables;
 
-		const allSyncedTables = WsTransport.SYNCED_TABLES;
-
 		let backfilled = 0;
 		let tablesWithDrift = 0;
 		const remoteOnlyByTable: Array<{ table: string; pks: string[] }> = [];
 
-		for (const table of allSyncedTables) {
+		for (const table of CONSISTENCY_TABLES) {
 			const remote = remoteTables.get(table);
 			if (!remote) continue;
 			// #248: a verified digest match means both sides hold identical state;
@@ -2871,11 +2835,7 @@ export class WsTransport {
 					}
 					this.config.db.exec("COMMIT");
 				} catch (err) {
-					try {
-						this.config.db.exec("ROLLBACK");
-					} catch {
-						// original error takes priority
-					}
+					rollbackKeepingOriginalError(this.config.db);
 					throw err;
 				}
 

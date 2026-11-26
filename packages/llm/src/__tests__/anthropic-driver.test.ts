@@ -5,18 +5,18 @@
  * `ai-sdk-bridge`, both exercised elsewhere; here we lock in the driver-owned
  * decisions that don't need the network:
  *   - reasoning-option construction (thinking discriminant + top-level effort)
- *   - system-block cache anchoring (the `buildAnthropicSystemMessage` mirror of
+ *   - system-block cache anchoring (the `buildCachedSystemMessage("anthropic")` mirror of
  *     the Bedrock system-cachePoint trick) and its independent enable gate
  *   - capability advertisement
  */
 
 import { describe, expect, it } from "bun:test";
+import { buildAnthropicReasoningOptions } from "../drivers/anthropic";
 import {
-	buildAnthropicReasoningOptions,
-	buildAnthropicSystemMessage,
-	hasAnthropicMessageCacheControl,
-	shouldEnableAnthropicSystemCacheControl,
-} from "../drivers/anthropic";
+	buildCachedSystemMessage,
+	hasMessageCacheMarker,
+	shouldEnableSystemCache,
+} from "../drivers/system-cache";
 
 describe("buildAnthropicReasoningOptions", () => {
 	it("returns undefined when neither thinking nor effort is set", () => {
@@ -62,19 +62,24 @@ describe("buildAnthropicReasoningOptions", () => {
 	});
 });
 
-describe("buildAnthropicSystemMessage", () => {
+describe("buildCachedSystemMessage (anthropic)", () => {
 	it("returns null when system is empty/missing", () => {
-		expect(buildAnthropicSystemMessage({ system: "", cacheEnabled: true })).toBeNull();
-		expect(buildAnthropicSystemMessage({ system: undefined, cacheEnabled: true })).toBeNull();
+		expect(buildCachedSystemMessage("anthropic", { system: "", cacheEnabled: true })).toBeNull();
+		expect(
+			buildCachedSystemMessage("anthropic", { system: undefined, cacheEnabled: true }),
+		).toBeNull();
 	});
 
 	it("emits a system message without providerOptions when caching is disabled", () => {
-		const msg = buildAnthropicSystemMessage({ system: "you are a bear", cacheEnabled: false });
+		const msg = buildCachedSystemMessage("anthropic", {
+			system: "you are a bear",
+			cacheEnabled: false,
+		});
 		expect(msg).toEqual({ role: "system", content: "you are a bear" });
 	});
 
 	it("attaches anthropic.cacheControl when caching is enabled", () => {
-		const msg = buildAnthropicSystemMessage({ system: "sys", cacheEnabled: true });
+		const msg = buildCachedSystemMessage("anthropic", { system: "sys", cacheEnabled: true });
 		expect(msg).toEqual({
 			role: "system",
 			content: "sys",
@@ -83,7 +88,7 @@ describe("buildAnthropicSystemMessage", () => {
 	});
 
 	it("forwards the TTL onto cacheControl when provided", () => {
-		const msg = buildAnthropicSystemMessage({
+		const msg = buildCachedSystemMessage("anthropic", {
 			system: "sys",
 			cacheEnabled: true,
 			cacheTtl: "1h",
@@ -94,14 +99,14 @@ describe("buildAnthropicSystemMessage", () => {
 	});
 });
 
-describe("hasAnthropicMessageCacheControl", () => {
+describe("hasMessageCacheMarker (anthropic)", () => {
 	it("is false when no message carries an anthropic cacheControl", () => {
-		expect(hasAnthropicMessageCacheControl([{ role: "user", content: "hi" }])).toBe(false);
+		expect(hasMessageCacheMarker("anthropic", [{ role: "user", content: "hi" }])).toBe(false);
 	});
 
 	it("is true when a message carries providerOptions.anthropic.cacheControl", () => {
 		expect(
-			hasAnthropicMessageCacheControl([
+			hasMessageCacheMarker("anthropic", [
 				{
 					role: "user",
 					content: "hi",
@@ -113,7 +118,7 @@ describe("hasAnthropicMessageCacheControl", () => {
 
 	it("ignores a bedrock cachePoint marker (wrong provider bucket)", () => {
 		expect(
-			hasAnthropicMessageCacheControl([
+			hasMessageCacheMarker("anthropic", [
 				{
 					role: "user",
 					content: "hi",
@@ -124,16 +129,14 @@ describe("hasAnthropicMessageCacheControl", () => {
 	});
 });
 
-describe("shouldEnableAnthropicSystemCacheControl", () => {
+describe("shouldEnableSystemCache (anthropic)", () => {
 	it("enables when cache_ttl is set, regardless of message markers", () => {
-		expect(shouldEnableAnthropicSystemCacheControl({ cacheTtl: "5m", bridgeMessages: [] })).toBe(
-			true,
-		);
+		expect(shouldEnableSystemCache("anthropic", { cacheTtl: "5m", bridgeMessages: [] })).toBe(true);
 	});
 
 	it("falls back to message-level marker presence when cache_ttl is unset", () => {
 		expect(
-			shouldEnableAnthropicSystemCacheControl({
+			shouldEnableSystemCache("anthropic", {
 				cacheTtl: undefined,
 				bridgeMessages: [
 					{
@@ -148,7 +151,7 @@ describe("shouldEnableAnthropicSystemCacheControl", () => {
 
 	it("disables when neither cache_ttl nor a marker is present", () => {
 		expect(
-			shouldEnableAnthropicSystemCacheControl({
+			shouldEnableSystemCache("anthropic", {
 				cacheTtl: undefined,
 				bridgeMessages: [{ role: "user", content: "hi" }],
 			}),

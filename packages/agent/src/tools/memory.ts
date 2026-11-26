@@ -75,16 +75,6 @@ function modDate(iso: string | null | undefined): string {
 }
 
 /**
- * Resolve the tier for a memory entry from an optional explicit-tier
- * argument. Pure function: explicit tier wins, else `"default"`.
- *
- * Tier is the single source of truth for memory durability. The
- * historical `_standing:` / `_feedback:` / `_policy:` / `_pinned:`
- * key-prefix shorthand was removed: those names are still legal as a
- * human-facing naming convention, but they no longer auto-pin. To
- * pin a memory, pass `tier: "pinned"` on store.
- */
-/**
  * Keys for system-authored memories that are exempt from the pinned-memory
  * COUNT cap (but still subject to the per-entry SIZE cap). The heartbeat
  * standing instructions are the canonical case; add future system keys here.
@@ -112,10 +102,6 @@ function countNonSystemPinned(ctx: ToolContext, agentId: string | null = null): 
 		)
 		.get(...systemKeys, ...nsParams) as { n: number };
 	return row.n;
-}
-
-export function resolveTierForKey(_key: string, explicitTier?: MemoryTier): MemoryTier {
-	return explicitTier ?? "default";
 }
 
 /**
@@ -159,8 +145,7 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	);
 	const now = new Date().toISOString();
 
-	// Determine tier: explicit argument wins, else "default".
-	const resolvedTier = resolveTierForKey(key, args.tier);
+	const resolvedTier: MemoryTier = args.tier ?? "default";
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";

@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { BoundApiError } from "@bound/client";
 	import { onMount } from "svelte";
 	import Btn from "../components/Btn.svelte";
 	import Page from "../components/Page.svelte";
 	import SectionHeader from "../components/SectionHeader.svelte";
+	import { client } from "../lib/bound";
 
 	// The persona is a single synced cluster_config row, read live at assembly
 	// time. Saving here propagates to every host and takes effect on the next turn
@@ -39,13 +41,7 @@
 			loading = true;
 			error = null;
 			conflict = false;
-			const res = await fetch("/api/persona");
-			if (!res.ok) throw new Error(`GET /api/persona failed: ${res.status}`);
-			const data = (await res.json()) as {
-				persona: string;
-				modified_at: string | null;
-				max_bytes: number;
-			};
+			const data = await client.getPersona();
 			persona = data.persona;
 			original = data.persona;
 			modifiedAt = data.modified_at;
@@ -64,26 +60,15 @@
 			error = null;
 			saved = false;
 			conflict = false;
-			const payload: { persona: string; expected_modified_at?: string } = { persona };
-			if (modifiedAt) payload.expected_modified_at = modifiedAt;
-			const res = await fetch("/api/persona", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(payload),
-			});
-			if (res.status === 409) {
-				conflict = true;
-				return;
-			}
-			if (!res.ok) {
-				const body = (await res.json().catch(() => ({}))) as { error?: string };
-				throw new Error(body.error ?? `POST /api/persona failed: ${res.status}`);
-			}
-			const result = (await res.json().catch(() => ({}))) as { modified_at?: string | null };
+			const result = await client.setPersona(persona, modifiedAt);
 			original = persona;
 			modifiedAt = result.modified_at ?? modifiedAt;
 			saved = true;
 		} catch (err: unknown) {
+			if (err instanceof BoundApiError && err.status === 409) {
+				conflict = true;
+				return;
+			}
 			error = err instanceof Error ? err.message : "Failed to save persona.";
 		} finally {
 			saving = false;

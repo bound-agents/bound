@@ -3,20 +3,12 @@ import type { Database } from "bun:sqlite";
 /**
  * Cross-table reads that resolve a `semantic_memory` entry's source pointer
  * (its `source` column, which may be a task id or a thread id) into a
- * human-readable label by LEFT JOINing `tasks` and `threads`.
- *
- * Powers the volatile-context staging tiers in
- * `packages/agent/src/summary-extraction.ts` (L0 pinned, L1 summaries + their
+ * human-readable label by LEFT JOINing `tasks` and `threads`. One finder per
+ * volatile-context staging tier (L0 pinned, L1 summaries + their
  * summarizes-children, L2 graph-seeded source enrichment, L3 recency).
- *
- * See ../index.ts for conventions. Reads only; bun:sqlite `.get()` returns
- * `null` on empty reads.
  */
 
-/**
- * A `semantic_memory` row with its source resolved against tasks/threads.
- * Column names mirror exactly what `summary-extraction.ts` destructures.
- */
+/** A `semantic_memory` row with its source resolved against tasks/threads. */
 export interface MemoryWithSourceRow {
 	key: string;
 	value: string;
@@ -40,6 +32,10 @@ export interface MemoryWithSourceAndDeletedRow extends MemoryWithSourceRow {
 	deleted: number;
 }
 
+const MEMORY_SOURCE_COLUMNS = `t_src.trigger_spec AS task_name,
+			        th_src.id          AS thread_id,
+			        th_src.title       AS thread_title`;
+
 const MEMORY_SOURCE_JOIN = `LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 		 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0`;
 
@@ -50,9 +46,7 @@ export function listPinnedMemoryWithSource(db: Database): MemoryWithSourceRow[] 
 	return db
 		.prepare(
 			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
+			        ${MEMORY_SOURCE_COLUMNS}
 			 FROM semantic_memory m
 			 ${MEMORY_SOURCE_JOIN}
 			 WHERE m.deleted = 0
@@ -70,9 +64,7 @@ export function listSummaryMemoryWithSource(db: Database): MemoryWithSourceRow[]
 	return db
 		.prepare(
 			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
+			        ${MEMORY_SOURCE_COLUMNS}
 			 FROM semantic_memory m
 			 ${MEMORY_SOURCE_JOIN}
 			 WHERE m.tier = 'summary' AND m.deleted = 0
@@ -93,9 +85,7 @@ export function listSummaryChildrenWithSource(
 	return db
 		.prepare(
 			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
+			        ${MEMORY_SOURCE_COLUMNS}
 			 FROM memory_edges e
 			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
 			 ${MEMORY_SOURCE_JOIN}
@@ -107,10 +97,8 @@ export function listSummaryChildrenWithSource(
 
 /**
  * L2 — for a set of memory keys (graph-seed results), resolve each key's source
- * label. `deleted` is intentionally NOT filtered on `m` here, matching the
- * production query (the seeds were already filtered upstream). Returns one row
- * per matched key. Returns `[]` for an empty `keys` array without touching the
- * DB.
+ * label. `deleted` is not filtered on `m`: the seeds were already filtered
+ * upstream. Returns `[]` for an empty `keys` array without touching the DB.
  */
 export function listMemorySourceInfoByKeys(
 	db: Database,
@@ -121,9 +109,7 @@ export function listMemorySourceInfoByKeys(
 	return db
 		.prepare(
 			`SELECT m.key,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
+			        ${MEMORY_SOURCE_COLUMNS}
 			 FROM semantic_memory m
 			 ${MEMORY_SOURCE_JOIN}
 			 WHERE m.key IN (${placeholders})`,
@@ -148,9 +134,7 @@ export function listRecencyMemoryWithSource(
 	return db
 		.prepare(
 			`SELECT m.key, m.value, m.source, m.modified_at, m.tier, m.deleted,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
+			        ${MEMORY_SOURCE_COLUMNS}
 			 FROM semantic_memory m
 			 ${MEMORY_SOURCE_JOIN}
 			 WHERE m.modified_at > ?

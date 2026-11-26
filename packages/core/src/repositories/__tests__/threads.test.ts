@@ -7,7 +7,6 @@ import {
 	findLatestThreadColorExcludingInterfaces,
 	findLiveThreadById,
 	findLiveThreadIdById,
-	findLiveThreadInterfaceById,
 	findThreadAgentIdById,
 	findThreadById,
 	findThreadCreatedAtById,
@@ -18,8 +17,6 @@ import {
 	findThreadSummaryStateById,
 	findThreadTitleById,
 	findThreadUserAndInterfaceById,
-	listLiveThreadIdsIdleBefore,
-	listThreadsByUser,
 } from "../threads";
 
 const SITE_ID = "site-test";
@@ -216,84 +213,6 @@ describe("threads repository", () => {
 		it("findLiveThreadById returns a live row", () => {
 			seedThread(db, { id: "t2-live", title: "x" });
 			expect(findLiveThreadById(db, "t2-live")?.id).toBe("t2-live");
-		});
-	});
-
-	describe("findLiveThreadInterfaceById (live only)", () => {
-		it("returns the interface for a live thread", () => {
-			seedThread(db, { id: "t-if", interface: "scheduler" });
-			expect(findLiveThreadInterfaceById(db, "t-if")).toEqual({ interface: "scheduler" });
-		});
-
-		it("returns null for a soft-deleted thread", () => {
-			seedThread(db, { id: "t-if-del", interface: "web" });
-			softDelete(db, "threads", "t-if-del", SITE_ID);
-			expect(findLiveThreadInterfaceById(db, "t-if-del")).toBeNull();
-		});
-
-		it("returns null for an absent id", () => {
-			expect(findLiveThreadInterfaceById(db, "nope")).toBeNull();
-		});
-	});
-
-	// --- list finder with deleted=0 filter + ORDER BY last_message_at DESC ---
-
-	describe("listThreadsByUser", () => {
-		it("returns only live threads for the user, newest-message first", () => {
-			seedThread(db, {
-				id: "u1-old",
-				user_id: "u-1",
-				last_message_at: "2026-01-01T00:00:00.000Z",
-			});
-			seedThread(db, {
-				id: "u1-new",
-				user_id: "u-1",
-				last_message_at: "2026-03-01T00:00:00.000Z",
-			});
-			seedThread(db, {
-				id: "u1-mid",
-				user_id: "u-1",
-				last_message_at: "2026-02-01T00:00:00.000Z",
-			});
-			// other user — must be excluded
-			seedThread(db, { id: "u2-only", user_id: "u-2" });
-			// soft-deleted for u-1 — must be excluded
-			seedThread(db, { id: "u1-dead", user_id: "u-1" });
-			softDelete(db, "threads", "u1-dead", SITE_ID);
-
-			const rows = listThreadsByUser(db, "u-1");
-			expect(rows.map((r) => r.id)).toEqual(["u1-new", "u1-mid", "u1-old"]);
-		});
-
-		it("returns [] when the user has no threads", () => {
-			seedThread(db, { id: "x", user_id: "someone-else" });
-			expect(listThreadsByUser(db, "nobody")).toEqual([]);
-		});
-	});
-
-	// --- listLiveThreadIdsIdleBefore: strict < cutoff, deleted=0 ---
-
-	describe("listLiveThreadIdsIdleBefore", () => {
-		it("returns live thread ids strictly older than the cutoff", () => {
-			seedThread(db, { id: "idle-a", last_message_at: "2026-01-01T00:00:00.000Z" });
-			seedThread(db, { id: "idle-b", last_message_at: "2026-01-02T00:00:00.000Z" });
-			// equal to cutoff — excluded by strict <
-			seedThread(db, { id: "boundary", last_message_at: "2026-01-03T00:00:00.000Z" });
-			// after cutoff — excluded
-			seedThread(db, { id: "fresh", last_message_at: "2026-01-04T00:00:00.000Z" });
-			// soft-deleted but old — excluded by deleted=0
-			seedThread(db, { id: "old-dead", last_message_at: "2026-01-01T00:00:00.000Z" });
-			softDelete(db, "threads", "old-dead", SITE_ID);
-
-			const ids = listLiveThreadIdsIdleBefore(db, "2026-01-03T00:00:00.000Z")
-				.map((r) => r.id)
-				.sort();
-			expect(ids).toEqual(["idle-a", "idle-b"]);
-		});
-
-		it("returns [] when nothing is idle before the cutoff", () => {
-			seedThread(db, { id: "recent", last_message_at: "2026-05-01T00:00:00.000Z" });
-			expect(listLiveThreadIdsIdleBefore(db, "2026-01-01T00:00:00.000Z")).toEqual([]);
 		});
 	});
 

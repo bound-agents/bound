@@ -46,10 +46,10 @@ describe("connectMcpServers", () => {
 
 		expect(calls).toHaveLength(1);
 		expect(calls[0].url).toBe("http://localhost:3001/api/mcp-apps/proxy/excalidraw");
-		const names = host.getToolDefinitions().map((d) => d.function.name);
-		expect(names).toEqual(["mcp__excalidraw__create_view", "mcp__excalidraw__plain"]);
-		expect(host.isUiBearing("mcp__excalidraw__create_view")).toBe(true);
-		expect(host.isUiBearing("mcp__excalidraw__plain")).toBe(false);
+		expect(host.resolveByServerTool("excalidraw", "create_view")?.uiResourceUri).toBe(
+			"ui://excalidraw/app.html",
+		);
+		expect(host.resolve("mcp__excalidraw__plain")?.uiResourceUri).toBeUndefined();
 	});
 
 	it("excludes app-only tools (_meta.ui.visibility=['app']) from the model-facing definitions", async () => {
@@ -70,15 +70,18 @@ describe("connectMcpServers", () => {
 			"http://localhost:3001",
 		);
 
-		const names = host.getToolDefinitions().map((d) => d.function.name);
 		// create_view has no visibility (default ["model","app"] → visible);
 		// explicit_model and both include "model" → visible; the three ["app"]
 		// tools are widget-only and must never be offered to the model.
-		expect(names).toEqual([
-			"mcp__excalidraw__create_view",
-			"mcp__excalidraw__explicit_model",
-			"mcp__excalidraw__both",
-		]);
+		const registered = [
+			"create_view",
+			"save_checkpoint",
+			"read_checkpoint",
+			"export_to_excalidraw",
+			"explicit_model",
+			"both",
+		].filter((name) => host.resolveByServerTool("excalidraw", name));
+		expect(registered).toEqual(["create_view", "explicit_model", "both"]);
 	});
 
 	it("does not pass auth headers from the browser (they are injected by the proxy)", async () => {
@@ -110,8 +113,8 @@ describe("connectMcpServers", () => {
 			},
 			"http://localhost:3001",
 		);
-		const names = host.getToolDefinitions().map((d) => d.function.name);
-		expect(names).toEqual(["mcp__up__ok"]);
+		expect(host.resolve("mcp__up__ok")?.serverName).toBe("up");
+		expect(host.resolveByServerTool("down", "ok")).toBeUndefined();
 	});
 
 	it("returns an empty host when every server fails", async () => {
@@ -125,7 +128,7 @@ describe("connectMcpServers", () => {
 			},
 			"http://localhost:3001",
 		);
-		expect(host.getToolDefinitions()).toEqual([]);
+		expect(host.resolveByServerTool("a", "t")).toBeUndefined();
 	});
 
 	it("returns an empty host for an empty server list without connecting", async () => {
@@ -139,7 +142,7 @@ describe("connectMcpServers", () => {
 			"http://localhost:3001",
 		);
 		expect(connectCalls).toBe(0);
-		expect(host.getToolDefinitions()).toEqual([]);
+		expect(host.resolveByServerTool("fake", "t")).toBeUndefined();
 	});
 });
 
@@ -180,7 +183,7 @@ describe("initMcpApps", () => {
 		const host = await initMcpApps();
 		// A host object is returned (non-null) once a non-empty server list loads.
 		expect(host).not.toBeNull();
-		expect(host?.getToolDefinitions()).toEqual([]);
+		expect(host).not.toBeNull();
 	});
 
 	it("is idempotent — a later call short-circuits to null without fetching", async () => {

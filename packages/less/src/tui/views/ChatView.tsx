@@ -29,12 +29,6 @@ import {
 	computeYardRegionBudget,
 	partitionLiveYards,
 } from "../components";
-import {
-	analyzeToolCallContent,
-	formatDuration,
-	isCompactToolName,
-	summarizeToolArgs,
-} from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
@@ -58,6 +52,12 @@ import {
 	fitCellBox,
 	graphicsCursorMode,
 } from "../util/terminal-graphics";
+import {
+	buildToolResultMetaMap,
+	buildTranscriptMargins,
+	buildTurnActivityMap,
+	summarizeToolArgs,
+} from "../util/transcript";
 
 /**
  * Slash-command palette for the input's completion menu. Kept adjacent to
@@ -129,267 +129,6 @@ export function suggestSlashCommand(command: string): string | null {
 }
 
 /**
- * Per-tool_result metadata derived from its originating tool_call:
- * - `filePath`: present when the matching tool_use carried a `file_path`
- *   input — used by MessageBlock for syntax highlighting on read results.
- * - `isLastInGroup`: false when more sibling results from the same parallel
- *   tool_call are still expected; true for the final one. ChatView uses this
- *   to collapse the inter-result gap so a parallel-call group renders as one
- *   continuous cyan-striped card.
- */
-export type ToolResultMeta = {
-	filePath?: string;
-	isLastInGroup: boolean;
-	/**
-	 * The originating tool_use's `name` (e.g. "boundless_read"), resolved via
-	 * the correlation map. MessageBlock renders this on the result line — the
-	 * result row's own `tool_name` column holds the opaque tool_use_id, not a
-	 * name, so without this the header would echo a useless id.
-	 */
-	toolName?: string;
-	/** The originating tool_use's `input` args — compact result lines render from these. */
-	input?: Record<string, unknown>;
-	/** id of the owning tool_call message — used for group-continuation margins. */
-	callMsgId?: string;
-	/**
-	 * Number of tool_use blocks in the owning call. Results of PARALLEL groups
-	 * (total > 1) re-render their ⏵ request row so each result immediately
-	 * follows its request — the call's own listing is suppressed.
-	 */
-	total?: number;
-	/**
-	 * `created_at` of the owning tool_call message. Paired with the result's
-	 * own `created_at` it yields wall-clock duration for the completed call —
-	 * both frozen by the time the result row commits (Static-safe).
-	 */
-	callCreatedAt?: string;
-};
-
-/**
- * Walk messages once to derive per-tool_result metadata.
- *
- * Tool calls and their results are correlated through `tool_use_id`:
- * the call's content is a JSON `[{type: "tool_use", id, name, input}]`,
- * and the result message stores the matching id in its `tool_name`
- * column (a quirk of the storage layer — the column name reads as the
- * tool name but for tool_result rows it's the tool_use_id).
- *
- * The `isLastInGroup` flag is computed using each call's full
- * tool_use count as the denominator and a per-call running counter
- * over results seen so far. Crucially, the denominator is known the
- * moment the call lands — so even before sibling results arrive, an
- * early result can correctly classify itself as `isLastInGroup=false`.
- * That's what makes the visual grouping Static-friendly: each result
- * gets the right margin on first render and never needs to re-render.
- */
-export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolResultMeta> {
-	// Pass 1: index every tool_use block from every tool_call message.
-	// Each entry knows its parent call and the call's total tool_use count.
-	const toolUseToInfo = new Map<
-		string,
-		{
-			filePath?: string;
-			toolName?: string;
-			input?: Record<string, unknown>;
-			callMsgId: string;
-			total: number;
-			callCreatedAt: string;
-		}
-	>();
-	for (const msg of messages) {
-		if (msg.role !== "tool_call") continue;
-		try {
-			const blocks = JSON.parse(msg.content) as Array<{
-				type?: string;
-				id?: string;
-				name?: string;
-				input?: Record<string, unknown>;
-			}>;
-			if (!Array.isArray(blocks)) continue;
-			const uses = blocks.filter(
-				(
-					b,
-				): b is { type: "tool_use"; id: string; name?: string; input?: Record<string, unknown> } =>
-					b.type === "tool_use" && typeof b.id === "string",
-			);
-			for (const block of uses) {
-				// boundless_* file tools carry `file_path`; the sandbox bms_* tools
-				// carry `path`. Missing this made a bms_read compact line dump its
-				// first hashline as the "target" instead of the file.
-				const filePath =
-					typeof block.input?.file_path === "string"
-						? block.input.file_path
-						: typeof block.input?.path === "string"
-							? block.input.path
-							: undefined;
-				const toolName = typeof block.name === "string" ? block.name : undefined;
-				toolUseToInfo.set(block.id, {
-					filePath,
-					toolName,
-					input: block.input,
-					callMsgId: msg.id,
-					total: uses.length,
-					callCreatedAt: msg.created_at,
-				});
-			}
-		} catch {
-			// Non-parseable content — skip; not all tool_call messages parse cleanly.
-		}
-	}
-
-	// Pass 2: walk results in order. The K-th result for a call (K === total)
-	// is the last in its group; everything before that is mid-group.
-	const seenPerCall = new Map<string, number>();
-	const result = new Map<string, ToolResultMeta>();
-	for (const msg of messages) {
-		if (msg.role !== "tool_result" || !msg.tool_name) continue;
-		const info = toolUseToInfo.get(msg.tool_name);
-		if (!info) continue;
-		const seen = (seenPerCall.get(info.callMsgId) ?? 0) + 1;
-		seenPerCall.set(info.callMsgId, seen);
-		result.set(msg.id, {
-			filePath: info.filePath,
-			isLastInGroup: seen === info.total,
-			toolName: info.toolName,
-			input: info.input,
-			callMsgId: info.callMsgId,
-			total: info.total,
-			callCreatedAt: info.callCreatedAt,
-		});
-	}
-	return result;
-}
-
-/**
- * Per-message layout margins for the session-log Static, plus whether the
- * transcript currently ends inside a compact read/search/query run (the dynamic
- * area below adds its own top gap in that case, since the run's rows carry no
- * bottom margin).
- *
- * Compact tools collapse to one line per invocation and consecutive calls stack
- * with no blank line between them — they dominate coding sessions, so the
- * transcript stays scannable. Because Ink's <Static> commits each row exactly
- * once and never repaints it, a row's margins may depend only on messages that
- * precede it (its own suppressed call, the prior compact run) — never on what
- * arrives later. That is why grouping is expressed as marginTop on the
- * FOLLOWING row ("am I continuing a run?") rather than marginBottom on the last
- * row ("is anything after me?"), which would need the future.
- */
-export function buildTranscriptMargins(
-	messages: Message[],
-	meta: Map<string, ToolResultMeta>,
-): { margins: Map<string, { top: number; bottom: number }>; endsInCompactRun: boolean } {
-	const margins = new Map<string, { top: number; bottom: number }>();
-	// Rolling state over already-committed rows. `compactRun` means the last
-	// VISIBLE row is a compact one-liner; `visibleCallMsgId` is the owning
-	// call of the last visible tool row. Suppressed (zero-height) calls leave
-	// both untouched — they don't change what's on screen, so letting them
-	// flip the state would misplace gaps around rows they never rendered.
-	let compactRun = false;
-	let visibleCallMsgId: string | undefined;
-	for (const msg of messages) {
-		if (msg.role === "tool_call") {
-			const { suppressed } = analyzeToolCallContent(msg.content);
-			if (suppressed) {
-				// Zero-height row — any margin would render as a stray blank
-				// line, and the visible-row state is unaffected.
-				margins.set(msg.id, { top: 0, bottom: 0 });
-			} else {
-				margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 0 });
-				compactRun = false;
-				visibleCallMsgId = msg.id;
-			}
-			continue;
-		}
-		if (msg.role === "tool_result") {
-			const m = meta.get(msg.id);
-			const isError = msg.exit_code != null && msg.exit_code !== 0;
-			if (m?.toolName != null && isCompactToolName(m.toolName) && !isError) {
-				// Compact one-liner: stacks directly onto whatever visible row
-				// precedes it (a run sibling, or a full row whose own bottom
-				// margin supplies the gap).
-				margins.set(msg.id, { top: 0, bottom: 0 });
-				compactRun = true;
-				visibleCallMsgId = m.callMsgId;
-			} else {
-				// Full-width result (or ⏵-paired result for parallel groups):
-				// abuts the group it visibly continues; takes the separating
-				// gap when it interrupts a compact run it doesn't belong to.
-				const continuesVisibleGroup = m?.callMsgId != null && m.callMsgId === visibleCallMsgId;
-				margins.set(msg.id, {
-					top: !continuesVisibleGroup && compactRun ? 1 : 0,
-					bottom: m && !m.isLastInGroup ? 0 : 1,
-				});
-				compactRun = false;
-				visibleCallMsgId = m?.callMsgId;
-			}
-			continue;
-		}
-		margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 1 });
-		compactRun = false;
-		visibleCallMsgId = undefined;
-	}
-	return { margins, endsInCompactRun: compactRun };
-}
-
-/**
- * Minimum activity for an assistant turn-header summary: a couple of quick
- * tool calls aren't a journey worth narrating, but a long run (or a slow one)
- * is — the header tells the reader what the turn cost at the moment they
- * start reading its conclusion.
- */
-const ACTIVITY_MIN_TOOLS = 3;
-const ACTIVITY_MIN_MS = 10_000;
-
-/**
- * Walk messages once and, for each assistant message that concludes a run of
- * tool activity, produce a one-line summary of that run (`14 tools · 1m 40s`).
- * Rendered dim after the `agent` header by MessageBlock.
- *
- * Static-safe by the same argument as the margin map: a summary depends only
- * on messages that PRECEDE the assistant message it annotates, so the row
- * renders correctly the first time and never needs a repaint. Duration is
- * wall-clock from the run's first tool_call commit to the assistant commit —
- * both timestamps frozen before the assistant row exists.
- */
-export function buildTurnActivityMap(messages: Message[]): Map<string, string> {
-	const out = new Map<string, string>();
-	let toolCount = 0;
-	let runStartMs: number | null = null;
-	for (const msg of messages) {
-		if (msg.role === "tool_call") {
-			if (runStartMs === null) runStartMs = Date.parse(msg.created_at);
-			continue;
-		}
-		if (msg.role === "tool_result") {
-			toolCount += 1;
-			continue;
-		}
-		if (msg.role === "assistant") {
-			if (toolCount > 0 && runStartMs !== null && Number.isFinite(runStartMs)) {
-				const ms = Date.parse(msg.created_at) - runStartMs;
-				const qualifies =
-					toolCount >= ACTIVITY_MIN_TOOLS || (Number.isFinite(ms) && ms >= ACTIVITY_MIN_MS);
-				if (qualifies && Number.isFinite(ms) && ms >= 0) {
-					out.set(
-						msg.id,
-						`${toolCount} ${toolCount === 1 ? "tool" : "tools"} · ${formatDuration(ms)}`,
-					);
-				}
-			}
-			toolCount = 0;
-			runStartMs = null;
-			continue;
-		}
-		// user / system / alert rows break the run: activity before them
-		// belongs to a different turn than any assistant message after.
-		toolCount = 0;
-		runStartMs = null;
-	}
-	return out;
-}
-
-/**
  * Discriminated-union item for the session-log Static.
  *
  * Ink's <Static> officially supports only one instance per render tree, so we
@@ -439,7 +178,7 @@ export function partitionPendingMessage(messages: Message[]): {
 /**
  * Spinner label for a live Yard run: whole-invocation progress (`Yard ·
  * 3/12 effects`) instead of a per-segment "Thinking" that resets between
- * loop turns and reads as a stall during minutes-long runs (thread 2b372dca).
+ * loop turns and reads as a stall during minutes-long runs.
  */
 function yardSpinnerLabel(tree: YardTreeSnapshot): string {
 	const leaves = tree.nodes.filter((node) => node.node.kind !== "run");
@@ -628,7 +367,7 @@ export function ChatView({
 	// to their own transcripts. The spinner gate below must count DISPLAYED
 	// cards, not raw map size — during a Yard run every in-flight tool is
 	// filtered, and gating on the raw size left NO liveness indicator at all
-	// (thread 2b372dca: "not clear if the system is actually working").
+	// ("not clear if the system is actually working").
 	const visibleInFlight = useMemo(
 		() =>
 			Array.from(inFlightTools.entries()).filter(
@@ -1151,7 +890,7 @@ export function ChatView({
 					    filtered (yard-client / aux-thread), and gating on raw size
 					    left no liveness signal at all. A live Yard run labels the
 					    spinner with whole-invocation progress and anchors elapsed
-					    at the run's start (thread 2b372dca). */}
+					    at the run's start. */}
 					{(isProcessing || liveYard) && visibleInFlight.length === 0 && (
 						<Box>
 							<Spinner

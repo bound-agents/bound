@@ -26,10 +26,8 @@
  * count, chosen so the summary cannot reconstruct content.
  */
 
+import { MAX_TOOL_NAMES } from "../fetch-logger";
 import type { ContentBlock, LLMMessage } from "../types";
-
-/** Upper bound on distinct tool names surfaced, matching fetch-logger. */
-const MAX_TOOL_NAMES = 10;
 
 /** Per-message structural summary. No content, only kinds/counts/ids-shape. */
 export interface MessageShapeSummary {

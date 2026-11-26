@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { softDelete } from "@bound/core";
+import { parseClientSessionId } from "./lib/client-session-id";
 
 /**
  * Soft-delete client_sessions rows whose connection is no longer live, scoped
@@ -31,9 +32,7 @@ export function reapStaleClientSessions(
 
 	const reaped: string[] = [];
 	for (const { id } of rows) {
-		// Session row ID format: `${connectionId}::${threadId}`
-		const connId = id.split("::")[0];
-		if (!liveConnectionIds.has(connId)) {
+		if (!liveConnectionIds.has(parseClientSessionId(id).connectionId)) {
 			softDelete(db, "client_sessions", id, siteId);
 			reaped.push(id);
 		}

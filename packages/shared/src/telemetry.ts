@@ -51,23 +51,9 @@ function signalEndpoint(signal: "traces" | "metrics"): string | undefined {
 	return `${base.replace(/\/+$/, "")}/v1/${signal}`;
 }
 
-/**
- * Initialize Bun-compatible manual OpenTelemetry tracing and metrics.
- *
- * The second argument accepts either the options API or the historical positional
- * SpanExporter used by tests and embedders.
- */
-export function initTelemetry(serviceName: string, options?: TelemetryOptions): void;
-export function initTelemetry(serviceName: string, traceExporter?: SpanExporter): void;
-export function initTelemetry(
-	serviceName: string,
-	options: TelemetryOptions | SpanExporter = {},
-): void {
+/** Initialize Bun-compatible manual OpenTelemetry tracing and metrics. */
+export function initTelemetry(serviceName: string, normalized: TelemetryOptions = {}): void {
 	if (provider || meterProvider || shutdownPromise) return;
-	const normalized: TelemetryOptions =
-		typeof (options as SpanExporter).export === "function"
-			? { traceExporter: options as SpanExporter }
-			: (options as TelemetryOptions);
 	const enabled = normalized.enabled ?? isEnabled(process.env.OTEL_ENABLED);
 	if (!enabled) return;
 

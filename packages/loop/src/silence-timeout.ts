@@ -12,15 +12,6 @@ export function scaledSilenceTimeout(baseMs: number, estimatedTokens: number): n
 	return baseMs + extraMs;
 }
 
-/**
- * Scale the max number of silence-timeout retries. With long timeouts each retry
- * is expensive, so the count is kept flat regardless of context size to avoid
- * multi-hour stalls; callers pass the base ceiling they want enforced.
- */
-export function scaledMaxRetries(_estimatedTokens: number, maxRetries: number): number {
-	return maxRetries;
-}
-
 export async function* withSilenceTimeout<T>(
 	source: AsyncIterable<T>,
 	timeoutMs: number,
@@ -51,20 +42,25 @@ export async function* withSilenceTimeout<T>(
 				}, heartbeatIntervalMs);
 			}
 
+			const clearTimers = () => {
+				if (timerId) clearTimeout(timerId);
+				if (heartbeatId) clearInterval(heartbeatId);
+			};
+
 			let result: IteratorResult<T>;
 			try {
 				result = await Promise.race([nextChunkPromise, timeoutPromise]);
-				if (timerId) clearTimeout(timerId);
-				if (heartbeatId) clearInterval(heartbeatId);
 			} catch (err) {
-				if (timerId) clearTimeout(timerId);
-				if (heartbeatId) clearInterval(heartbeatId);
+				// Clear before awaiting the source's return(): a slow or hung return()
+				// must not keep heartbeating or let the pending timeout fire onTimeout().
+				clearTimers();
 				innerFinalized = true;
 				if (typeof iterator.return === "function") {
 					await iterator.return(undefined).catch(() => {});
 				}
 				throw err;
 			}
+			clearTimers();
 
 			if (result.done) {
 				innerFinalized = true;

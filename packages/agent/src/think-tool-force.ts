@@ -15,7 +15,7 @@
  * normally on the next turn with the thought in its context.
  */
 
-import type { ChatParams } from "@bound/llm";
+import type { ChatParams, ToolDefinition } from "@bound/llm";
 
 /**
  * Tool calls (not assistant messages) allowed between `think` calls before the
@@ -32,8 +32,23 @@ export const THINK_TOOL_FORCE_AFTER = 10;
  */
 export const THINK_FORCE_SCAN_LIMIT = 120;
 
-/** The synthetic scratchpad tool's name; see THINK_TOOL_DEFINITION. */
 const THINK_TOOL_NAME = "think";
+
+export const THINK_TOOL_DEFINITION: ToolDefinition = {
+	type: "function",
+	function: {
+		name: THINK_TOOL_NAME,
+		description:
+			"Use this optional scratchpad to reason through a problem before acting. " +
+			"It has no external effect; put the reasoning in `thought`.",
+		parameters: {
+			type: "object",
+			properties: { thought: { type: "string" } },
+			required: ["thought"],
+			additionalProperties: false,
+		},
+	},
+};
 
 /** Minimal shape of a persisted message row this module reads. */
 export interface ToolStreakRow {

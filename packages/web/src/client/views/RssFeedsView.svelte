@@ -8,6 +8,7 @@
 	import TaskCard from "../components/TaskCard.svelte";
 	import TicketTab from "../components/TicketTab.svelte";
 	import { client } from "../lib/bound";
+	import { formatDate } from "../lib/format-time";
 
 	let feeds: RssFeedListEntry[] = $state([]);
 	let loading = $state(true);
@@ -208,18 +209,6 @@
 		if (seconds % 3600 === 0) return `${seconds / 3600}h`;
 		if (seconds % 60 === 0) return `${seconds / 60}m`;
 		return `${seconds}s`;
-	}
-
-	function formatDate(iso: string): string {
-		try {
-			return new Date(iso).toLocaleDateString("en-US", {
-				month: "short",
-				day: "numeric",
-				year: "numeric",
-			});
-		} catch {
-			return iso;
-		}
 	}
 </script>
 

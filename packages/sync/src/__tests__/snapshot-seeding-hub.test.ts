@@ -7,6 +7,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
+import { CONSISTENCY_TABLES } from "@bound/core";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 
 import { clearColumnCache } from "../reducers.js";
@@ -213,7 +214,7 @@ describe("hub snapshot seeding — chunk sending", () => {
 		stub.backpressured = false;
 		transport.continueSnapshotSeed(peer);
 
-		// The resumed seed walks all 18 SNAPSHOT_TABLE_ORDER tables, yielding to the
+		// The resumed seed walks every SNAPSHOT_TABLE_ORDER table, yielding to the
 		// event loop (setTimeout 100ms) after each sub-chunk; poll until SNAPSHOT_END
 		// is emitted rather than guessing a fixed window.
 		const sawEnd = (): boolean =>
@@ -359,22 +360,11 @@ describe("clearSyncedTables", () => {
 	let db: Database;
 	let transport: WsTransport;
 
-	// WsTransport.SYNCED_TABLES (12 tables). clearSyncedTables deletes from each;
-	// a missing one throws, so the happy path needs them all present.
-	const SYNCED_TABLES = [
-		"users",
-		"hosts",
-		"cluster_config",
-		"threads",
-		"messages",
-		"turns",
-		"semantic_memory",
-		"memory_edges",
-		"tasks",
-		"files",
-		"advisories",
-		"skills",
-	];
+	// A reseed wipes only the consistency tables; a missing one throws, so the
+	// happy path needs them all present. model_aliases stands in for every
+	// synced table outside that set, which must survive the clear.
+	const SYNCED_TABLES = [...CONSISTENCY_TABLES];
+	const NON_CONSISTENCY_TABLE = "model_aliases";
 
 	beforeEach(() => {
 		db = new Database(":memory:");
@@ -384,6 +374,7 @@ describe("clearSyncedTables", () => {
 		for (const t of SYNCED_TABLES) {
 			db.exec(`CREATE TABLE ${t} (id TEXT PRIMARY KEY)`);
 		}
+		db.exec(`CREATE TABLE ${NON_CONSISTENCY_TABLE} (id TEXT PRIMARY KEY)`);
 		transport = new WsTransport({
 			db,
 			siteId: "spoke-site",
@@ -397,10 +388,11 @@ describe("clearSyncedTables", () => {
 		db.close();
 	});
 
-	it("deletes rows from every synced table in one transaction", () => {
+	it("deletes rows from every consistency table and leaves other synced tables alone", () => {
 		for (const t of SYNCED_TABLES) {
 			db.run(`INSERT INTO ${t} (id) VALUES ('row-1'), ('row-2')`);
 		}
+		db.run(`INSERT INTO ${NON_CONSISTENCY_TABLE} (id) VALUES ('alias-1')`);
 		expect((db.query("SELECT COUNT(*) c FROM users").get() as { c: number }).c).toBe(2);
 		expect((db.query("SELECT COUNT(*) c FROM skills").get() as { c: number }).c).toBe(2);
 
@@ -409,6 +401,9 @@ describe("clearSyncedTables", () => {
 		for (const t of SYNCED_TABLES) {
 			expect((db.query(`SELECT COUNT(*) c FROM ${t}`).get() as { c: number }).c).toBe(0);
 		}
+		expect(
+			(db.query(`SELECT COUNT(*) c FROM ${NON_CONSISTENCY_TABLE}`).get() as { c: number }).c,
+		).toBe(1);
 	});
 
 	it("throws and rolls back the whole clear when a synced table is missing", () => {

@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, updateRow } from "@bound/core";
+import { resolve } from "node:path";
 import { MAX_PERSONA_BYTES, PERSONA_CLUSTER_CONFIG_KEY } from "@bound/shared";
-import { openBoundDB } from "../lib/db";
+import { openBoundDBWithSite, resolveDataDir, upsertClusterConfig } from "../lib/db";
 
 export interface SetPersonaArgs {
 	/** Path to a file to read the persona from. When omitted, stdin is read. */
@@ -19,11 +18,8 @@ export interface SetPersonaArgs {
  * cluster-wide without a reload signal. Source is a file argument or stdin.
  */
 export async function runSetPersona(args: SetPersonaArgs): Promise<void> {
-	const configDir = args.configDir || "config";
-	// Data directory is the sibling `data` of the config directory.
-	const dataDir = join(dirname(resolve(configDir)), "data");
+	const dataDir = resolveDataDir(args.configDir);
 
-	// Read the new persona from a file or stdin.
 	let content: string;
 	if (args.file) {
 		const personaPath = resolve(args.file);
@@ -51,39 +47,9 @@ export async function runSetPersona(args: SetPersonaArgs): Promise<void> {
 		);
 	}
 
-	const db = openBoundDB(dataDir);
+	const { db, siteId } = openBoundDBWithSite(dataDir);
 	try {
-		const siteId = getSiteId(db);
-		if (siteId === "unknown") {
-			throw new Error("Failed to read site_id from database. Database may not be initialized.");
-		}
-
-		const existing = db
-			.query("SELECT key FROM cluster_config WHERE key = ?")
-			.get(PERSONA_CLUSTER_CONFIG_KEY);
-
-		if (existing) {
-			// deleted: 0 un-tombstones if the key was previously soft-deleted.
-			updateRow(
-				db,
-				"cluster_config",
-				PERSONA_CLUSTER_CONFIG_KEY,
-				{ value: content, deleted: 0 },
-				siteId,
-			);
-		} else {
-			insertRow(
-				db,
-				"cluster_config",
-				{
-					key: PERSONA_CLUSTER_CONFIG_KEY,
-					value: content,
-					modified_at: new Date().toISOString(),
-					deleted: 0,
-				},
-				siteId,
-			);
-		}
+		upsertClusterConfig(db, PERSONA_CLUSTER_CONFIG_KEY, content, siteId);
 
 		console.log(`Persona set (${byteLength} bytes). It will propagate to all hosts on next sync.`);
 	} finally {

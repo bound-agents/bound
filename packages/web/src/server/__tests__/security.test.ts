@@ -46,9 +46,7 @@ describe("API Security", () => {
 		return msgId;
 	}
 
-	// ──────────────────────────────────────────────────────────────────
 	// 1. Deleted/redacted messages must NOT appear in GET listing
-	// ──────────────────────────────────────────────────────────────────
 	describe("deleted messages filtered from GET listing", () => {
 		it("excludes soft-deleted messages from thread message listing", async () => {
 			const threadId = await createThread();
@@ -90,9 +88,7 @@ describe("API Security", () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// 2. Path traversal in file upload filename
-	// ──────────────────────────────────────────────────────────────────
 	describe("file upload path traversal prevention", () => {
 		it("strips directory traversal from uploaded filename", async () => {
 			const form = new FormData();
@@ -127,9 +123,7 @@ describe("API Security", () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// 3. Content-Disposition header injection
-	// ──────────────────────────────────────────────────────────────────
 	describe("Content-Disposition header injection prevention", () => {
 		it("sanitizes quotes in filename for Content-Disposition header", async () => {
 			const form = new FormData();
@@ -185,9 +179,7 @@ describe("API Security", () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// 4. JSON.parse crash in context-debug endpoint
-	// ──────────────────────────────────────────────────────────────────
 	describe("context-debug endpoint resilience", () => {
 		it("does not crash when context_debug contains malformed JSON", async () => {
 			const threadId = await createThread();
@@ -218,9 +210,7 @@ describe("API Security", () => {
 		});
 	});
 
-	// ──────────────────────────────────────────────────────────────────
 	// 5. File upload size limit
-	// ──────────────────────────────────────────────────────────────────
 	describe("file upload size limit", () => {
 		it("rejects files larger than 50MB", async () => {
 			// Create a file that exceeds 50MB

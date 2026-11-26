@@ -1,9 +1,6 @@
 /**
- * Branch coverage for composeStableVolatileSubsection and its private
- * renderers — the Discoverable Archive tier paths (empty / Tier-1 / Tier-2
- * cluster compression / Tier-3 heading-only) and the cluster-model topology
- * block. The property/parity suites exercise byte-stability; this one drives
- * the structural branches directly.
+ * Branch coverage for composeStableVolatileSubsection: the Discoverable
+ * Archive tier paths and the cluster-model topology block.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -73,8 +70,8 @@ describe("composeStableVolatileSubsection — Discoverable Archive tiers", () =>
 		const out = composeStableVolatileSubsection(
 			baseInputs({ detailEntries: entries, parentSummaryByKey }),
 		).join("\n");
-		expect(out).toContain('<cluster name="_summary:even"');
-		expect(out).toContain('<cluster name="_summary:odd"');
+		expect(out).toContain('<cluster name="even"');
+		expect(out).toContain('<cluster name="odd"');
 		expect(out).toContain("</cluster>");
 	});
 

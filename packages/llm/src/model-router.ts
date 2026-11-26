@@ -1,18 +1,7 @@
 import type { Logger } from "@bound/shared";
 import { hintMatchesLogicalModel } from "@bound/shared";
+import { createBackendFromConfig } from "./backend-factory";
 import { normalizeModelKey } from "./catalog/normalize";
-import { AnthropicDriver } from "./drivers/anthropic";
-import { BedrockDriver } from "./drivers/bedrock";
-import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
-import { BedrockNamespaceDriver } from "./drivers/bedrock-namespace";
-import { ChatGptOAuthDriver } from "./drivers/chatgpt-oauth/driver";
-import { FileTokenStore, TokenManager } from "./drivers/chatgpt-oauth/token-store";
-import { fetchAccountInfo } from "./drivers/github-copilot/auth-core";
-import { GitHubCopilotDriver } from "./drivers/github-copilot/driver";
-import { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-copilot/token-store";
-import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
-import { OpenCodeGoDriver } from "./drivers/opencode-go";
-import { UmansDriver, createUmansAccount } from "./drivers/umans";
 import { type RouteErrorKind, RouteHealth } from "./route-health";
 import type {
 	BackendCapabilities,
@@ -30,7 +19,7 @@ export interface BackendInfo {
 import type { FieldSource, ResolvedPricing, ResolvedReasoning } from "./catalog/resolve-metadata";
 /**
  * Narrow structural view of a resolved catalog entry for `applyResolvedCatalog`
- * (slice 6 follow-up). Declared locally so the router — which must not depend on
+ * Declared locally so the router — which must not depend on
  * the catalog orchestrator — reads only the fields that drive routing budget.
  * The production `ResolvedBackend` from `catalog/resolve-catalog.ts` is
  * structurally assignable to this.
@@ -66,22 +55,8 @@ export function makeRouteId(siteId: string, provider: string, backendId: string)
 }
 
 /**
- * Sentinel context window handed to a driver constructed WITHOUT a resolved
- * `max_context` in local config (slice 6, R-MC4). The catalog layer resolves a
- * backend's real window from config / provider discovery / `models.dev`; a
- * driver is only built here from static config, before resolution runs, so when
- * `config.contextWindow` is absent we pass `0` rather than a hardcoded guess.
- * `capabilities().max_context === 0` means "advertises no max_context", which
- * `2026-11-21-model-routing.md` R-RT2 (§5 candidate pool) already treats as
- * ineligible, and which the catalog readiness gate (`gateUnreadyBackends`)
- * surfaces as a configuration gap — so a turn is never dispatched on a guessed
- * window. A backend that sets `context_window` in config keeps its real number.
- */
-const UNRESOLVED_CONTEXT_WINDOW = 0;
-
-/**
  * Upper bound on a provider- or registry-reported `max_output_tokens`, as a
- * fraction of the resolved context window. Operator decision (2026-11-23):
+ * fraction of the resolved context window. Operator decision:
  * context management assumes the output reservation is much smaller than the
  * window, and some providers report output equal to the whole window. 25%
  * leaves today's 128k output limits on 512k+ windows untouched. A
@@ -91,16 +66,16 @@ export const MAX_OUTPUT_CONTEXT_FRACTION = 0.25;
 
 /**
  * Reasoning-effort levels in ascending strength, used to clamp a configured or
- * default effort to the nearest value a model actually lists (requirement 3,
- * `2026-11-21-model-catalog.md` §3.1). This is a protocol-level strength ordering,
+ * default effort to the nearest value a model actually lists
+ * (`2026-11-21-model-catalog.md` §3.1). This is a protocol-level strength ordering,
  * not a per-model capability list — the per-model ladder is the resolved
  * `effort_values`, which this only walks to pick the nearest listed neighbour.
  */
 const EFFORT_STRENGTH_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
- * Clamp `effort` to the nearest value in the model's resolved `ladder`
- * (requirement 3). When the model lists the exact value, it passes through. When
+ * Clamp `effort` to the nearest value in the model's resolved `ladder`.
+ * When the model lists the exact value, it passes through. When
  * it does not, the nearest listed level by strength rank wins (ties resolve to
  * the stronger side). A value or ladder entry outside the known strength order,
  * or an absent/empty ladder, means there is nothing to clamp against, so the
@@ -128,35 +103,19 @@ export function clampEffortToLadder(effort: string, ladder: string[] | undefined
 }
 
 /**
- * A local route entry in the flat {@link ModelRouter} registry. Each carries
- * its {@link RouteId} (addressing/ranking/health/stickiness) and, separately,
- * its provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`, for
- * encrypted-reasoning keep/drop compatibility at the driver boundary). The two
- * properties are never conflated (R-RT1).
+ * Conservative capability descriptor for a backend whose real surface is not
+ * known locally: nothing beyond the minimum is assumed, and `max_context: 0`
+ * reads as "advertises no max_context" (R-RT2 ineligible).
  */
-export interface RouteEntry {
-	routeId: RouteId;
-	reasoningOrigin: string;
-	backend: LLMBackend;
-	capabilities: BackendCapabilities;
-}
-
-/** Copilot token managers keyed by token-store path; every backend over one file shares one. */
-const copilotTokenManagers = new Map<string, CopilotTokenManager>();
-
-/**
- * ChatGPT OAuth token managers keyed by token-store path. Refresh rotates the
- * refresh token (the old one dies), so every backend over one store file — a
- * namespace and its expanded siblings, or several concrete entries — shares one.
- */
-const chatgptTokenManagers = new Map<string, TokenManager>();
-
-/** Defaults for the three providers served by `OpenAICompatibleDriver`. */
-const OPENAI_COMPATIBLE_FLAVORS: Record<string, { defaultBaseUrl: string; label: string }> = {
-	"openai-compatible": { defaultBaseUrl: "http://localhost:8000", label: "OpenAI-compatible" },
-	cerebras: { defaultBaseUrl: "https://api.cerebras.ai/v1", label: "Cerebras" },
-	zai: { defaultBaseUrl: "https://api.z.ai/api/coding/paas/v4", label: "z.AI" },
-};
+export const DEFAULT_BACKEND_CAPABILITIES: Readonly<BackendCapabilities> = Object.freeze({
+	streaming: false,
+	tool_use: false,
+	system_prompt: false,
+	prompt_caching: false,
+	vision: false,
+	extended_thinking: false,
+	max_context: 0,
+});
 
 export class ModelRouter {
 	private backends: Map<string, LLMBackend>;
@@ -164,8 +123,7 @@ export class ModelRouter {
 	private effectiveCaps: Map<string, BackendCapabilities>;
 	/**
 	 * Per-host route health (#285, spec §6.1, R-RT11–R-RT13). Keyed by local
-	 * `backendId` (1:1 with `RouteId`). Replaces the former `rateLimits` map and
-	 * the slice-2 interim cooldown: a backend in `backoff` is unavailable, a
+	 * `backendId` (1:1 with `RouteId`): a backend in `backoff` is unavailable, a
 	 * `half_open` backend accepts one real trial turn per host, and `healthy`
 	 * routes route normally. Local-only, never synced (Invariant #3).
 	 */
@@ -192,20 +150,19 @@ export class ModelRouter {
 	private routeIdentities: Map<string, { routeId: RouteId; reasoningOrigin: string }>;
 	private clock: () => number;
 	/**
-	// (formerly parallel to rateLimits; now parallel to routeHealth): ids of
-	 * `readiness` exists and `isReady() === false`. A not-ready backend is
-	 * excluded from `listEligible`/`listBackends` and `resolveModel` defers to
-	 * it as `transient-unavailable`. Seeded from any backend exposing
-	 * `readiness`; cleared per concrete id by `clearNotReady` on expansion.
-	 * Provider-agnostic — umans is merely the first `readiness` implementer.
+	 * Ids of backends whose `readiness` exists and `isReady() === false`. A
+	 * not-ready backend is excluded from `listEligible`/`listBackends` and
+	 * `resolveModel` defers to it as `transient-unavailable`. Seeded from any
+	 * backend exposing `readiness`; cleared per concrete id by `clearNotReady`
+	 * on expansion.
 	 */
 	private notReady: Set<string>;
 	/**
 	 * Catalog-resolved reasoning metadata per backendId plus the winning source
-	 * (requirement 2, `2026-11-21-model-catalog.md` §3.1). Written by
+	 * (`2026-11-21-model-catalog.md` §3.1). Written by
 	 * `applyResolvedCatalog`; read by `getThinkingConfig` / `getEffort` to DERIVE a
 	 * reasoning request for a backend whose config sets no explicit `thinking`.
-	 * Explicit per-backend config always wins (requirement 4), so this only fills
+	 * Explicit per-backend config always wins, so this only fills
 	 * the absence; a backend with no resolved reasoning stays underived.
 	 */
 	private resolvedReasoning: Map<string, { reasoning: ResolvedReasoning; source: FieldSource }>;
@@ -270,9 +227,9 @@ export class ModelRouter {
 	 * unsupported provider), the router is left in its prior state and the
 	 * error propagates to the caller.
 	 *
-	 * Side effect: rate-limit counters are reset — backends are reconstructed
-	 * from scratch, so any prior 429 state is no longer meaningful against
-	 * the new driver instances.
+	 * Side effect: route health is reset — backends are reconstructed from
+	 * scratch, so prior failure state is not meaningful against the new
+	 * driver instances.
 	 */
 	reload(config: ModelBackendsConfig): void {
 		const next = buildRouterState(config, this.logger, this.fetchByBackendId, this.siteId);
@@ -333,15 +290,7 @@ export class ModelRouter {
 				return {
 					id,
 					capabilities: effectiveCap ??
-						backend?.capabilities() ?? {
-							streaming: true,
-							tool_use: true,
-							system_prompt: true,
-							prompt_caching: false,
-							vision: false,
-							extended_thinking: false,
-							max_context: UNRESOLVED_CONTEXT_WINDOW,
-						},
+						backend?.capabilities() ?? { ...DEFAULT_BACKEND_CAPABILITIES },
 				};
 			});
 	}
@@ -357,30 +306,6 @@ export class ModelRouter {
 	 */
 	listAllBackendIds(): string[] {
 		return Array.from(this.backends.keys());
-	}
-
-	/**
-	 * ORIGINAL listBackends doc retained below; the method is defined above.
-	listBackends(): BackendInfo[] {
-		return Array.from(this.backends.keys())
-			.filter((id) => !this.isNotReady(id))
-			.map((id) => {
-				const effectiveCap = this.effectiveCaps.get(id);
-				const backend = this.backends.get(id);
-				return {
-					id,
-					capabilities: effectiveCap ??
-						backend?.capabilities() ?? {
-							streaming: true,
-							tool_use: true,
-							system_prompt: true,
-							prompt_caching: false,
-							vision: false,
-							extended_thinking: false,
-							max_context: 0,
-						},
-				};
-			});
 	}
 
 	/**
@@ -479,32 +404,6 @@ export class ModelRouter {
 			result.push({ id, capabilities: caps });
 		}
 		return result;
-	}
-
-	/**
-	 * Compatibility shim over {@link RouteHealth} (#285): records a route failure
-	 * and places the backend in `backoff`. Historically this took a verbatim
-	 * cooldown duration; it now feeds the health machine. When `retryAfterMs` is
-	 * supplied (a `429` with a `Retry-After`), the exact duration is honored; when
-	 * it is the legacy 60s default sentinel, the exponential schedule applies
-	 * instead so repeated failures grow the backoff per R-RT11.
-	 *
-	 * Prefer {@link recordRouteFailure} for new call sites — it carries the error
-	 * kind needed for R-RT13 advisory handling.
-	 *
-	 * @param id - Backend ID (1:1 with its `RouteId`) to mark unhealthy
-	 * @param retryAfterMs - Exact `Retry-After` duration in ms, or the legacy
-	 *   60_000 default when the header was absent
-	 */
-	markRateLimited(id: string, retryAfterMs: number): void {
-		// The legacy call site passes `getLlmRetryAfterMs(error) || 60_000`. A real
-		// Retry-After is an exact rate-limit wait; the 60s fallback is a placeholder
-		// that must defer to the exponential schedule so backoff actually grows.
-		const hasExplicitRetryAfter = retryAfterMs !== 60_000;
-		this.routeHealth.recordFailure(id, {
-			errorKind: "rate_limit",
-			retryAfterMs: hasExplicitRetryAfter ? retryAfterMs : undefined,
-		});
 	}
 
 	/**
@@ -608,9 +507,8 @@ export class ModelRouter {
 		return this.notReady.has(id);
 	}
 
-	// --- Provider-agnostic dynamic-backend primitives (used by the CLI-layer
-	// registrar in inference.ts). The router never writes appContext.config —
-	// the registrar owns the shared-config pricing-row writes (package boundary).
+	// The router never writes appContext.config — the CLI-layer registrar owns
+	// the shared-config pricing-row writes (package boundary).
 
 	/**
 	 * Add (or replace) a concrete model backend at runtime — e.g. when a
@@ -698,7 +596,7 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Apply resolved catalog metadata (slice 6 follow-up, R-MC2/R-MC4,
+	 * Apply resolved catalog metadata (R-MC2/R-MC4,
 	 * `2026-11-21-model-catalog.md` §3) to the LOCAL routing path. The pure
 	 * `resolveCatalog` has already merged config > provider > `models.dev`
 	 * per field; this is the production consumer that writes the resolved
@@ -907,14 +805,14 @@ export class ModelRouter {
 			}
 			return { type: "enabled", budget_tokens: t.budget_tokens ?? 10000 };
 		}
-		// No explicit config thinking (requirement 2): derive from resolved catalog
-		// reasoning metadata. Explicit config above always wins (requirement 4).
+		// No explicit config thinking: derive from resolved catalog
+		// reasoning metadata. Explicit config above always wins.
 		return this.deriveThinkingFromMetadata(backendId);
 	}
 
 	/**
 	 * Derive a `thinking` request from the catalog-resolved reasoning metadata when
-	 * a backend sets no explicit `thinking` config (requirement 2, catalog §3.1).
+	 * a backend sets no explicit `thinking` config (catalog §3.1).
 	 * The decision uses only published facts — never a model-ID test:
 	 *
 	 * - no resolved reasoning at all → `undefined` (no source; invent nothing).
@@ -964,8 +862,8 @@ export class ModelRouter {
 		if (resolved?.supported === false && config.thinking === undefined) return undefined;
 		const effort = config.effort as ChatParams["effort"] | undefined;
 		if (effort === undefined) return undefined;
-		// Clamp an effort the model does not list to the nearest listed value
-		// (requirement 3). The ladder comes from resolved catalog reasoning metadata;
+		// Clamp an effort the model does not list to the nearest listed value.
+		// The ladder comes from resolved catalog reasoning metadata;
 		// without one the value passes through and the driver's own protocol gate
 		// (`BEDROCK_EFFORTS` / `ANTHROPIC_EFFORTS` / Copilot `resolveReasoningEffort`)
 		// decides. Never a model-ID test.
@@ -1009,7 +907,7 @@ export class ModelRouter {
 	 * Live regression that motivated this defaulting: a thread ran with
 	 * cr=0 across most of its turns because Sonnet's config didn't
 	 * explicitly set `cacheTtl`. The
-	 * Bedrock driver's `shouldEnableSystemCachePoint` gate disabled the
+	 * `shouldEnableSystemCache` gate disabled the
 	 * system anchor when both `cache_ttl` was undefined AND the
 	 * message-level marker wasn't placed — both layers failed silently,
 	 * caching was completely off.
@@ -1054,319 +952,6 @@ export class ModelRouter {
 		return this.routeIdentities.get(backendId)?.reasoningOrigin ?? null;
 	}
 }
-
-function createBackendFromConfig(
-	config: BackendConfig,
-	logger?: Logger,
-	fetch?: typeof globalThis.fetch,
-	siteId?: string,
-): LLMBackend {
-	const provider = config.provider.toLowerCase();
-
-	switch (provider) {
-		case "bedrock": {
-			const region = config.region as string | undefined;
-			if (!region) {
-				throw new Error("Bedrock driver requires region in config");
-			}
-			const profile = config.profile as string | undefined;
-			// No `model` => self-configuring namespace for this (profile, region): it owns
-			// `readiness`, fetches ListFoundationModels + ListInferenceProfiles, runs the
-			// lineup filter, and expands into one concrete per-model backend (Converse or
-			// Responses-on-runtime) per catalog model (catalog §2.1). `model` present =>
-			// a single concrete Converse backend, unchanged.
-			if (!config.model) {
-				return new BedrockNamespaceDriver({
-					namespaceId: config.id,
-					region,
-					...(profile !== undefined && { profile }),
-					...(config.crossRegion !== undefined && {
-						crossRegion: config.crossRegion as string,
-					}),
-					...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
-					...(logger !== undefined && { logger }),
-					...(siteId !== undefined && { siteId }),
-					...(config.connectTimeoutMs !== undefined && {
-						connectTimeoutMs: config.connectTimeoutMs,
-					}),
-				});
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			return new BedrockDriver({
-				region,
-				model: config.model,
-				contextWindow,
-				profile,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-			});
-		}
-
-		case "anthropic": {
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("Anthropic driver requires apiKey in config");
-			}
-			// No `model` => self-configuring namespace: it owns `readiness`, fetches
-			// `/v1/models`, and expands into one concrete backend per listed model
-			// (catalog §2.1). Expanded ids are `${config.id}-${providerModelId}`.
-			return new AnthropicDriver({
-				apiKey,
-				...(config.model
-					? {
-							model: config.model,
-							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
-						}
-					: {
-							namespaceId: config.id,
-							...(config.modelOverrides !== undefined && {
-								modelOverrides: config.modelOverrides,
-							}),
-						}),
-				baseUrl: config.baseUrl,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				...(siteId !== undefined && { siteId }),
-			});
-		}
-
-		case "openai-compatible":
-		case "cerebras":
-		case "zai": {
-			const flavor = OPENAI_COMPATIBLE_FLAVORS[provider];
-			const baseUrl = config.baseUrl ?? flavor.defaultBaseUrl;
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error(`${flavor.label} driver requires apiKey in config`);
-			}
-			// No `model` => self-configuring namespace over `/models` (catalog §2.1).
-			return new OpenAICompatibleDriver({
-				baseUrl,
-				apiKey,
-				...(config.model
-					? {
-							model: config.model,
-							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
-						}
-					: {
-							namespaceId: config.id,
-							...(config.modelOverrides !== undefined && {
-								modelOverrides: config.modelOverrides,
-							}),
-						}),
-				providerName: provider,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				additionalHeaders: config.additionalHeaders,
-			});
-		}
-
-		case "chatgpt-oauth": {
-			const storePath = config.tokenStorePath ?? "config/chatgpt-auth.json";
-			// One token manager per store file: refresh rotates the refresh token, so
-			// N backends holding N managers over one file would race the same token.
-			let tokenManager = chatgptTokenManagers.get(storePath);
-			if (!tokenManager) {
-				const store = new FileTokenStore(storePath);
-				const tokens = store.load();
-				if (!tokens) {
-					throw new Error("ChatGPT OAuth is not logged in — run `bound login --chatgpt`");
-				}
-				tokenManager = new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store);
-				chatgptTokenManagers.set(storePath, tokenManager);
-			}
-			// No `model` => self-configuring namespace over the Codex `/models`
-			// inventory (catalog §2.1); expanded siblings share this TokenManager.
-			return new ChatGptOAuthDriver({
-				tokenManager,
-				...(config.model
-					? {
-							model: config.model,
-							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
-						}
-					: {
-							namespaceId: config.id,
-							...(config.modelOverrides !== undefined && {
-								modelOverrides: config.modelOverrides,
-							}),
-						}),
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				siteId,
-			});
-		}
-
-		case "github-copilot": {
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			const storePath = config.tokenStorePath ?? "config/copilot-auth.json";
-			const deps = { fetch: fetch ?? globalThis.fetch };
-			// One token manager per store file. Refresh rotates the ghr_ token (the
-			// old one dies), so N backends holding N managers over one file would
-			// race the same refresh token when they expire together.
-			let tokenManager = copilotTokenManagers.get(storePath);
-			if (!tokenManager) {
-				const store = new FileCopilotTokenStore(storePath);
-				const tokens = store.load();
-				if (!tokens) {
-					throw new Error("GitHub Copilot is not logged in — run `bound login --copilot`");
-				}
-				tokenManager = new CopilotTokenManager(tokens, deps, store);
-				copilotTokenManagers.set(storePath, tokenManager);
-			}
-			const manager = tokenManager;
-			const resolveAccount = () =>
-				manager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken));
-			// No `model` => self-configuring namespace: it owns `readiness`, fetches the
-			// account's Copilot catalog, and expands into one per-model backend per
-			// chat-routable model (catalog §4.1). `model` present => a single concrete
-			// backend, unchanged. `model: undefined` is passed through so the driver's
-			// namespace detection (`config.model === undefined`) fires.
-			return new GitHubCopilotDriver({
-				tokenManager: manager,
-				// `model` present => a single concrete backend. `model: undefined`
-				// is passed through so the driver's namespace detection
-				// (`config.model === undefined`) fires and it self-configures.
-				model: config.model,
-				...(!config.model ? { namespaceId: config.id } : {}),
-				// No `model` => namespace instance also gets its per-model override map so
-				// expansion can apply each model's request controls (requirement 5). Expanded
-				// per-model backend ids are `${config.id}-${providerModelId}`.
-				...(config.model || !config.modelOverrides
-					? {}
-					: { modelOverrides: config.modelOverrides }),
-				contextWindow,
-				// The validated Copilot API endpoint is plan-specific and comes from
-				// the account lookup — resolved once, lazily, on first chat.
-				resolveAccount,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				siteId,
-			});
-		}
-
-		case "opencode-go": {
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("OpenCode Go driver requires apiKey in config");
-			}
-			// No `model` => self-configuring namespace: it owns `readiness`, fetches the
-			// `/models` listing, and expands into one concrete backend per routable chat
-			// model (2026-11-21-model-catalog.md §2.1). Expanded ids are
-			// `${config.id}-${providerModelId}`.
-			if (!config.model) {
-				return new OpenCodeGoDriver({
-					apiKey,
-					namespaceId: config.id,
-					...(config.modelOverrides && { modelOverrides: config.modelOverrides }),
-					...(config.baseUrl !== undefined && { baseUrl: config.baseUrl }),
-					logger,
-					fetch,
-					connectTimeoutMs: config.connectTimeoutMs,
-					siteId,
-				});
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			return new OpenCodeGoDriver({
-				apiKey,
-				model: config.model,
-				contextWindow,
-				baseUrl: config.baseUrl,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				siteId,
-			});
-		}
-
-		case "umans": {
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("umans driver requires apiKey in config");
-			}
-			// Build the shared per-account state (provider, semaphore, usage
-			// cache, injectable fetchers) and the not-ready NAMESPACE/lineup
-			// driver registered under the config id. The fetch is NOT started
-			// here — wireBackendReadiness calls readiness.start(registrar)
-			// after construction so the registrar is bound first.
-			const account = createUmansAccount({
-				apiKey,
-				baseUrl: config.baseUrl,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				// Optional test-injectable fetchers, threaded via the BackendConfig
-				// index signature. Production config never sets these.
-				metadataFetch: config.metadataFetch as
-					Parameters<typeof createUmansAccount>[0]["metadataFetch"] | undefined,
-				usageFetch: config.usageFetch as
-					Parameters<typeof createUmansAccount>[0]["usageFetch"] | undefined,
-			});
-			return new UmansDriver({ account, namespaceId: config.id, logger });
-		}
-
-		case "bedrock-mantle": {
-			const region = config.region as string | undefined;
-			if (!region) {
-				throw new Error("Bedrock Mantle driver requires region in config");
-			}
-			const profile = config.profile as string | undefined;
-			// No `model` => self-configuring namespace for this (profile, region). Unlike
-			// a concrete Mantle entry it needs no `provider_mode`: the per-model protocol
-			// is derived from the ListFoundationModels join on expansion (requirement 4),
-			// and the Mantle lineup comes from GET /v1/models. It reuses the same
-			// namespace driver as `bedrock`; the driver's own base URLs differ per
-			// protocol. `model` present => a single concrete Mantle backend, unchanged.
-			if (!config.model) {
-				return new BedrockNamespaceDriver({
-					namespaceId: config.id,
-					region,
-					mantle: true,
-					...(profile !== undefined && { profile }),
-					...(config.crossRegion !== undefined && {
-						crossRegion: config.crossRegion as string,
-					}),
-					...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
-					...(logger !== undefined && { logger }),
-					...(siteId !== undefined && { siteId }),
-					...(config.connectTimeoutMs !== undefined && {
-						connectTimeoutMs: config.connectTimeoutMs,
-					}),
-				});
-			}
-			const providerMode = config.providerMode as "anthropic" | "openai_responses" | undefined;
-			if (!providerMode) {
-				throw new Error("Bedrock Mantle driver requires providerMode in config");
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			return new BedrockMantleDriver({
-				region,
-				model: config.model,
-				contextWindow,
-				providerMode,
-				profile,
-				baseUrl: config.baseUrl,
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				siteId,
-			});
-		}
-
-		default:
-			// `ollama` and other providers were removed in the 2026-04-25 AI SDK
-			// migration — local inference now goes through `openai-compatible`
-			// (Ollama serves an OpenAI-compatible API at /v1). `anthropic` was
-			// restored as a first-class direct backend in issue #176 (see the
-			// case above). A config naming any other provider needs updating.
-			throw new Error(`Provider not supported: ${config.provider}`);
-	}
-}
-
 interface RouterState {
 	backends: Map<string, LLMBackend>;
 	defaultId: string;
@@ -1404,7 +989,7 @@ function buildRouterState(
 	// ModelRouter is a flat local route registry (R-RT1): one route per backend
 	// id, no same-id pooling. Same-model pooling across providers/hosts is
 	// subsumed by unified candidate ranking in resolveModel (§5.1), and per-entry
-	// backoff by the per-RouteId cooldown (markRateLimited / #285 route health).
+	// backoff by per-RouteId route health.
 	const backends = new Map<string, LLMBackend>();
 	const effectiveCaps = new Map<string, BackendCapabilities>();
 	const backendConfigs = new Map<string, BackendConfig>();
@@ -1418,10 +1003,9 @@ function buildRouterState(
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
 		const effectiveCap = { ...baseline, ...capOverride };
 
-		// A later duplicate id overwrites the earlier one (last-wins). Pooling of
-		// multiple providers under one id is gone; an operator who wants two
-		// providers for one logical model gives them distinct backend ids and the
-		// catalog's logical_model grouping (slice 6) pools them for ranking.
+		// A later duplicate id overwrites the earlier one (last-wins). Two
+		// providers for one logical model need distinct backend ids; the catalog's
+		// logical_model grouping pools them for ranking.
 		backends.set(backendConfig.id, backend);
 		effectiveCaps.set(backendConfig.id, effectiveCap);
 		backendConfigs.set(backendConfig.id, backendConfig);

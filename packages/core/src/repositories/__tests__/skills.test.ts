@@ -5,19 +5,12 @@ import { createCoreTestDb } from "../../__tests__/test-database";
 import { insertRow, softDelete } from "../../index";
 import {
 	findActiveSkillIdAndRootByName,
-	findActiveSkillSourceByName,
 	findSkillById,
 	findSkillByIdIncludingDeleted,
 	findSkillByName,
-	findSkillDetailByName,
 	findSkillIdById,
-	findSkillMetadataByName,
-	findSkillRootByName,
 	listActiveSkillNameDescriptions,
-	listActiveSkills,
 	listSkills,
-	listSkillsForCliView,
-	listSkillsForToolView,
 } from "../skills";
 
 const SITE_ID = "site-test";
@@ -144,26 +137,6 @@ describe("skills repository finders", () => {
 		});
 	});
 
-	// ---- Projection-by-name finders (share the same `name = ? AND deleted = 0` shape) ----
-
-	describe("findSkillRootByName", () => {
-		it("returns the skill_root for a live skill", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({ id: "s1", name: "alpha", skill_root: "skills/alpha/SKILL.md" }),
-				SITE_ID,
-			);
-			expect(findSkillRootByName(db, "alpha")).toEqual({ skill_root: "skills/alpha/SKILL.md" });
-		});
-
-		it("returns null for a soft-deleted skill (deleted=0 filter)", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
-			softDelete(db, "skills", "s1", SITE_ID);
-			expect(findSkillRootByName(db, "alpha")).toBeNull();
-		});
-	});
-
 	describe("findActiveSkillIdAndRootByName (deleted=0)", () => {
 		it("returns id+skill_root for a live skill", () => {
 			insertRow(
@@ -189,100 +162,6 @@ describe("skills repository finders", () => {
 		});
 	});
 
-	describe("findActiveSkillSourceByName (deleted=0)", () => {
-		it("returns skill_root, content_hash, modified_at for a live skill", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					skill_root: "skills/alpha/SKILL.md",
-					content_hash: "abc123",
-					modified_at: "2026-02-02T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			expect(findActiveSkillSourceByName(db, "alpha")).toEqual({
-				skill_root: "skills/alpha/SKILL.md",
-				content_hash: "abc123",
-				modified_at: "2026-02-02T00:00:00.000Z",
-			});
-		});
-
-		it("returns null for a soft-deleted skill", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
-			softDelete(db, "skills", "s1", SITE_ID);
-			expect(findActiveSkillSourceByName(db, "alpha")).toBeNull();
-		});
-	});
-
-	describe("findSkillMetadataByName", () => {
-		it("returns the projected metadata columns for a live skill", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					description: "Alpha",
-					activation_count: 4,
-					last_activated_at: "2026-03-03T00:00:00.000Z",
-					content_hash: "h1",
-					skill_root: "skills/alpha/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			expect(findSkillMetadataByName(db, "alpha")).toEqual({
-				id: "s1",
-				name: "alpha",
-				activation_count: 4,
-				last_activated_at: "2026-03-03T00:00:00.000Z",
-				description: "Alpha",
-				content_hash: "h1",
-				skill_root: "skills/alpha/SKILL.md",
-			});
-		});
-
-		it("returns null for a soft-deleted skill", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
-			softDelete(db, "skills", "s1", SITE_ID);
-			expect(findSkillMetadataByName(db, "alpha")).toBeNull();
-		});
-	});
-
-	describe("findSkillDetailByName", () => {
-		it("returns the projected detail columns for a live skill", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					description: "Alpha",
-					activation_count: 2,
-					last_activated_at: null,
-					content_hash: null,
-					skill_root: "skills/alpha/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			expect(findSkillDetailByName(db, "alpha")).toEqual({
-				id: "s1",
-				name: "alpha",
-				activation_count: 2,
-				last_activated_at: null,
-				description: "Alpha",
-				content_hash: null,
-				skill_root: "skills/alpha/SKILL.md",
-			});
-		});
-
-		it("returns null for an absent name", () => {
-			expect(findSkillDetailByName(db, "nope")).toBeNull();
-		});
-	});
-
 	// ---- listSkills (unordered, deleted=0) ----
 
 	describe("listSkills", () => {
@@ -300,25 +179,6 @@ describe("skills repository finders", () => {
 
 		it("returns [] when no live skills exist", () => {
 			expect(listSkills(db)).toEqual([]);
-		});
-	});
-
-	// ---- listActiveSkills (ORDER BY name ASC, deleted=0) ----
-
-	describe("listActiveSkills", () => {
-		it("returns live skills ordered by name ascending", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "gamma" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s2", name: "alpha" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s3", name: "beta" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s4", name: "delta" }), SITE_ID);
-			softDelete(db, "skills", "s4", SITE_ID);
-
-			const names = listActiveSkills(db).map((s) => s.name);
-			expect(names).toEqual(["alpha", "beta", "gamma"]);
-		});
-
-		it("returns [] when empty", () => {
-			expect(listActiveSkills(db)).toEqual([]);
 		});
 	});
 
@@ -384,134 +244,6 @@ describe("skills repository finders", () => {
 			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
 			softDelete(db, "skills", "s1", SITE_ID);
 			expect(listActiveSkillNameDescriptions(db)).toEqual([]);
-		});
-	});
-
-	// ---- listSkillsForCliView / listSkillsForToolView
-	//      (all live skills, ORDER BY last_activated_at DESC, name ASC) ----
-
-	describe("listSkillsForCliView", () => {
-		function seedOrderingSet() {
-			// Two rows share an identical last_activated_at to exercise the secondary
-			// `name ASC` tiebreak.
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "zeta",
-					last_activated_at: "2026-03-01T00:00:00.000Z",
-					skill_root: "skills/zeta/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s2",
-					name: "beta",
-					last_activated_at: "2026-03-01T00:00:00.000Z",
-					skill_root: "skills/beta/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s3",
-					name: "alpha",
-					last_activated_at: "2026-05-01T00:00:00.000Z",
-					skill_root: "skills/alpha/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s4",
-					name: "gone",
-					last_activated_at: "2026-09-01T00:00:00.000Z",
-					skill_root: "skills/gone/SKILL.md",
-				}),
-				SITE_ID,
-			);
-			softDelete(db, "skills", "s4", SITE_ID);
-		}
-
-		it("returns all live skills ordered by last_activated_at DESC then name ASC", () => {
-			seedOrderingSet();
-			const view = listSkillsForCliView(db).map((r) => r.name);
-			// s3 (2026-05-01) first; then the 2026-03-01 pair tie-broken by name ASC: beta, zeta.
-			// s4 is soft-deleted and excluded.
-			expect(view).toEqual(["alpha", "beta", "zeta"]);
-		});
-
-		it("projects the skill_root column (distinguishes it from the tool view)", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					skill_root: "skills/alpha/SKILL.md",
-					allowed_tools: '["read"]',
-					compatibility: "v1",
-					content_hash: "h1",
-				}),
-				SITE_ID,
-			);
-			const row = listSkillsForCliView(db)[0];
-			expect(row).toEqual({
-				name: "alpha",
-				activation_count: 0,
-				last_activated_at: null,
-				description: "desc",
-				allowed_tools: '["read"]',
-				compatibility: "v1",
-				content_hash: "h1",
-				skill_root: "skills/alpha/SKILL.md",
-			});
-		});
-
-		it("returns [] over an empty table", () => {
-			expect(listSkillsForCliView(db)).toEqual([]);
-		});
-	});
-
-	describe("listSkillsForToolView", () => {
-		it("returns the same ordering as the CLI view but omits skill_root", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "zeta",
-					last_activated_at: "2026-03-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s2",
-					name: "beta",
-					last_activated_at: "2026-03-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-
-			const rows = listSkillsForToolView(db);
-			expect(rows.map((r) => r.name)).toEqual(["beta", "zeta"]);
-			// skill_root must NOT be present on tool-view rows.
-			expect("skill_root" in rows[0]).toBe(false);
-		});
-
-		it("returns [] over an empty table", () => {
-			expect(listSkillsForToolView(db)).toEqual([]);
 		});
 	});
 });

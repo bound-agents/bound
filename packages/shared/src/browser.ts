@@ -15,7 +15,6 @@ export * from "./hashline.js";
 export * from "./offload.js";
 export * from "./hlc.js";
 export * from "./assert.js";
-export * from "./branded-types.js";
 export * from "./interface-tags.js";
 export * from "./build-info.js";
 export * from "./parse-json.js";

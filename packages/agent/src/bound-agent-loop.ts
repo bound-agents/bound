@@ -23,6 +23,7 @@ import type {
 import { LLMRefusalError } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import {
+	DEFAULT_SILENCE_TIMEOUT_MS,
 	type LoopGuardReason,
 	type LoopModelStream,
 	type LoopToolExecutionBatch,
@@ -38,7 +39,6 @@ import {
 	getLlmRetryAfterMs,
 	getLlmStatusCode,
 	hasUnparseableArgs,
-	scaledMaxRetries,
 	scaledSilenceTimeout,
 	shouldRetryRelayCall,
 } from "@bound/loop";
@@ -86,7 +86,6 @@ import {
 
 import { createAdvisory } from "./advisories";
 import {
-	attachPricingSource,
 	buildCommandOutput,
 	clampMaxOutputTokens,
 	createFileRefResolver,
@@ -95,9 +94,7 @@ import {
 	getResolvedRouteId,
 	insertThreadMessage,
 	parseContentBlocks,
-	resolveTurnCost,
 } from "./agent-loop-utils";
-import type { selectCacheTtl } from "./cache-prediction";
 import { applyActualUsageToContextDebug } from "./context-assembly";
 import { resolveClientSessionHost } from "./delegation";
 import { segmentAssembledMessages } from "./delegation-segments";
@@ -114,16 +111,18 @@ import {
 	type AttemptRecord,
 	buildTurnCostBreakdownWithAttempts,
 } from "./refusal-fallback-accounting";
-import { readUnionResponseEntry } from "./relay-await-helpers";
+import { readDurableResponseEntry } from "./relay-await-helpers";
 import { createRelayBackend } from "./relay-backend";
 import { type EligibleHost, resolveTopologyRole, routeRelayRequest } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { resolveRequestFallback } from "./resolve-request-fallback";
 import { parseModelHint } from "./routing-preferences";
+import { observableToAsyncIterable } from "./rx-async-iterable";
 import { fromEventBus } from "./rx-utils";
 import {
 	THINK_FORCE_SCAN_LIMIT,
+	THINK_TOOL_DEFINITION,
 	THINK_TOOL_FORCE_AFTER,
 	resolveThinkToolChoice,
 } from "./think-tool-force";
@@ -134,6 +133,7 @@ import {
 	offloadToolResultPath,
 } from "./tool-result-offload";
 import { suggestCorrectTool } from "./tools/tool-suggestion";
+import { attachPricingSource, resolveTurnCost } from "./turn-pricing";
 import type {
 	AgentLoopConfig,
 	AgentLoopResult,
@@ -142,44 +142,25 @@ import type {
 	DeferredToolResult,
 } from "./types";
 import { isClientToolCallRequest, isDeferredToolResult, isToolResultWithMetadata } from "./types";
-// Thinking-block compaction now lives exclusively in context-assembly.ts (Stage 1.7).
-// The warm path no longer mutates stored messages — see agent-loop.ts step 3a comment.
 
-export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
 
-export const THINK_TOOL_DEFINITION: ToolDefinition = {
-	type: "function",
-	function: {
-		name: "think",
-		description:
-			"Use this optional scratchpad to reason through a problem before acting. " +
-			"It has no external effect; put the reasoning in `thought`.",
-		parameters: {
-			type: "object",
-			properties: { thought: { type: "string" } },
-			required: ["thought"],
-			additionalProperties: false,
-		},
-	},
-};
-export const THINK_TOOL_RESULT = "Thinking complete - please continue your work.";
+const THINK_TOOL_RESULT = "Thinking complete - please continue your work.";
 
 /**
  * Max retries for a degenerate turn — one producing no actionable output (no
  * tool call and no text), whether truncated at the output-token limit
  * (finishReason "length") or cut off by a dropped stream.
  */
-export const MAX_DEGENERATE_RETRIES = 2;
+const MAX_DEGENERATE_RETRIES = 2;
 
-/** Lazily get the tracer to ensure tests can register their provider first */
 /**
  * Model-visible result for a tool call whose arguments never parsed. A
  * max_tokens diagnosis is made only when the response ended on a length stop;
  * otherwise the arguments are reported as malformed JSON. Never echoes the
  * argument text.
  */
-export function unparseableArgsToolResult(toolCall: ParsedToolCall): string {
+function unparseableArgsToolResult(toolCall: ParsedToolCall): string {
 	const err = toolCall.argsError;
 	if (toolCall.truncated) {
 		return `Error: tool call arguments were truncated (the response stopped at the output-token limit, finish_reason=length). The "${toolCall.name}" call was cut off before the full arguments could be generated and was not executed. Try breaking the operation into smaller parts, or reduce the size of the arguments.`;
@@ -194,17 +175,6 @@ function getTracer() {
 	return trace.getTracer("bound.agent-loop");
 }
 
-// Tool-call circuit-breaker thresholds now live in @bound/loop (loop-guards.ts)
-// so any agent on the base loop inherits them. Re-exported here for the agent
-// test suite and external callers that import them from this module.
-export {
-	MAX_CONSECUTIVE_TRUNCATED_TURNS,
-	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
-	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
-	ERROR_SIGNATURE_NUDGE_AT,
-	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
-} from "@bound/loop";
-
 /**
  * Matches the cross-tool routing suggestion produced by `suggestCorrectTool`
  * (e.g. calling `connector` with `action: "activate"`, which belongs to
@@ -217,58 +187,6 @@ const ROUTING_SUGGESTION_MARKER = /is valid for the "[^"]+" tool, not "[^"]+"\. 
 
 function containsRoutingSuggestion(content: string): boolean {
 	return ROUTING_SUGGESTION_MARKER.test(content);
-}
-
-function observableToAsyncIterable<T>(source: Observable<T>): AsyncIterable<T> {
-	return {
-		async *[Symbol.asyncIterator]() {
-			const queue: T[] = [];
-			let completed = false;
-			let error: unknown;
-			let wake: (() => void) | undefined;
-			const notify = () => {
-				wake?.();
-				wake = undefined;
-			};
-			const subscription = source.subscribe({
-				next(value) {
-					queue.push(value);
-					notify();
-				},
-				error(err) {
-					error = err;
-					completed = true;
-					notify();
-				},
-				complete() {
-					completed = true;
-					notify();
-				},
-			});
-			try {
-				while (!completed || queue.length > 0) {
-					if (queue.length > 0) {
-						const value = queue.shift();
-						if (value !== undefined) {
-							yield value;
-						}
-						continue;
-					}
-					await new Promise<void>((resolve) => {
-						wake = resolve;
-					});
-					if (error !== undefined) {
-						throw error;
-					}
-				}
-				if (error !== undefined) {
-					throw error;
-				}
-			} finally {
-				subscription.unsubscribe();
-			}
-		},
-	};
 }
 
 /**
@@ -340,14 +258,14 @@ export interface BoundPreparedFrame extends PreparedLoopFrame {
 	toolTokenEstimate: number;
 	truncationTargetTokens: number;
 	measuredInflation: number | null;
-	cacheTtl: ReturnType<typeof selectCacheTtl>;
+	cacheTtl: "5m" | "1h";
 }
 
 /**
  * Extra producer-side wait on a relayed client tool beyond the session host's
  * own wait, so the session host's result-or-expiry verdict lands first.
  */
-export const RELAYED_CLIENT_TOOL_VERDICT_SLACK_MS = 30_000;
+const RELAYED_CLIENT_TOOL_VERDICT_SLACK_MS = 30_000;
 
 export abstract class BoundAgentLoop extends ModularAgentLoop {
 	private filesChanged = 0;
@@ -388,7 +306,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		protected config: AgentLoopConfig,
 	) {
 		super({ logger: ctx.logger }, config, {
-			silenceTimeoutMs: config.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS,
+			silenceTimeoutMs: config.silenceTimeoutMs ?? DEFAULT_SILENCE_TIMEOUT_MS,
 			maxTransientRetries: MAX_SILENCE_RETRIES,
 			degenerateRetryMax: MAX_DEGENERATE_RETRIES,
 		});
@@ -611,7 +529,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// No same-tier (or any-model) substitution: under the routing redesign
 			// (R-RT7, R-RT8) a model whose routes are all down returns
 			// transient-unavailable and is NOT substituted onto a different model.
-			// Cross-model fallback happens only on a model refusal (slice 5).
+			// Cross-model fallback happens only on a model refusal.
 			//
 			// §6.3/R-RT23: a `unknown-model` reason means the model is advertised by
 			// no non-deleted host in the cluster — decommissioned, not momentarily
@@ -791,7 +709,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		const totalEstimatedTokens =
 			(this.lastContextDebug?.totalEstimated ?? 0) + frame.toolTokenEstimate;
 		const effectiveSilenceTimeout = scaledSilenceTimeout(
-			this.config.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS,
+			this.config.silenceTimeoutMs ?? DEFAULT_SILENCE_TIMEOUT_MS,
 			totalEstimatedTokens,
 		);
 		this.currentDriverSpan = getTracer().startSpan("llm-driver.chat", {
@@ -904,19 +822,16 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	protected override shouldRetryModelStreamError(
 		error: unknown,
 		_chunks: StreamChunk[],
-		frame: BoundPreparedFrame,
+		_frame: BoundPreparedFrame,
 		_turn: number,
 		attempt: number,
 	): boolean {
 		const isSilenceTimeout = error instanceof Error && error.message.includes("silence timeout");
-		const totalEstimatedTokens =
-			(this.lastContextDebug?.totalEstimated ?? 0) + frame.toolTokenEstimate;
-		const effectiveMaxRetries = scaledMaxRetries(totalEstimatedTokens, MAX_SILENCE_RETRIES);
-		if (isSilenceTimeout && attempt < effectiveMaxRetries) {
+		if (isSilenceTimeout && attempt < MAX_SILENCE_RETRIES) {
 			this.config.onActivity?.();
 			this.ctx.logger.warn("[agent-loop] Silence timeout, retrying", {
 				attempt: attempt + 1,
-				max: effectiveMaxRetries,
+				max: MAX_SILENCE_RETRIES,
 			});
 			return true;
 		}
@@ -1378,7 +1293,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				cost_breakdown = attachPricingSource(resolved.breakdown, resolved.source);
 			}
 
-			// Per-attempt provenance (slice 5, R-RT21, §7.4). A driver-level inline
+			// Per-attempt provenance (R-RT21, §7.4). A driver-level inline
 			// credit redemption surfaces the refused primary attempt AND the served
 			// retry as distinct `done` chunks on one stream, captured in
 			// `response.attempts`. Record each separately in `cost_breakdown` (never
@@ -2201,13 +2116,11 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	): Observable<{ content: string; isError: boolean } | null> {
 		const db = this.ctx.db;
 		const eventBus = this.ctx.eventBus;
-		// 4D-D union read: a client_result (or error) response lands in legacy
-		// relay_inbox (pre-drop) or the durable spool (post-4E). readUnionResponseEntry
-		// claims a durable row under a fresh token and defers its ack to settle();
-		// a legacy row's markProcessed is likewise deferred. We settle() only AFTER
-		// taking delivery (parse) below, matching the claim → deliver → ack ordering
-		// awaitPlatformRequestResponse uses so a mid-flight capability flip still resolves.
-		const unionRead = () => readUnionResponseEntry(db, outboxEntryId, this.ctx.siteId);
+		// A client_result (or error) response lands in the durable spool.
+		// readDurableResponseEntry claims the row under a fresh token and defers its
+		// ack to settle(); we settle() only AFTER taking delivery (parse) below,
+		// matching the claim → deliver → ack ordering awaitPlatformRequestResponse uses.
+		const unionRead = () => readDurableResponseEntry(db, outboxEntryId, this.ctx.siteId);
 		const response$ = merge(
 			defer(() => of(unionRead())),
 			fromEventBus(eventBus, "relay:inbox").pipe(
@@ -2320,8 +2233,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Emit the dedicated refusal/fallback observability events (slice 5, R-RT21,
-	 * §7.4), independent of HTTP error-rate monitoring. Fires `llm:refusal` for
+	 * Emit the dedicated refusal/fallback observability events (R-RT21, §7.4), independent of HTTP error-rate monitoring. Fires `llm:refusal` for
 	 * every classified refusal attempt, and `llm:fallback` once per walk when a
 	 * refused attempt was followed by further attempts (the substitution outcome).
 	 * A clean single-attempt turn emits nothing.
@@ -2863,17 +2775,11 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		};
 	}
 
-	/** Parse streamed chunks into text and tool calls, handling partial JSON accumulation and ID dedup. */
-	protected parseResponseChunks(chunks: StreamChunk[]): ParsedResponse {
-		return super.parseResponseChunks(chunks);
-	}
-
 	cancel(): void {
 		this.aborted = true;
 		this.ctx.logger.info("Agent loop cancelled");
 	}
 }
-export { SILENCE_HEARTBEAT_INTERVAL_MS, withSilenceTimeout } from "@bound/loop";
 
 /**
  * Compose the terminal error for a failed failover chain (#265): the final
@@ -2881,7 +2787,7 @@ export { SILENCE_HEARTBEAT_INTERVAL_MS, withSilenceTimeout } from "@bound/loop";
  * failed in order with its own cause, so a usage cap on one provider and an
  * expired key on the next are both visible in the surfaced error.
  */
-export function formatRouteFailureChain(
+function formatRouteFailureChain(
 	finalError: string,
 	chain: ReadonlyArray<{ routeId: string; error: string }>,
 ): string {

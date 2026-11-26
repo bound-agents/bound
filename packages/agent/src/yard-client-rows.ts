@@ -10,11 +10,9 @@
  * content the model needs.
  *
  * Those rows must therefore never reach LLM context. Left in, they are
- * orphaned tool_results; the Stage 5 annotator's last-call fallback used to
- * stamp each one with the previous tool_call's first tool_use id, producing
- * N tool_results for one tool_use — Bedrock rejects the request with "each
- * tool_use must have a single result", and every cold rebuild reproduces the
- * poison (incident thread adb65d85, 2026-08-16).
+ * orphaned tool_results that pair N results with one tool_use; Bedrock rejects
+ * such a request with "each tool_use must have a single result", and every
+ * cold rebuild would reproduce it.
  *
  * The filter applies at every seam that turns message rows into LLM context:
  *   - cold assembly Stage 1 (context-assembly.ts, both history branches)
@@ -27,13 +25,6 @@
  */
 
 import { YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
-
-/**
- * Call-id prefix used by `dispatchAwaitableClientTool`. Canonical home is
- * `@bound/shared` (boundless shares it to suppress duplicate streaming
- * cards); re-exported here for agent-side callers.
- */
-export { YARD_CLIENT_CALL_ID_PREFIX };
 
 /**
  * True for a persisted `tool_result` row that is Yard client-dispatch

@@ -325,7 +325,6 @@
 		border-color: var(--err);
 	}
 
-	/* ---- Markdown rendering ---- */
 	:global(.md-content > *:first-child) {
 		margin-top: 0;
 	}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { WARM_POKE_MARKER } from "@bound/agent";
-import { formatNotification } from "../commands/start/server";
+import { formatNotification } from "@bound/agent";
 
 describe("formatNotification", () => {
 	it("formats proactive notifications from background tasks", () => {

@@ -1,12 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { modelBackendsSchema, platformsSchema, relaySchema, wsSchema } from "../config-schemas.js";
-import {
-	DurationParseError,
-	durationMsSchema,
-	formatIsoDurationMs,
-	parseIsoDurationMs,
-	toDurationMs,
-} from "../durations.js";
+import { DurationParseError, durationMsSchema, parseIsoDurationMs } from "../durations.js";
 
 describe("parseIsoDurationMs", () => {
 	it("parses the calendar-free units", () => {
@@ -68,29 +62,6 @@ describe("parseIsoDurationMs", () => {
 			expect(err).toBeInstanceOf(DurationParseError);
 			expect((err as DurationParseError).input).toBe("P1D");
 		}
-	});
-});
-
-describe("formatIsoDurationMs", () => {
-	it("round-trips through parseIsoDurationMs", () => {
-		for (const ms of [0, 1, 500, 30_000, 300_000, 5_400_000, 86_400_000]) {
-			expect(parseIsoDurationMs(formatIsoDurationMs(ms))).toBe(ms);
-		}
-	});
-
-	it("renders the units an operator would recognize", () => {
-		expect(formatIsoDurationMs(300_000)).toBe("PT5M");
-		expect(formatIsoDurationMs(30_000)).toBe("PT30S");
-		expect(formatIsoDurationMs(5_400_000)).toBe("PT1H30M");
-	});
-});
-
-describe("toDurationMs", () => {
-	it("passes numbers through untouched and parses ISO and Go-style strings", () => {
-		expect(toDurationMs(20_000)).toBe(20_000);
-		expect(toDurationMs("PT20S")).toBe(20_000);
-		expect(toDurationMs("30m")).toBe(30 * 60_000);
-		expect(toDurationMs("1h30m")).toBe(90 * 60_000);
 	});
 });
 

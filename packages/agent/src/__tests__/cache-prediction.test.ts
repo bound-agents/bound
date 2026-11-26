@@ -1,7 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, recordTurn } from "@bound/core";
-import { predictCacheState, selectCacheTtl } from "../cache-prediction";
+import { predictCacheState } from "../cache-prediction";
 
 const NOW = 1_800_000_000_000;
 const threadId = "test-thread-001";
@@ -122,21 +122,6 @@ describe("Cache Prediction", () => {
 				created_at: agoIso(60_000),
 			});
 			expect(predictCacheState(db, newerWarmThread, ttl, NOW)).toBe("warm");
-		});
-	});
-
-	describe("selectCacheTtl", () => {
-		it("returns 1h for all interfaces", () => {
-			for (const threadInterface of [
-				"discord",
-				"scheduler",
-				"web",
-				"boundless",
-				"discord-interaction",
-				"unknown",
-			]) {
-				expect(selectCacheTtl(threadInterface)).toBe("1h");
-			}
 		});
 	});
 });

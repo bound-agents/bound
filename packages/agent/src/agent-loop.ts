@@ -23,7 +23,7 @@ import {
 	maybePlaceCacheMarker,
 	refreshInnerLoopRollingMarker,
 } from "./cache-marker";
-import { selectCacheTtl } from "./cache-prediction";
+import { CACHE_TTL } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
 	assembleContext,
@@ -293,8 +293,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			resolvedModelForDebug,
 			maxOutputTokens,
 		} = this.prepareSharedFrameInputs(resolution);
-		const threadInterface = this.config.platform ?? "web";
-		const cacheTtl = selectCacheTtl(threadInterface);
+		const cacheTtl = CACHE_TTL;
 		const baseTruncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 		const { target: truncationTargetTokens, inflation: measuredInflation } =
 			resolveAdaptiveTruncationTarget(this.ctx.db, this.config.threadId, baseTruncationTarget);
@@ -570,7 +569,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 		const messages = result.messages;
 		const fixedPlacement = coldPathPlaceCacheMarker(
 			messages,
-			{ bucketTokens: 0, estimateTokens: estimateMessageTokens },
+			{ estimateTokens: estimateMessageTokens },
 			cacheMarkerCaps ?? undefined,
 		);
 		const fixedCacheIdx = fixedPlacement.placed ? fixedPlacement.index : -1;
@@ -702,19 +701,3 @@ export class MainAgentLoop extends BoundAgentLoop {
 		this.clearCachedTurnState();
 	}
 }
-
-// Re-export loop-guard constants and silence utilities for backward compatibility.
-// These were previously re-exported from this file directly; they now live in
-// bound-agent-loop.ts, which is the BoundAgentLoop base class module.
-export {
-	SILENCE_TIMEOUT_MS,
-	MAX_SILENCE_RETRIES,
-	MAX_DEGENERATE_RETRIES,
-	SILENCE_HEARTBEAT_INTERVAL_MS,
-	withSilenceTimeout,
-	MAX_CONSECUTIVE_TRUNCATED_TURNS,
-	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
-	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
-	ERROR_SIGNATURE_NUDGE_AT,
-	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
-} from "./bound-agent-loop";

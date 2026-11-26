@@ -1,7 +1,13 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { dangerouslyExecuteRawWrite, insertRow, softDelete, updateRow } from "../change-log.js";
-import { SYNCED_TABLE_NAMES } from "../change-log.js";
+import { TABLE_REDUCER_MAP } from "@bound/shared";
+import {
+	SYNCED_TABLE_NAMES,
+	dangerouslyExecuteRawWrite,
+	insertRow,
+	softDelete,
+	updateRow,
+} from "../change-log.js";
 import { applyMetricsSchema } from "../metrics-schema.js";
 import { computeRowStateHash } from "../row-hash-cache.js";
 import { getCachedRowStateHashes } from "../row-hash-cache.js";
@@ -109,6 +115,23 @@ describe("row state hash cache", () => {
 		db.close();
 	});
 
+	test("installs invalidation triggers for every table in TABLE_REDUCER_MAP", () => {
+		const db = createCoreTestDb({ metrics: true });
+		const names = new Set(
+			(
+				db
+					.query("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rsh_inv_%'")
+					.all() as Array<{ name: string }>
+			).map((t) => t.name),
+		);
+		const tables = Object.keys(TABLE_REDUCER_MAP);
+		expect([...SYNCED_TABLE_NAMES].sort()).toEqual([...tables].sort());
+		for (const table of tables)
+			for (const op of ["insert", "update", "delete"])
+				expect(names.has(`rsh_inv_${table}_${op}`)).toBe(true);
+		db.close();
+	});
+
 	test("installs exactly three correct triggers for every synced table in either schema order and is idempotent", () => {
 		for (const appliers of [
 			[applySchema, applyMetricsSchema],
@@ -122,7 +145,7 @@ describe("row state hash cache", () => {
 					"SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'rsh_inv_%'",
 				)
 				.all() as Array<{ name: string; sql: string }>;
-			expect(triggers).toHaveLength(17 * 3);
+			expect(triggers).toHaveLength(SYNCED_TABLE_NAMES.length * 3);
 			for (const table of SYNCED_TABLE_NAMES)
 				for (const op of ["insert", "update", "delete"])
 					expect(triggers.map((t) => t.name)).toContain(`rsh_inv_${table}_${op}`);

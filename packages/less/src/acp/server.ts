@@ -46,10 +46,10 @@ import type { McpServerConfig } from "../config";
 import { acquireLock, releaseLock } from "../lockfile";
 import type { AppLogger } from "../logging";
 import { McpServerManager } from "../mcp/manager";
-import { performAttach } from "../session/attach";
+import { HISTORY_WINDOW_MESSAGES, performAttach } from "../session/attach";
 import { collectToolCallPairing } from "../session/tool-call-pairing";
 import { buildToolSet } from "../tools/registry";
-import type { ResolvedSandboxConfig } from "../tools/sandbox";
+import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToContent } from "./mapping";
 import { acpMcpServersToConfigs, mergeMcpConfigs } from "./mcp-config";
@@ -166,7 +166,9 @@ export class BoundAcpAgent implements Agent {
 		}
 		const entry = await this.attachAndRegister(threadId, params.cwd, params.mcpServers);
 		// Replay history so the editor can render the prior conversation.
-		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
+		const messages = await this.opts.client.listMessages(threadId, {
+			limit: HISTORY_WINDOW_MESSAGES,
+		});
 		// A tool_use whose id has no matching tool_result was dispatched but never
 		// completed (interrupted turn); pass the resolved set so replay marks those
 		// calls failed rather than falsely completed.
@@ -288,8 +290,6 @@ export class BoundAcpAgent implements Agent {
 		this.opts.client.disconnect();
 	}
 
-	// ---- internals ----
-
 	/**
 	 * Brings up MCP servers for the session cwd, builds the boundless tool set,
 	 * configures it on the shared client, acquires the per-thread lock, and
@@ -366,18 +366,16 @@ export class BoundAcpAgent implements Agent {
 		// configures tools on the wire; we additionally need the local handler
 		// map and the client-tool name set for permission gating + execution.
 		const mcpTools = this.opts.mcpManager.getRunningTools();
-		const toolSet = buildToolSet(
-			cwd,
-			this.opts.hostname,
+		const toolSet = buildToolSet({
+			hostname: this.opts.hostname,
 			mcpTools,
-			undefined,
-			this.opts.client.getBaseUrl(),
-			this.opts.shell,
-			this.opts.mcpManager,
-			this.opts.sandbox,
-			this.opts.logger,
-			this.opts.contextFiles,
-		);
+			boundUrl: this.opts.client.getBaseUrl(),
+			shell: this.opts.shell,
+			mcpManager: this.opts.mcpManager,
+			sandbox: this.opts.sandbox,
+			logger: this.opts.logger,
+			contextFiles: this.opts.contextFiles,
+		});
 		const clientToolNames = new Set(toolSet.tools.map((t) => t.function.name));
 
 		try {

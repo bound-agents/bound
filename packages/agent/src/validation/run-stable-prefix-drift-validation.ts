@@ -58,9 +58,10 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { insertRow, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix/hash";
+import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix";
+import { isValidationDue, recordValidationRun } from "./validation-entries";
+
+const DRIFT_LAST_RUN_KEY = "_validation:stable-prefix-drift-last-run";
 
 /**
  * Cadence gate. One heartbeat cycle (1h) aligns with the cache TTL —
@@ -71,11 +72,9 @@ import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix/hash";
 const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
- * Cache TTL window for pairing turns. Hardcoded to 1h here —
- * `selectCacheTtl` returns "1h" for boundless threads (the bulk of
- * cold-rebuild traffic). 5m TTL threads get scanned with the same
- * window which produces fewer pairs but no false positives (5m
- * pairs are a strict subset of 1h pairs).
+ * Cache TTL window for pairing turns, fixed at the longest (1h) cache
+ * lifetime. Shorter-TTL threads scanned with the same window produce fewer
+ * pairs but no false positives (5m pairs are a strict subset of 1h pairs).
  */
 const PAIR_WINDOW_MS = 60 * 60 * 1000;
 
@@ -149,9 +148,8 @@ export function runStablePrefixDriftValidation(
 	siteId: string,
 	nowMs: number,
 ): StablePrefixDriftReport {
-	// Update the last-run marker BEFORE scanning so even an empty
-	// scan window records a successful pass (mirrors r-vc9 pattern).
-	updateLastRun(db, siteId, nowMs);
+	// Record the run BEFORE scanning so an empty window still records a pass.
+	recordValidationRun(db, siteId, DRIFT_LAST_RUN_KEY, "validation:stable-prefix-drift", nowMs);
 
 	const cutoff = new Date(nowMs - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 	const rows = db
@@ -275,59 +273,9 @@ export function runStablePrefixDriftValidation(
 	};
 }
 
-/**
- * Returns true when the cadence gate has elapsed (or no last-run
- * marker exists).
- */
+/** True when the cadence gate has elapsed or no last-run marker exists. */
 export function shouldRunStablePrefixDriftValidation(db: Database, nowMs: number): boolean {
-	const row = db
-		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get("_validation:stable-prefix-drift-last-run") as { value: string } | null;
-
-	if (!row) return true;
-
-	try {
-		const lastRunMs = new Date(row.value).getTime();
-		return nowMs - lastRunMs >= VALIDATION_INTERVAL_MS;
-	} catch (_e) {
-		return true;
-	}
-}
-
-function updateLastRun(db: Database, siteId: string, nowMs: number): void {
-	const lastRunKey = "_validation:stable-prefix-drift-last-run";
-	const lastRunId = deterministicUUID(BOUND_NAMESPACE, lastRunKey);
-	const lastRunValue = new Date(nowMs).toISOString();
-	try {
-		updateRow(
-			db,
-			"semantic_memory",
-			lastRunId,
-			{ modified_at: lastRunValue, value: lastRunValue },
-			siteId,
-		);
-	} catch (_e) {
-		try {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: lastRunId,
-					key: lastRunKey,
-					value: lastRunValue,
-					tier: "default",
-					source: "validation:stable-prefix-drift",
-					modified_at: lastRunValue,
-					last_accessed_at: lastRunValue,
-					created_at: lastRunValue,
-					deleted: 0,
-				},
-				siteId,
-			);
-		} catch (insertErr) {
-			console.warn("[stable-prefix-drift] last-run write failed:", insertErr);
-		}
-	}
+	return isValidationDue(db, DRIFT_LAST_RUN_KEY, nowMs, VALIDATION_INTERVAL_MS);
 }
 
 /**
