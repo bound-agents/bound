@@ -148,3 +148,52 @@ describe("OpenCodeGoDriver request identity", () => {
 		}
 	});
 });
+
+describe("OpenCodeGoDriver tool-result media", () => {
+	it("sends a tool-result image as a text placeholder on the chat-completions leg", async () => {
+		const imageData = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MjQyNDI=";
+		let body: { messages: Array<{ role: string; content: unknown }> } | undefined;
+		const driver = new OpenCodeGoDriver({
+			apiKey: "test-key",
+			model: "glm-test",
+			contextWindow: 128_000,
+			baseUrl: "https://example.test/v1",
+			fetch: async (_input, init) => {
+				body = JSON.parse(String(init?.body));
+				return openAiSse();
+			},
+		});
+
+		await drain(
+			driver.chat({
+				threadId: "thread-321",
+				messages: [
+					{ role: "user", content: "look" },
+					{
+						role: "tool_call",
+						content: [{ type: "tool_use", id: "c1", name: "read", input: { path: "a.png" } }],
+					},
+					{
+						role: "tool_result",
+						tool_use_id: "c1",
+						content: [
+							{ type: "text", text: "before" },
+							{
+								type: "image",
+								source: { type: "base64", media_type: "image/png", data: imageData },
+							},
+							{ type: "text", text: "after" },
+						],
+					},
+				],
+			}),
+		);
+
+		const tool = body?.messages.find((m) => m.role === "tool");
+		const content = tool?.content as string;
+		expect(content).toContain("[Image omitted: file_id=(inline) media_type=image/png");
+		expect(content).toContain("before");
+		expect(content).toContain("after");
+		expect(JSON.stringify(body)).not.toContain(imageData);
+	});
+});

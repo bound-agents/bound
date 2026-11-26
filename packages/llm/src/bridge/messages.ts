@@ -108,6 +108,21 @@ export interface ToModelMessagesOptions {
 	 * effect unless `reasoningProviderOptions === "openai"`.
 	 */
 	stripEncryptedReasoning?: boolean;
+	/**
+	 * How image and binary-document blocks inside a tool_result reach the wire.
+	 *
+	 * - "file" (or omit): ai@7 `file` items inside `output: {type:"content"}`.
+	 *   Adapters that map them natively (Anthropic, Bedrock, Mantle Responses)
+	 *   show the model the actual image/PDF.
+	 * - "text-only": every image becomes a text placeholder carrying file_id,
+	 *   media type, and description; documents use `text_representation` or
+	 *   the document-unavailable placeholder. Text items and order are kept.
+	 *   Set by drivers on `@ai-sdk/openai-compatible` /chat/completions legs:
+	 *   that adapter JSON-stringifies a `content` tool output into the tool
+	 *   message string, so a file item reaches the model as base64 text, re-sent
+	 *   on every later turn.
+	 */
+	toolResultMedia?: "file" | "text-only";
 }
 
 /**
@@ -638,7 +653,7 @@ export function toModelMessages(
 				// if the tool_result arrives without a matching call (which
 				// would be a caller bug but we don't want to throw here).
 				toolName: toolNameById.get(toolCallId) ?? "",
-				output: buildToolResultOutput(blocks, opts.resolveFileRef),
+				output: buildToolResultOutput(blocks, opts.resolveFileRef, opts.toolResultMedia ?? "file"),
 			};
 			// Combine consecutive tool_results into a single `role: "tool"`
 			// ModelMessage. Background: the AI SDK's
@@ -1118,6 +1133,18 @@ function imageUnavailablePlaceholder(b: Extract<ContentBlock, { type: "image" }>
 	return `[Image unavailable: file_id=${fileId}${desc}]`;
 }
 
+/**
+ * Tool-result image placeholder for providers whose tool messages are text-only
+ * (see ToModelMessagesOptions.toolResultMedia). Same shape family as
+ * {@link imageUnavailablePlaceholder}; never includes the image bytes.
+ */
+function imageTextOnlyPlaceholder(b: Extract<ContentBlock, { type: "image" }>): string {
+	const fileId = b.source.type === "file_ref" ? b.source.file_id : "(inline)";
+	const mediaType = b.source.media_type ?? "unknown";
+	const desc = b.description ? ` description=${JSON.stringify(b.description)}` : "";
+	return `[Image omitted: file_id=${fileId} media_type=${mediaType}${desc} reason="provider takes text-only tool results"]`;
+}
+
 /** Like {@link imageUnavailablePlaceholder} but for document blocks whose backing `file_ref` could not be resolved. */
 function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "document" }>): string {
 	const fileId = b.source.type === "file_ref" ? b.source.file_id : "(inline)";
@@ -1170,7 +1197,8 @@ function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "docume
  */
 function buildToolResultOutput(
 	blocks: ContentBlock[],
-	resolveFileRef?: (fileId: string) => string | null,
+	resolveFileRef: ((fileId: string) => string | null) | undefined,
+	mediaMode: "file" | "text-only",
 ):
 	| { type: "text"; value: string }
 	| {
@@ -1198,6 +1226,13 @@ function buildToolResultOutput(
 	for (const b of blocks) {
 		if (b.type === "text") {
 			items.push({ type: "text", text: b.text });
+		} else if (b.type === "image" && mediaMode === "text-only") {
+			items.push({ type: "text", text: imageTextOnlyPlaceholder(b) });
+		} else if (b.type === "document" && mediaMode === "text-only") {
+			items.push({
+				type: "text",
+				text: b.text_representation || documentUnavailablePlaceholder(b),
+			});
 		} else if (b.type === "image") {
 			const resolved = resolveImageSource(b.source, resolveFileRef);
 			if (resolved) {

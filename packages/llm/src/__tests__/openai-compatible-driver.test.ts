@@ -146,3 +146,57 @@ describe("OpenAICompatibleDriver reasoning effort", () => {
 		expect("reasoning_effort" in (seenBody ?? {})).toBe(false);
 	});
 });
+
+describe("OpenAICompatibleDriver tool-result media", () => {
+	it("sends a tool-result image as a text placeholder, never as base64 in the tool message", async () => {
+		const imageData = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MjQyNDI=";
+		let body: { messages: Array<{ role: string; content: unknown }> } | undefined;
+		const captureFetch: typeof fetch = async (_input, init) => {
+			body = JSON.parse(String(init?.body));
+			return sseResponse();
+		};
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "https://example.test/v1",
+			apiKey: "sk-test",
+			model: "test-model",
+			contextWindow: 8192,
+			fetch: captureFetch,
+		});
+
+		await drain(
+			driver.chat({
+				model: "test-model",
+				messages: [
+					{ role: "user", content: "look" },
+					{
+						role: "tool_call",
+						content: [{ type: "tool_use", id: "c1", name: "read", input: { path: "a.png" } }],
+					},
+					{
+						role: "tool_result",
+						tool_use_id: "c1",
+						content: [
+							{ type: "text", text: "before" },
+							{
+								type: "image",
+								source: { type: "file_ref", file_id: "f-7", media_type: "image/png" },
+								description: "screenshot",
+							},
+							{ type: "text", text: "after" },
+						],
+					},
+				],
+				resolveFileRef: () => imageData,
+			}),
+		);
+
+		const tool = body?.messages.find((m) => m.role === "tool");
+		expect(typeof tool?.content).toBe("string");
+		const content = tool?.content as string;
+		expect(content).toContain("before");
+		expect(content).toContain("after");
+		expect(content).toContain("file_id=f-7 media_type=image/png");
+		expect(content).toContain("provider takes text-only tool results");
+		expect(JSON.stringify(body)).not.toContain(imageData);
+	});
+});

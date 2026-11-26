@@ -362,6 +362,10 @@ export class OpenCodeGoDriver implements LLMBackend, SupportsModelDiscovery {
 			// thousands of tokens of stale chain-of-thought. "openai" drops reasoning
 			// that lacks encrypted continuation state, matching the mantle driver.
 			reasoningProviderOptions: "openai",
+			// The chat-completions adapter JSON-stringifies {type:"content"} tool
+			// outputs, so tool-result images would arrive as base64 text. The
+			// /messages and /responses legs map file items natively.
+			toolResultMedia: "text-only",
 			midConversationSystem: true,
 		});
 		yield* withEmptyRetry(

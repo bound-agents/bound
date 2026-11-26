@@ -212,6 +212,11 @@ export class OpenAICompatibleDriver implements LLMBackend, SupportsModelDiscover
 			// encrypted continuation state, matching the mantle and opencode-go
 			// openai-compatible legs.
 			reasoningProviderOptions: "openai",
+			// @ai-sdk/openai-compatible JSON-stringifies a {type:"content"} tool
+			// output into the tool message string, so a tool-result image would
+			// reach the model as base64 text, re-sent every turn. Send a text
+			// placeholder instead.
+			toolResultMedia: "text-only",
 			midConversationSystem: true,
 		});
 		const tools = toToolSet(params.tools);
