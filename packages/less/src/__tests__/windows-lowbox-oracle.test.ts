@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
-import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
+import { type ResolvedSandboxConfig, resolveSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 
 /**
@@ -853,7 +853,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					).toBe(true);
 				}
 			} finally {
-				if (priorTemp === undefined) process.env.TEMP = undefined;
+				if (priorTemp === undefined) Reflect.deleteProperty(process.env, "TEMP");
 				else process.env.TEMP = priorTemp;
 			}
 			for (const [, path] of allowed) expect(existsSync(path), path).toBe(true);
@@ -866,6 +866,156 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(readFileSync(nestedHook)).toEqual(nestedHookBytes);
 		} finally {
 			rmSync(absoluteHome, { force: true });
+			await removeFixtureAfterHandlesClose(fixture);
+		}
+	});
+
+	it("commits in a linked worktree whose gitdir and commondir sit outside cwd", async () => {
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+
+		const runId = randomBytes(8).toString("hex");
+		// Long-name path: git reports long names, so 8.3 tmpdir forms would make
+		// the outside-cwd checks below compare two spellings of one directory.
+		const fixture = join(realpathSync.native(tmpdir()), `bound-lowbox-worktree-${runId}`);
+		const main = join(fixture, "main");
+		const wt = join(fixture, "wt");
+		// The fixture lives under the runner's %TEMP%, which the lowbox grants as
+		// writable. Point TEMP at a sibling of main/ for the spawn so only the
+		// linked-worktree gitdir/commondir grant can make the commit succeed.
+		const configuredTemp = join(fixture, "configured-temp");
+		// The runner's profile gitconfig is not part of the contract under test.
+		const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "NUL" };
+		const git = (...args: string[]): string => {
+			const run = spawnSync("git", args, { encoding: "utf8", windowsHide: true, env: gitEnv });
+			expect(run.status, `git ${args.join(" ")}\nstdout=${run.stdout}\nstderr=${run.stderr}`).toBe(
+				0,
+			);
+			return run.stdout.trim();
+		};
+		const identity = ["-c", "user.name=lowbox", "-c", "user.email=lowbox@example.invalid"];
+		const hookBytes = Buffer.from("#!/bin/sh\nexit 0\n", "utf8");
+		mkdirSync(main, { recursive: true });
+		mkdirSync(configuredTemp, { recursive: true });
+		try {
+			git("-C", main, "init");
+			writeFileSync(join(main, "seed.txt"), "seed\n");
+			git("-C", main, "add", "seed.txt");
+			git("-C", main, ...identity, "commit", "-m", "seed");
+			git("-C", main, "worktree", "add", "../wt", "-b", "lowbox-wt");
+			const seedSha = git("-C", main, "rev-parse", "HEAD");
+			const preCommit = join(main, ".git", "hooks", "pre-commit");
+			writeFileSync(preCommit, hookBytes);
+			const mainConfigBytes = readFileSync(join(main, ".git", "config"));
+
+			const sandbox = resolveSandboxConfig(
+				{ writablePaths: [], network: "blocked", onUnavailable: "error" },
+				wt,
+			);
+			const metadata = sandbox.gitWorktreeMetadata;
+			expect(metadata, "captureGitWorktreeMetadata(wt) returned nothing").toBeDefined();
+			const { gitdir, commondir } = metadata as NonNullable<typeof metadata>;
+			const wtReal = realpathSync.native(wt);
+			for (const [name, dir] of [
+				["gitdir", gitdir],
+				["commondir", commondir],
+			] as const) {
+				const rel = relative(wtReal, realpathSync.native(dir));
+				expect(
+					rel.startsWith("..") || isAbsolute(rel),
+					`${name} ${dir} is inside the worktree ${wtReal}`,
+				).toBe(true);
+			}
+
+			const commonConfig = join(commondir, "config");
+			const commonPreCommit = join(commondir, "hooks", "pre-commit");
+			const commonPostCommit = join(commondir, "hooks", "post-commit");
+			const worktreeConfig = join(gitdir, "config.worktree");
+			const commonConfigBytes = readFileSync(commonConfig);
+			const commonPreCommitBytes = readFileSync(commonPreCommit);
+			const worktreeConfigBytes = existsSync(worktreeConfig)
+				? readFileSync(worktreeConfig)
+				: undefined;
+			const protectedProbes = [
+				["common-config-modify", commonConfig],
+				["common-pre-commit-modify", commonPreCommit],
+				["common-post-commit-create", commonPostCommit],
+				...(worktreeConfigBytes ? [["worktree-config-modify", worktreeConfig] as const] : []),
+			] as const;
+			// Identity and safe.directory ride the command line: config is read-only,
+			// and command-line config is protected config Git honors for ownership.
+			const sandboxedGit = `git -c safe.directory=* ${identity.join(" ")}`;
+			const command = [
+				"$env:GIT_CONFIG_GLOBAL = 'NUL'",
+				"Set-Content -LiteralPath (Join-Path $PWD 'lowbox-wt.txt') -Value 'lowbox'",
+				`${sandboxedGit} add lowbox-wt.txt`,
+				'"ADD_EXIT=$LASTEXITCODE"',
+				`${sandboxedGit} commit -m lowbox-wt-commit`,
+				'"COMMIT_EXIT=$LASTEXITCODE"',
+				...protectedProbes.map(([id, path]) => psTryWrite(id, path, "tampered")),
+			].join("; ");
+
+			const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+			const logger = {
+				info: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+				warn: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+			};
+			const diagnose = () =>
+				events
+					.filter((entry) => entry.event !== "sandbox_spawn")
+					.map((entry) => `${entry.event}: ${JSON.stringify(entry.fields)}`)
+					.join("\n") || "(no lowbox diagnostics emitted)";
+			const priorTemp = process.env.TEMP;
+			process.env.TEMP = configuredTemp;
+			let result: Awaited<ReturnType<ReturnType<typeof createBashTool>>>;
+			try {
+				const tool = createBashTool(
+					"windows-latest",
+					resolveShell(undefined),
+					sandbox,
+					logger,
+					runId,
+				);
+				result = await tool({ command, timeout: 30_000 }, new AbortController().signal, wt);
+			} finally {
+				if (priorTemp === undefined) Reflect.deleteProperty(process.env, "TEMP");
+				else process.env.TEMP = priorTemp;
+			}
+			const spawnEvent = events.findLast((entry) => entry.event === "sandbox_spawn");
+			expect(
+				spawnEvent?.fields?.backend,
+				`appcontainer_lowbox was not selected\n${diagnose()}`,
+			).toBe("appcontainer_lowbox");
+			const resultText = result.content[1]?.text ?? "";
+			expect(result.isError, `${resultText}\n${diagnose()}`).toBeUndefined();
+			const outcomes = new Set(resultText.split(/\r?\n/).map((line) => line.trim()));
+			expect(
+				outcomes.has("ADD_EXIT=0"),
+				`git add failed; output=${JSON.stringify(resultText)}`,
+			).toBe(true);
+			expect(
+				outcomes.has("COMMIT_EXIT=0"),
+				`git commit failed; output=${JSON.stringify(resultText)}`,
+			).toBe(true);
+
+			expect(git("-C", main, "log", "-1", "--format=%s", "lowbox-wt")).toBe("lowbox-wt-commit");
+			expect(git("-C", main, "rev-parse", "lowbox-wt")).not.toBe(seedSha);
+
+			for (const [id] of protectedProbes)
+				expect(
+					outcomes.has(`${id}=DENIED`),
+					`${id}: expected DENIED; output=${JSON.stringify(resultText)}`,
+				).toBe(true);
+			expect(readFileSync(commonConfig)).toEqual(commonConfigBytes);
+			expect(readFileSync(join(main, ".git", "config"))).toEqual(mainConfigBytes);
+			expect(readFileSync(commonPreCommit)).toEqual(commonPreCommitBytes);
+			expect(readFileSync(preCommit)).toEqual(hookBytes);
+			if (worktreeConfigBytes) expect(readFileSync(worktreeConfig)).toEqual(worktreeConfigBytes);
+			expect(existsSync(commonPostCommit), commonPostCommit).toBe(false);
+			for (const lock of [join(gitdir, "index.lock"), join(commondir, "index.lock")])
+				expect(existsSync(lock), lock).toBe(false);
+		} finally {
 			await removeFixtureAfterHandlesClose(fixture);
 		}
 	});
