@@ -3,6 +3,7 @@ import { counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	getLlmStatusCode,
+	isConnectionLevelError,
 	isRateLimitStatus,
 	isRouteFailure,
 	isTransientLLMError,
@@ -58,6 +59,11 @@ export interface ModularAgentLoopOptions {
 	/** Max transient-error retries (with backoff) in the base handleModelError. */
 	maxTransientRetries?: number;
 	/**
+	 * Base delay for transient retries that back off (5xx and DNS/connection
+	 * failures); doubles per attempt. Defaults to 1000ms.
+	 */
+	transientBackoffBaseMs?: number;
+	/**
 	 * Max retries for a degenerate turn — one that produced no actionable output
 	 * (no tool call and no text), whether the cause was output-budget truncation
 	 * (finishReason="length") or a dropped stream (finishReason="stop"/absent).
@@ -69,6 +75,7 @@ export interface ModularAgentLoopOptions {
 
 export const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 3;
+const DEFAULT_TRANSIENT_BACKOFF_BASE_MS = 1000;
 const DEFAULT_DEGENERATE_RETRY_MAX = 2;
 
 const loopRuns = counter("bound.loop.runs", {
@@ -261,6 +268,34 @@ export abstract class ModularAgentLoop {
 		}
 		loopConfig.abortSignal?.addEventListener("abort", () => {
 			this.aborted = true;
+			this.wakeAbortWaiters();
+		});
+	}
+
+	/** Wakers for in-flight abortable waits; drained by cancel() and the abort signal. */
+	private readonly abortWaiters = new Set<() => void>();
+
+	private wakeAbortWaiters(): void {
+		for (const wake of [...this.abortWaiters]) wake();
+	}
+
+	/**
+	 * Sleep for `ms`, ending early when the run is aborted (abort signal or
+	 * cancel()). Resolves true when the full delay elapsed, false when aborted.
+	 */
+	protected waitUnlessAborted(ms: number): Promise<boolean> {
+		if (this.aborted) return Promise.resolve(false);
+		return new Promise((resolve) => {
+			const wake = () => {
+				clearTimeout(timer);
+				this.abortWaiters.delete(wake);
+				resolve(false);
+			};
+			const timer = setTimeout(() => {
+				this.abortWaiters.delete(wake);
+				resolve(!this.aborted);
+			}, ms);
+			this.abortWaiters.add(wake);
 		});
 	}
 
@@ -412,6 +447,7 @@ export abstract class ModularAgentLoop {
 
 	cancel(): void {
 		this.aborted = true;
+		this.wakeAbortWaiters();
 	}
 
 	protected setPhase(next: AgentLoopState, options: { validate?: boolean } = {}): void {
@@ -928,7 +964,12 @@ export abstract class ModularAgentLoop {
 			this.transportRetries++;
 			const statusCode = getLlmStatusCode(error);
 			const isServerFault = statusCode !== undefined && statusCode >= 500;
-			const backoffMs = isServerFault ? 1000 * 2 ** (this.transportRetries - 1) : 0;
+			// A DNS or refused-connection failure resent immediately hits the same
+			// dead resolver or port, so it waits like a 5xx. A timeout already spent
+			// its wait on the wire and retries at once.
+			const backs = isServerFault || isConnectionLevelError(error);
+			const baseMs = this.loopOptions.transientBackoffBaseMs ?? DEFAULT_TRANSIENT_BACKOFF_BASE_MS;
+			const backoffMs = backs ? baseMs * 2 ** (this.transportRetries - 1) : 0;
 			this.runtime.logger.warn("[loop] Transient model error, retrying", {
 				attempt: this.transportRetries,
 				max: maxTransientRetries,
@@ -936,8 +977,11 @@ export abstract class ModularAgentLoop {
 				statusCode: statusCode ?? null,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			if (backoffMs > 0) {
-				await new Promise((resolve) => setTimeout(resolve, backoffMs));
+			if (backoffMs > 0 && !(await this.waitUnlessAborted(backoffMs))) {
+				return { action: "stop", outcome: "aborted", reason: "cancelled during transient backoff" };
+			}
+			if (this.aborted) {
+				return { action: "stop", outcome: "aborted", reason: "cancelled before transient retry" };
 			}
 			return { action: "retry" };
 		}

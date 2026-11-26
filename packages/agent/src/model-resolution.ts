@@ -333,8 +333,25 @@ export function resolveModel(
 	// `resolveLocalBackendIdForHint` returns the literal id when it IS registered
 	// (literal precedence), else the local backend under the same logical model.
 	// Every subsequent local lookup keys off this resolved id.
-	const localModelId =
+	const primaryLocalModelId =
 		modelRouter.resolveLocalBackendIdForHint(effectiveModelId) ?? effectiveModelId;
+	// A warm thread never takes a half_open route's trial slot while another
+	// eligible route serves the model (R-RT12). A healthy local sibling under the
+	// same logical model is such a route: prefer it over the half_open backend.
+	const warmThread = prefs?.threadId
+		? findLatestOkTurnRouteByThread(db, prefs.threadId) !== null
+		: false;
+	const healthyLocalSibling =
+		warmThread &&
+		modelRouter.tryGetBackend(primaryLocalModelId) &&
+		modelRouter.getRouteHealthState(primaryLocalModelId).status === "half_open"
+			? (modelRouter.listLocalBackendIdsForHint(effectiveModelId).find((id) => {
+					if (id === primaryLocalModelId || !modelRouter.isHealthyForSticky(id)) return false;
+					const siblingRouteId = modelRouter.getRouteId(id);
+					return !(siblingRouteId && drainedRouteIds.has(siblingRouteId));
+				}) ?? null)
+			: null;
+	const localModelId = healthyLocalSibling ?? primaryLocalModelId;
 	const localBackend = modelRouter.tryGetBackend(localModelId);
 	const localRouteId = localBackend ? modelRouter.getRouteId(localModelId) : null;
 
@@ -362,10 +379,23 @@ export function resolveModel(
 		if (modelRouter.getRouteHealthState(localModelId).status !== "half_open") {
 			return true; // healthy (or backoff, excluded by isRateLimited) — no claim needed
 		}
-		const coldOrNewThread = prefs?.threadId
-			? findLatestOkTurnRouteByThread(db, prefs.threadId) === null
-			: true;
-		return modelRouter.canTrialRoute(localModelId, { coldOrNewThread, claim: true });
+		if (!warmThread) {
+			return modelRouter.canTrialRoute(localModelId, { coldOrNewThread: true, claim: true });
+		}
+		// A warm thread stays off a half_open route only so it can keep working on
+		// another eligible route. A healthy local sibling was already preferred
+		// above, so only a remote route remains to check. With neither, refusing
+		// the trial leaves the thread unresolvable until some unrelated cold thread
+		// trials the route, so the warm thread takes the per-host trial slot.
+		const remoteAlternative = findEligibleHostsByModel(
+			db,
+			effectiveModelId,
+			localSiteId,
+			requirements,
+			{ routeOrder, drainedRouteIds, normalizeKey: normalizeModelKey },
+		);
+		if (remoteAlternative.ok) return false;
+		return modelRouter.canTrialRoute(localModelId, { coldOrNewThread: true, claim: true });
 	})();
 	if (
 		localBackend &&
@@ -523,6 +553,10 @@ function isModelRegisteredInCluster(
 ): boolean {
 	// Live/configured local router backends.
 	if (modelRouter.listBackends().some((b) => b.id === modelId)) return true;
+	// A bare logical name served by a local backend (`gemini-4-carbon` ->
+	// `copilot-gemini-4-carbon`) is registered too, even while that route is
+	// cooling down or its trial slot is taken.
+	if (modelRouter.resolveLocalBackendIdForHint(modelId) !== null) return true;
 
 	// Any host's advertised models, staleness-ignored, all sites included.
 	const rows = listAllHostModels(db);

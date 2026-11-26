@@ -1203,6 +1203,123 @@ describe("route health half-open trial gating (#285, R-RT12)", () => {
 			expect(second.reason).toBe("transient-unavailable");
 		}
 	});
+
+	it("a WARM thread trials a half_open route when no other route serves the model (DNS-blip wedge)", () => {
+		// One transport failure on the only route for the model backs it off; once
+		// the window expires the route sits half_open. With no remote route and no
+		// local sibling serving the model, refusing a warm thread the trial would
+		// leave it unresolvable until an unrelated cold thread trials the route.
+		const modelId = "copilot-gemini-4-carbon";
+		let nowMs = 1_000_000;
+		const router = makeLocalRouter(modelId, () => nowMs);
+		const routeId = router.getRouteId(modelId) as string;
+		const threadId = "warm-only-route-thread";
+		insertPriorOkTurn(threadId, modelId, routeId);
+
+		router.recordRouteFailure(modelId, { errorKind: "transport" });
+		nowMs += 30_000; // window expired -> half_open
+		expect(router.getRouteHealthState(modelId).status).toBe("half_open");
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site", undefined, {
+			threadId,
+			nowMs,
+		});
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") expect(resolution.modelId).toBe(modelId);
+		const state = router.getRouteHealthState(modelId);
+		expect(state.status === "half_open" && state.trial_in_flight).toBe(true);
+
+		// The single per-host trial slot still holds: a second warm resolution while
+		// the trial is in flight does not send a concurrent trial.
+		const second = resolveModel("gemini-4-carbon", router, db, "local-site", undefined, {
+			threadId,
+			nowMs,
+		});
+		expect(second.kind).toBe("error");
+		if (second.kind === "error") expect(second.reason).toBe("transient-unavailable");
+	});
+
+	it("a WARM thread takes a healthy local sibling over the half_open trial slot", () => {
+		// Two local backends serve one logical model. The lexically-first one is
+		// half_open after a transport failure; the other is healthy. A warm thread
+		// has another eligible route, so it must use the healthy sibling and leave
+		// the trial slot for a new or cold-cache thread (R-RT12).
+		const halfOpenId = "bedrock-gemini-4-carbon";
+		const healthyId = "copilot-gemini-4-carbon";
+		let nowMs = 1_000_000;
+		const makeBackend = (id: string) => ({
+			id,
+			chat: async function* () {
+				yield { type: "text" as const, text: "ok" };
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				extended_thinking: false,
+				max_context: 200000,
+			}),
+		});
+		const router = new ModelRouter(
+			new Map([
+				[halfOpenId, makeBackend(halfOpenId)],
+				[healthyId, makeBackend(healthyId)],
+			]),
+			halfOpenId,
+			undefined,
+			new Map([
+				[
+					halfOpenId,
+					{
+						id: halfOpenId,
+						provider: "bedrock",
+						model: halfOpenId,
+						logicalModel: "gemini-4-carbon",
+					},
+				],
+				[
+					healthyId,
+					{ id: healthyId, provider: "copilot", model: healthyId, logicalModel: "gemini-4-carbon" },
+				],
+			]),
+			undefined,
+			() => nowMs,
+			new Map([
+				[
+					halfOpenId,
+					{
+						routeId: `local-site:bedrock:${halfOpenId}` as const,
+						reasoningOrigin: "local-site:bedrock",
+					},
+				],
+				[
+					healthyId,
+					{
+						routeId: `local-site:copilot:${healthyId}` as const,
+						reasoningOrigin: "local-site:copilot",
+					},
+				],
+			]),
+		);
+		const threadId = "warm-two-local-routes-thread";
+		insertPriorOkTurn(threadId, halfOpenId, router.getRouteId(halfOpenId) as string);
+
+		router.recordRouteFailure(halfOpenId, { errorKind: "transport" });
+		nowMs += 30_000; // window expired -> half_open
+		expect(router.getRouteHealthState(halfOpenId).status).toBe("half_open");
+		expect(router.getRouteHealthState(healthyId).status).toBe("healthy");
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site", undefined, {
+			threadId,
+			nowMs,
+		});
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") expect(resolution.modelId).toBe(healthyId);
+		const state = router.getRouteHealthState(halfOpenId);
+		expect(state.status === "half_open" && state.trial_in_flight).toBe(false);
+	});
 });
 
 // ──────────────────────────────────────────────────────────────────────────────

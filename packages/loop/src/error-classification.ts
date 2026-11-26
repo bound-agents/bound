@@ -1,6 +1,89 @@
 import { LLMError, LLMRefusalError } from "@bound/llm";
 
 /**
+ * errno codes for a request that never reached the provider or lost its socket:
+ * DNS lookup failure (ENOTFOUND, EAI_AGAIN), refused/reset/aborted connection,
+ * and unreachable network. None carries an HTTP status.
+ */
+const CONNECTION_ERROR_CODES = [
+	"ENOTFOUND",
+	"EAI_AGAIN",
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ECONNABORTED",
+	"ENETUNREACH",
+	"EHOSTUNREACH",
+	"EPIPE",
+] as const;
+
+const CONNECTION_ERROR_CODE_SET: ReadonlySet<string> = new Set(CONNECTION_ERROR_CODES);
+
+/**
+ * Codes that mark a request which reached the socket but stalled or lost it
+ * mid-flight (timeouts, undici socket teardown). Transient like a connection
+ * failure, but resent immediately: the wait was already spent on the wire.
+ */
+const TRANSIENT_STALL_CODES: ReadonlySet<string> = new Set([
+	"ETIMEDOUT",
+	"UND_ERR_SOCKET",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_HEADERS_TIMEOUT",
+	"UND_ERR_BODY_TIMEOUT",
+]);
+
+/**
+ * System and undici error codes are upper-case identifiers (`ENOTFOUND`,
+ * `CERT_HAS_EXPIRED`, `UND_ERR_INVALID_ARG`). Provider error codes in API
+ * bodies (`server_error`, `rate_limit_exceeded`) are not transport codes and
+ * are ignored here.
+ */
+const TRANSPORT_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
+
+/** Walk `error` and its `cause` chain (bounded) collecting messages and transport codes. */
+function collectErrorSignals(error: unknown): { messages: string[]; codes: string[] } {
+	const messages: string[] = [];
+	const codes: string[] = [];
+	let current: unknown = error;
+	for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth++) {
+		if (typeof current === "object") {
+			const { message, code, cause } = current as {
+				message?: unknown;
+				code?: unknown;
+				cause?: unknown;
+			};
+			if (typeof message === "string") messages.push(message);
+			if (typeof code === "string" && TRANSPORT_CODE_PATTERN.test(code)) codes.push(code);
+			current = cause;
+		} else {
+			messages.push(String(current));
+			break;
+		}
+	}
+	return { messages, codes };
+}
+
+/**
+ * Whether an error is a DNS or connection-level failure: the request never got
+ * an HTTP response. When the error or its `cause` chain carries a transport
+ * code, the code alone decides: undici wraps deterministic failures (expired
+ * or untrusted TLS certificates, invalid headers, body errors) in the same
+ * "fetch failed" message as a DNS miss. Message tokens (an errno in the text,
+ * `getaddrinfo`, a bare "fetch failed") decide only when no code is present.
+ * Such an error is transient and backs off before retrying, since an
+ * immediate resend hits the same unresolvable host or refused port.
+ */
+export function isConnectionLevelError(error: unknown): boolean {
+	const { messages, codes } = collectErrorSignals(error);
+	if (codes.length > 0) return codes.some((code) => CONNECTION_ERROR_CODE_SET.has(code));
+	return messages.some(
+		(message) =>
+			message.includes("fetch failed") ||
+			message.includes("getaddrinfo") ||
+			CONNECTION_ERROR_CODES.some((code) => message.includes(code)),
+	);
+}
+
+/**
  * Determines whether an LLM error is a transient transport issue worth retrying.
  * Returns false for client errors (4xx except 429) — these indicate a malformed
  * request that will fail identically on retry.
@@ -22,6 +105,16 @@ export function isTransientLLMError(error: unknown): boolean {
 		if (error.statusCode >= 500) return true;
 	}
 
+	// A transport code on the error or its cause chain is authoritative: a
+	// coded TLS or request-construction failure fails identically on retry
+	// however its wrapper message reads.
+	const { codes } = collectErrorSignals(error);
+	if (codes.length > 0) {
+		return codes.some(
+			(code) => CONNECTION_ERROR_CODE_SET.has(code) || TRANSIENT_STALL_CODES.has(code),
+		);
+	}
+
 	// Pattern-match on known transient transport error messages.
 	// "timed out" (two words) catches the runtime fetch transport's own
 	// ~300s ceiling, which fires below the AI SDK and wraps as a TimeoutError
@@ -30,6 +123,7 @@ export function isTransientLLMError(error: unknown): boolean {
 	// (one word): message-handler's 35-min inactivity abort uses "LLM
 	// response timeout" and must surface as a genuine stall, not retry.
 	return (
+		isConnectionLevelError(error) ||
 		errMsg.includes("http2") ||
 		errMsg.includes("ECONNRESET") ||
 		errMsg.includes("socket hang up") ||

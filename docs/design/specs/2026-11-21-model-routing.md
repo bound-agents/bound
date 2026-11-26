@@ -352,7 +352,7 @@ A single turn can execute multiple attempts (for example, a refused primary atte
 
 **R-RT11.** Route health shall be managed locally per host (not synced through `change_log`, per Invariant #3) with states `healthy`, `backoff`, and `half_open`. Route failures shall apply exponential backoff starting at 30 seconds (2× per consecutive failure) capped at 4 hours, or the exact `Retry-After` duration on `429`.
 
-**R-RT12.** A route whose backoff window has expired shall enter `half_open` and recover automatically using at most one concurrent real turn **per host** from a new or cold-cache thread as its trial. Synthetic probe requests shall not be sent. Trial success restores `healthy`; trial failure doubles backoff up to the 4-hour cap and fails that turn over to the next ranked route.
+**R-RT12.** A route whose backoff window has expired shall enter `half_open` and recover automatically using at most one concurrent real turn **per host** as its trial. The trial shall come from a new or cold-cache thread whenever another eligible route serves the requested model; when the half-open route is the only route for that model, a warm thread may take the trial slot, so a sole-route thread is never wedged waiting for an unrelated cold thread. Synthetic probe requests shall not be sent. Trial success restores `healthy`; trial failure doubles backoff up to the 4-hour cap and fails that turn over to the next ranked route.
 
 **R-RT13.** Auth expiry (`401`) shall attempt token refresh before tripping backoff and shall raise an operator advisory only when refresh fails. Sustained driver-bug `400`s shall emit a single advisory while continuing automatic half-open recovery.
 

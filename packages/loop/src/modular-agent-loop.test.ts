@@ -698,6 +698,65 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		expect(persisted.alerts).toHaveLength(0);
 	});
 
+	it("retries a DNS/connection failure with backoff instead of ending the loop", async () => {
+		const dnsFailure = Object.assign(
+			new Error("ai-sdk request failed: getaddrinfo ENOTFOUND api.enterprise.githubcopilot.com"),
+			{ code: "ENOTFOUND" },
+		);
+		const backend = new ScriptedBackend([
+			() => {
+				throw dnsFailure;
+			},
+			() => {
+				throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
+			},
+			[{ type: "text", content: "recovered" }, done()],
+		]);
+		const { strategy, persisted } = makeHarness(backend);
+
+		const loop = new TestAgentLoop(
+			strategy,
+			{ threadId: "t1", userId: "u1" },
+			{ transientBackoffBaseMs: 5 },
+		);
+		const startedAt = performance.now();
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(backend.calls).toHaveLength(3);
+		expect(persisted.alerts).toHaveLength(0);
+		// Two connection-level retries back off 5ms then 10ms.
+		expect(performance.now() - startedAt).toBeGreaterThanOrEqual(14);
+	});
+
+	for (const via of ["abortSignal", "cancel"] as const) {
+		it(`stops waiting out a transient backoff when the run is cancelled via ${via}`, async () => {
+			const backend = new ScriptedBackend([
+				() => {
+					throw Object.assign(new Error("getaddrinfo ENOTFOUND example.invalid"), {
+						code: "ENOTFOUND",
+					});
+				},
+				[{ type: "text", content: "should not be reached" }, done()],
+			]);
+			const { strategy, persisted } = makeHarness(backend);
+			const controller = new AbortController();
+			const loop = new TestAgentLoop(
+				strategy,
+				{ threadId: "t1", userId: "u1", abortSignal: controller.signal },
+				{ transientBackoffBaseMs: 10_000 },
+			);
+			const startedAt = performance.now();
+			const running = loop.run();
+			setTimeout(() => (via === "abortSignal" ? controller.abort() : loop.cancel()), 50);
+			await running;
+
+			expect(performance.now() - startedAt).toBeLessThan(2_000);
+			expect(backend.calls).toHaveLength(1);
+			expect(persisted.assistant).toHaveLength(0);
+		});
+	}
+
 	it("does not retry a non-transient model error", async () => {
 		const backend = new ScriptedBackend([
 			() => {

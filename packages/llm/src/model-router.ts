@@ -371,6 +371,38 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Every ready local backend serving the same logical model as `hint`: the
+	 * literal backend (when `hint` is a registered id) plus each sibling whose
+	 * logical model matches the hint or the literal backend's logical model.
+	 * Lexically ordered. Lets resolution find a healthy sibling route when the
+	 * backend `resolveLocalBackendIdForHint` picked is `half_open` (R-RT12).
+	 */
+	listLocalBackendIdsForHint(hint: string): string[] {
+		const literalLogical =
+			this.backends.has(hint) && !this.isNotReady(hint) ? this.logicalModelOf(hint) : null;
+		const matches: string[] = [];
+		for (const id of this.backends.keys()) {
+			if (this.isNotReady(id)) continue;
+			const logical = this.logicalModelOf(id);
+			if (
+				id === hint ||
+				logical === literalLogical ||
+				hintMatchesLogicalModel(hint, logical, normalizeModelKey)
+			) {
+				matches.push(id);
+			}
+		}
+		return matches.sort();
+	}
+
+	private logicalModelOf(id: string): string {
+		const config = this.backendConfigs.get(id);
+		return (
+			config?.logicalModel ?? normalizeModelKey(config?.provider ?? "", config?.model ?? id).key
+		);
+	}
+
+	/**
 	 * Returns the effective capabilities for a backend (driver baseline merged with config override).
 	 * Returns null if the backend ID is not registered.
 	 */
