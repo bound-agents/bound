@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { ModelRouter } from "@bound/llm";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
+import { Hono } from "hono";
 import type { MountableFs } from "just-bash";
 import type { EmitToolCancel, RequestConsistency } from "../lib/handler-types";
 import { createAdvisoriesRoutes } from "./advisories";
@@ -201,3 +202,37 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		}),
 	};
 }
+
+type RegisteredRoutes = ReturnType<typeof registerRoutes>;
+
+/**
+ * Mount every route module at its public prefix. The chain is the single source
+ * of the typed API contract: {@link AppType} is its return type, which
+ * `hono/client`'s `hc<AppType>()` turns into a typed caller for the SPA.
+ */
+export function mountRoutes(routes: RegisteredRoutes) {
+	return new Hono()
+		.route("/api/threads", routes.threads)
+		.route("/api/threads", routes.messages)
+		.route("/api/files", routes.files)
+		.route("/api/memory", routes.memory)
+		.route("/api/status", routes.status)
+		.route("/api/tasks", routes.tasks)
+		.route("/api/advisories", routes.advisories)
+		.route("/api/mcp", routes.mcp)
+		.route("/api/mcp-apps", routes.mcpApps)
+		.route("/api/connectors", routes.connectors)
+		.route("/api/webhooks", routes.webhooks)
+		.route("/api/rss-feeds", routes.rssFeeds)
+		.route("/api/skills", routes.skills)
+		.route("/api/metrics", routes.metrics)
+		.route("/api/sandbox", routes.sandbox)
+		.route("/api/persona", routes.persona)
+		.route("/api/routing", routes.routing)
+		.route("/v1/responses", routes.responses)
+		.route("/oauth/mcp", routes.oauthMcp)
+		.route("/api/mcp-challenges", routes.mcpChallenges);
+}
+
+/** Every web-router route: path, method, input, and JSON output. */
+export type AppType = ReturnType<typeof mountRoutes>;

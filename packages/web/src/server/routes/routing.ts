@@ -276,8 +276,7 @@ export function createRoutingRoutes(
 	siteId: string,
 	modelRouter: ModelRouter | null,
 	options: RoutingRoutesOptions = {},
-): Hono {
-	const app = new Hono();
+) {
 	const clock = options.clock ?? Date.now;
 	const hostLivenessMs = options.hostLivenessMs ?? REMOTE_HEALTH_HOST_LIVENESS_MS;
 	const peerHealth = options.relayRouteHealth
@@ -311,112 +310,6 @@ export function createRoutingRoutes(
 		return siteId || getSiteId(db);
 	}
 
-	// GET /models — the full Settings › Models assembly.
-	app.get("/models", async (c) => {
-		try {
-			const supply = collectSupply(db);
-			const peers = await collectPeerHealth(supply);
-			const localSite = resolveSiteId();
-			const drainRows = new Map(listRouteDrains(db).map((d) => [d.route_id, d]));
-			const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
-			const report = analyzeModelReferences(db, normalizeModelKey);
-			const staleByModel = new Map<string, StaleRoute[]>();
-			const hostNameBySite = new Map(
-				listHostSiteIdNameAndModels(db).map((h) => [h.site_id, h.host_name]),
-			);
-			for (const s of report.staleRouteOrderEntries) {
-				const list = staleByModel.get(s.logicalModel) ?? [];
-				const [siteId, provider] = s.routeId.split(":");
-				list.push({
-					route_id: s.routeId,
-					host_name: (siteId && hostNameBySite.get(siteId)) || null,
-					provider: provider || null,
-				});
-				staleByModel.set(s.logicalModel, list);
-			}
-
-			// The union of logical models that either have supply or carry a rule.
-			const models = new Set<string>([...supply.keys(), ...rules.keys()]);
-			const out: ModelSettings[] = [];
-			for (const logical of models) {
-				const rule = rules.get(logical);
-				const routeOrder = parseRouteOrder(rule?.route_order ?? null);
-				const routes = (supply.get(logical) ?? []).map((r): RouteSupply => {
-					const d = drainRows.get(r.route_id);
-					const base = {
-						...r,
-						drained: d !== undefined,
-						drain_reason: d?.reason ?? null,
-						drained_at: d?.drained_at ?? null,
-					};
-					if (r.site_id === localSite) {
-						const health = localHealth(modelRouter, r.route_id);
-						return {
-							...base,
-							health: health.health,
-							next_trial_at: health.next_trial_at,
-							health_source: health.health === "unknown" ? null : "local",
-							health_observed_at: health.health === "unknown" ? null : clock(),
-						};
-					}
-					const peer = peers.get(r.site_id);
-					const observed = peer?.routes.get(r.route_id);
-					if (!peer || !observed) return base;
-					return {
-						...base,
-						health: observed.health,
-						next_trial_at: observed.next_trial_at,
-						health_source: "remote",
-						health_observed_at: peer.observedAt,
-					};
-				});
-				// Order routes by the model's declared route_order; unordered routes
-				// fall to the end, local-before-remote then lexicographical by RouteId
-				// (mirrors the router's default ranking, §5.2). With no route_order the
-				// whole list follows the default tie-break.
-				const rank = new Map((routeOrder ?? []).map((id, i) => [id, i]));
-				routes.sort((a, b) => {
-					const ra = rank.get(a.route_id) ?? Number.POSITIVE_INFINITY;
-					const rb = rank.get(b.route_id) ?? Number.POSITIVE_INFINITY;
-					if (ra !== rb) return ra - rb;
-					// Tie-break: local (this host's siteId) before remote, then by RouteId.
-					const aLocal = a.site_id === localSite ? 0 : 1;
-					const bLocal = b.site_id === localSite ? 0 : 1;
-					if (aLocal !== bLocal) return aLocal - bLocal;
-					return a.route_id < b.route_id ? -1 : a.route_id > b.route_id ? 1 : 0;
-				});
-				out.push({
-					logical_model: logical,
-					display_name: resolveModelDisplayName(logical, routes),
-					route_order: routeOrder,
-					fallback_policy: parseFallbackPolicy(rule?.fallback_policy ?? null),
-					routes,
-					stale_routes: staleByModel.get(logical) ?? [],
-				});
-			}
-			disambiguateDisplayNames(out);
-			out.sort(
-				(a, b) =>
-					a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }) ||
-					(a.logical_model < b.logical_model ? -1 : a.logical_model > b.logical_model ? 1 : 0),
-			);
-			return c.json({ models: out });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to assemble routing settings", details: message }, 500);
-		}
-	});
-
-	// GET /references — stale/dangling reference report for the cleanup surfaces.
-	app.get("/references", (c) => {
-		try {
-			return c.json(analyzeModelReferences(db, normalizeModelKey));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to analyze references", details: message }, 500);
-		}
-	});
-
 	// Upsert a model_routing_rules row, carrying forward the untouched column.
 	function upsertRule(
 		logical: string,
@@ -442,186 +335,6 @@ export function createRoutingRoutes(
 		}
 	}
 
-	// PUT /models/:logical/route-order — reorder a model's preferred routes.
-	app.put("/models/:logical/route-order", async (c) => {
-		const logical = c.req.param("logical");
-		let body: unknown;
-		try {
-			body = await c.req.json();
-		} catch {
-			return c.json({ error: "Invalid JSON body" }, 400);
-		}
-		const order = (body as { route_order?: unknown }).route_order;
-		if (!Array.isArray(order) || !order.every((x) => typeof x === "string")) {
-			return c.json({ error: "route_order must be an array of RouteId strings" }, 400);
-		}
-		const advertised = new Set((collectSupply(db).get(logical) ?? []).map((r) => r.route_id));
-		const existingOrder = parseRouteOrder(findModelRoutingRule(db, logical)?.route_order ?? null);
-		const known = new Set([...advertised, ...(existingOrder ?? [])]);
-		const unknown = (order as string[]).find((id) => !known.has(id));
-		if (unknown !== undefined) {
-			return c.json({ error: `Unknown route "${unknown}" for model "${logical}"` }, 422);
-		}
-		try {
-			upsertRule(logical, { route_order: JSON.stringify(order) });
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to set route order", details: message }, 500);
-		}
-	});
-
-	// PUT /models/:logical/fallback-policy — set the refusal-fallback policy.
-	app.put("/models/:logical/fallback-policy", async (c) => {
-		const logical = c.req.param("logical");
-		let body: unknown;
-		try {
-			body = await c.req.json();
-		} catch {
-			return c.json({ error: "Invalid JSON body" }, 400);
-		}
-		let policy = validateFallbackPolicy(body);
-		if (!policy) {
-			return c.json({ error: "Invalid fallback policy" }, 400);
-		}
-		if (policy.mode === "custom") {
-			if (policy.models.includes(logical)) {
-				return c.json({ error: `Model "${logical}" cannot fall back to itself` }, 422);
-			}
-			const prior = parseFallbackPolicy(findModelRoutingRule(db, logical)?.fallback_policy ?? null);
-			const priorModels = new Set(prior.mode === "custom" ? prior.models : []);
-			const supplied = collectSupply(db);
-			const unknown = policy.models.find((m) => !supplied.has(m) && !priorModels.has(m));
-			if (unknown !== undefined) {
-				return c.json({ error: `Unknown fallback model "${unknown}"` }, 422);
-			}
-			if (policy.models.length === 0) policy = { mode: "never" };
-		}
-		try {
-			upsertRule(logical, { fallback_policy: JSON.stringify(policy) });
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to set fallback policy", details: message }, 500);
-		}
-	});
-
-	// POST /routes/:routeId/drain — drain a route (exclude from candidates).
-	app.post("/routes/:routeId/drain", async (c) => {
-		const routeId = c.req.param("routeId");
-		const advertised = [...collectSupply(db).values()].some((routes) =>
-			routes.some((r) => r.route_id === routeId),
-		);
-		if (!advertised) {
-			return c.json({ error: `Unknown route "${routeId}"` }, 422);
-		}
-		let reason: string | null = null;
-		try {
-			const body = (await c.req.json()) as { reason?: unknown };
-			if (typeof body.reason === "string" && body.reason.trim())
-				reason = body.reason.trim().slice(0, 200);
-		} catch {
-			// No body is fine — drain with a null reason.
-		}
-		try {
-			const site = resolveSiteId();
-			const existing = findRouteDrainIncludingDeleted(db, routeId);
-			if (existing) {
-				updateRow(
-					db,
-					"route_drains",
-					routeId,
-					{ drained_at: new Date().toISOString(), reason, deleted: 0 },
-					site,
-				);
-			} else {
-				insertRow(
-					db,
-					"route_drains",
-					{
-						route_id: routeId,
-						drained_at: new Date().toISOString(),
-						reason,
-						deleted: 0,
-						modified_at: new Date().toISOString(),
-					},
-					site,
-				);
-			}
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to drain route", details: message }, 500);
-		}
-	});
-
-	// DELETE /routes/:routeId/drain — un-drain (re-enable) a route.
-	app.delete("/routes/:routeId/drain", (c) => {
-		const routeId = c.req.param("routeId");
-		try {
-			if (findRouteDrainIncludingDeleted(db, routeId)) {
-				softDelete(db, "route_drains", routeId, resolveSiteId());
-			}
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to un-drain route", details: message }, 500);
-		}
-	});
-
-	// PUT /aliases/:providerKey — assign (or deliberately ungroup) a provider model.
-	app.put("/aliases/:providerKey", async (c) => {
-		const providerKey = c.req.param("providerKey");
-		let body: unknown;
-		try {
-			body = await c.req.json();
-		} catch {
-			return c.json({ error: "Invalid JSON body" }, 400);
-		}
-		const logical = (body as { logical_model?: unknown }).logical_model;
-		// null is a valid, deliberate "keep ungrouped" mapping; a string assigns it.
-		if (logical !== null && typeof logical !== "string") {
-			return c.json({ error: "logical_model must be a string or null" }, 400);
-		}
-		try {
-			const site = resolveSiteId();
-			const existing = findModelAliasIncludingDeleted(db, providerKey);
-			if (existing) {
-				updateRow(db, "model_aliases", providerKey, { logical_model: logical, deleted: 0 }, site);
-			} else {
-				insertRow(
-					db,
-					"model_aliases",
-					{
-						provider_key: providerKey,
-						logical_model: logical,
-						deleted: 0,
-						modified_at: new Date().toISOString(),
-					},
-					site,
-				);
-			}
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to set alias", details: message }, 500);
-		}
-	});
-
-	// DELETE /aliases/:providerKey — clear an alias override.
-	app.delete("/aliases/:providerKey", (c) => {
-		const providerKey = c.req.param("providerKey");
-		try {
-			if (findModelAliasIncludingDeleted(db, providerKey)) {
-				softDelete(db, "model_aliases", providerKey, resolveSiteId());
-			}
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to clear alias", details: message }, 500);
-		}
-	});
-
 	// Upsert a cluster_config JSON row, un-tombstoning a soft-deleted key.
 	function upsertClusterConfig(key: string, value: unknown): void {
 		const site = resolveSiteId();
@@ -636,107 +349,399 @@ export function createRoutingRoutes(
 			);
 		}
 	}
+	const app = new Hono()
 
-	// PUT /cluster-defaults — the cluster default fallback list + model roles.
-	app.put("/cluster-defaults", async (c) => {
-		let body: unknown;
-		try {
-			body = await c.req.json();
-		} catch {
-			return c.json({ error: "Invalid JSON body" }, 400);
-		}
-		const fallback = (body as { default_fallback_models?: unknown }).default_fallback_models;
-		const roles = (body as { roles?: unknown }).roles;
-		if (fallback !== undefined) {
-			if (!Array.isArray(fallback) || !fallback.every((m) => typeof m === "string")) {
-				return c.json({ error: "default_fallback_models must be an array of strings" }, 400);
+		// GET /models — the full Settings › Models assembly.
+		.get("/models", async (c) => {
+			try {
+				const supply = collectSupply(db);
+				const peers = await collectPeerHealth(supply);
+				const localSite = resolveSiteId();
+				const drainRows = new Map(listRouteDrains(db).map((d) => [d.route_id, d]));
+				const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
+				const report = analyzeModelReferences(db, normalizeModelKey);
+				const staleByModel = new Map<string, StaleRoute[]>();
+				const hostNameBySite = new Map(
+					listHostSiteIdNameAndModels(db).map((h) => [h.site_id, h.host_name]),
+				);
+				for (const s of report.staleRouteOrderEntries) {
+					const list = staleByModel.get(s.logicalModel) ?? [];
+					const [siteId, provider] = s.routeId.split(":");
+					list.push({
+						route_id: s.routeId,
+						host_name: (siteId && hostNameBySite.get(siteId)) || null,
+						provider: provider || null,
+					});
+					staleByModel.set(s.logicalModel, list);
+				}
+
+				// The union of logical models that either have supply or carry a rule.
+				const models = new Set<string>([...supply.keys(), ...rules.keys()]);
+				const out: ModelSettings[] = [];
+				for (const logical of models) {
+					const rule = rules.get(logical);
+					const routeOrder = parseRouteOrder(rule?.route_order ?? null);
+					const routes = (supply.get(logical) ?? []).map((r): RouteSupply => {
+						const d = drainRows.get(r.route_id);
+						const base = {
+							...r,
+							drained: d !== undefined,
+							drain_reason: d?.reason ?? null,
+							drained_at: d?.drained_at ?? null,
+						};
+						if (r.site_id === localSite) {
+							const health = localHealth(modelRouter, r.route_id);
+							return {
+								...base,
+								health: health.health,
+								next_trial_at: health.next_trial_at,
+								health_source: health.health === "unknown" ? null : "local",
+								health_observed_at: health.health === "unknown" ? null : clock(),
+							};
+						}
+						const peer = peers.get(r.site_id);
+						const observed = peer?.routes.get(r.route_id);
+						if (!peer || !observed) return base;
+						return {
+							...base,
+							health: observed.health,
+							next_trial_at: observed.next_trial_at,
+							health_source: "remote",
+							health_observed_at: peer.observedAt,
+						};
+					});
+					// Order routes by the model's declared route_order; unordered routes
+					// fall to the end, local-before-remote then lexicographical by RouteId
+					// (mirrors the router's default ranking, §5.2). With no route_order the
+					// whole list follows the default tie-break.
+					const rank = new Map((routeOrder ?? []).map((id, i) => [id, i]));
+					routes.sort((a, b) => {
+						const ra = rank.get(a.route_id) ?? Number.POSITIVE_INFINITY;
+						const rb = rank.get(b.route_id) ?? Number.POSITIVE_INFINITY;
+						if (ra !== rb) return ra - rb;
+						// Tie-break: local (this host's siteId) before remote, then by RouteId.
+						const aLocal = a.site_id === localSite ? 0 : 1;
+						const bLocal = b.site_id === localSite ? 0 : 1;
+						if (aLocal !== bLocal) return aLocal - bLocal;
+						return a.route_id < b.route_id ? -1 : a.route_id > b.route_id ? 1 : 0;
+					});
+					out.push({
+						logical_model: logical,
+						display_name: resolveModelDisplayName(logical, routes),
+						route_order: routeOrder,
+						fallback_policy: parseFallbackPolicy(rule?.fallback_policy ?? null),
+						routes,
+						stale_routes: staleByModel.get(logical) ?? [],
+					});
+				}
+				disambiguateDisplayNames(out);
+				out.sort(
+					(a, b) =>
+						a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }) ||
+						(a.logical_model < b.logical_model ? -1 : a.logical_model > b.logical_model ? 1 : 0),
+				);
+				return c.json({ models: out });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to assemble routing settings", details: message }, 500);
 			}
-		}
-		if (roles !== undefined) {
-			if (typeof roles !== "object" || roles === null || Array.isArray(roles)) {
-				return c.json({ error: "roles must be an object" }, 400);
+		})
+
+		// GET /references — stale/dangling reference report for the cleanup surfaces.
+		.get("/references", (c) => {
+			try {
+				return c.json(analyzeModelReferences(db, normalizeModelKey));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to analyze references", details: message }, 500);
 			}
-			// Every entry is a cluster-wide name → logical model (§2.1, #281): the three
-			// reserved roles and operator-named aliases share this map. Names must be
-			// non-empty and free of the `@` RouteId-pin syntax; targets must be strings.
-			for (const [name, target] of Object.entries(roles as Record<string, unknown>)) {
-				if (!isValidModelRoleName(name)) {
-					return c.json(
-						{ error: `Invalid role/alias name "${name}": must be non-empty and contain no '@'` },
-						400,
+		})
+
+		// PUT /models/:logical/route-order — reorder a model's preferred routes.
+		.put("/models/:logical/route-order", async (c) => {
+			const logical = c.req.param("logical");
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json({ error: "Invalid JSON body" }, 400);
+			}
+			const order = (body as { route_order?: unknown }).route_order;
+			if (!Array.isArray(order) || !order.every((x) => typeof x === "string")) {
+				return c.json({ error: "route_order must be an array of RouteId strings" }, 400);
+			}
+			const advertised = new Set((collectSupply(db).get(logical) ?? []).map((r) => r.route_id));
+			const existingOrder = parseRouteOrder(findModelRoutingRule(db, logical)?.route_order ?? null);
+			const known = new Set([...advertised, ...(existingOrder ?? [])]);
+			const unknown = (order as string[]).find((id) => !known.has(id));
+			if (unknown !== undefined) {
+				return c.json({ error: `Unknown route "${unknown}" for model "${logical}"` }, 422);
+			}
+			try {
+				upsertRule(logical, { route_order: JSON.stringify(order) });
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to set route order", details: message }, 500);
+			}
+		})
+
+		// PUT /models/:logical/fallback-policy — set the refusal-fallback policy.
+		.put("/models/:logical/fallback-policy", async (c) => {
+			const logical = c.req.param("logical");
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json({ error: "Invalid JSON body" }, 400);
+			}
+			let policy = validateFallbackPolicy(body);
+			if (!policy) {
+				return c.json({ error: "Invalid fallback policy" }, 400);
+			}
+			if (policy.mode === "custom") {
+				if (policy.models.includes(logical)) {
+					return c.json({ error: `Model "${logical}" cannot fall back to itself` }, 422);
+				}
+				const prior = parseFallbackPolicy(
+					findModelRoutingRule(db, logical)?.fallback_policy ?? null,
+				);
+				const priorModels = new Set(prior.mode === "custom" ? prior.models : []);
+				const supplied = collectSupply(db);
+				const unknown = policy.models.find((m) => !supplied.has(m) && !priorModels.has(m));
+				if (unknown !== undefined) {
+					return c.json({ error: `Unknown fallback model "${unknown}"` }, 422);
+				}
+				if (policy.models.length === 0) policy = { mode: "never" };
+			}
+			try {
+				upsertRule(logical, { fallback_policy: JSON.stringify(policy) });
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to set fallback policy", details: message }, 500);
+			}
+		})
+
+		// POST /routes/:routeId/drain — drain a route (exclude from candidates).
+		.post("/routes/:routeId/drain", async (c) => {
+			const routeId = c.req.param("routeId");
+			const advertised = [...collectSupply(db).values()].some((routes) =>
+				routes.some((r) => r.route_id === routeId),
+			);
+			if (!advertised) {
+				return c.json({ error: `Unknown route "${routeId}"` }, 422);
+			}
+			let reason: string | null = null;
+			try {
+				const body = (await c.req.json()) as { reason?: unknown };
+				if (typeof body.reason === "string" && body.reason.trim())
+					reason = body.reason.trim().slice(0, 200);
+			} catch {
+				// No body is fine — drain with a null reason.
+			}
+			try {
+				const site = resolveSiteId();
+				const existing = findRouteDrainIncludingDeleted(db, routeId);
+				if (existing) {
+					updateRow(
+						db,
+						"route_drains",
+						routeId,
+						{ drained_at: new Date().toISOString(), reason, deleted: 0 },
+						site,
+					);
+				} else {
+					insertRow(
+						db,
+						"route_drains",
+						{
+							route_id: routeId,
+							drained_at: new Date().toISOString(),
+							reason,
+							deleted: 0,
+							modified_at: new Date().toISOString(),
+						},
+						site,
 					);
 				}
-				if (typeof target !== "string") {
-					return c.json({ error: `Role/alias "${name}" must map to a string logical model` }, 400);
-				}
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to drain route", details: message }, 500);
 			}
-		}
-		if (fallback !== undefined || roles !== undefined) {
-			const supplied = collectSupply(db);
-			const parseStored = (key: string): unknown => {
-				try {
-					const raw = findClusterConfigValueByKey(db, key)?.value;
-					return raw ? JSON.parse(raw) : null;
-				} catch {
-					return null;
-				}
-			};
-			if (roles !== undefined) {
-				const stored = (parseStored(ROUTING_MODEL_ROLES_KEY) ?? {}) as Record<string, unknown>;
-				for (const [name, target] of Object.entries(roles as Record<string, string>)) {
-					if (target === "" || supplied.has(target) || stored[name] === target) continue;
-					return c.json({ error: `Role/alias "${name}" targets unknown model "${target}"` }, 422);
-				}
-			}
-			if (fallback !== undefined) {
-				const stored = parseStored(ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
-				const prior = new Set(Array.isArray(stored) ? stored : []);
-				const unknown = (fallback as string[]).find((m) => !supplied.has(m) && !prior.has(m));
-				if (unknown !== undefined) {
-					return c.json({ error: `Unknown default fallback model "${unknown}"` }, 422);
-				}
-			}
-		}
-		try {
-			if (fallback !== undefined) {
-				upsertClusterConfig(ROUTING_DEFAULT_FALLBACK_MODELS_KEY, fallback);
-			}
-			if (roles !== undefined) {
-				upsertClusterConfig(ROUTING_MODEL_ROLES_KEY, roles);
-			}
-			return c.json({ ok: true });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to set cluster defaults", details: message }, 500);
-		}
-	});
+		})
 
-	// GET /cluster-defaults — the current default fallback list + roles + aliases.
-	app.get("/cluster-defaults", (c) => {
-		try {
-			const fbRow = findClusterConfigValueByKey(db, ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
-			const rolesRow = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
-			const parse = (raw: string | undefined): unknown => {
-				if (!raw) return null;
-				try {
-					return JSON.parse(raw);
-				} catch {
-					return null;
+		// DELETE /routes/:routeId/drain — un-drain (re-enable) a route.
+		.delete("/routes/:routeId/drain", (c) => {
+			const routeId = c.req.param("routeId");
+			try {
+				if (findRouteDrainIncludingDeleted(db, routeId)) {
+					softDelete(db, "route_drains", routeId, resolveSiteId());
 				}
-			};
-			return c.json({
-				default_fallback_models: parse(fbRow?.value) ?? [],
-				roles: parse(rolesRow?.value) ?? {},
-				aliases: listModelAliases(db).map((a) => ({
-					provider_key: a.provider_key,
-					logical_model: a.logical_model,
-				})),
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to read cluster defaults", details: message }, 500);
-		}
-	});
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to un-drain route", details: message }, 500);
+			}
+		})
+
+		// PUT /aliases/:providerKey — assign (or deliberately ungroup) a provider model.
+		.put("/aliases/:providerKey", async (c) => {
+			const providerKey = c.req.param("providerKey");
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json({ error: "Invalid JSON body" }, 400);
+			}
+			const logical = (body as { logical_model?: unknown }).logical_model;
+			// null is a valid, deliberate "keep ungrouped" mapping; a string assigns it.
+			if (logical !== null && typeof logical !== "string") {
+				return c.json({ error: "logical_model must be a string or null" }, 400);
+			}
+			try {
+				const site = resolveSiteId();
+				const existing = findModelAliasIncludingDeleted(db, providerKey);
+				if (existing) {
+					updateRow(db, "model_aliases", providerKey, { logical_model: logical, deleted: 0 }, site);
+				} else {
+					insertRow(
+						db,
+						"model_aliases",
+						{
+							provider_key: providerKey,
+							logical_model: logical,
+							deleted: 0,
+							modified_at: new Date().toISOString(),
+						},
+						site,
+					);
+				}
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to set alias", details: message }, 500);
+			}
+		})
+
+		// DELETE /aliases/:providerKey — clear an alias override.
+		.delete("/aliases/:providerKey", (c) => {
+			const providerKey = c.req.param("providerKey");
+			try {
+				if (findModelAliasIncludingDeleted(db, providerKey)) {
+					softDelete(db, "model_aliases", providerKey, resolveSiteId());
+				}
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to clear alias", details: message }, 500);
+			}
+		})
+
+		// PUT /cluster-defaults — the cluster default fallback list + model roles.
+		.put("/cluster-defaults", async (c) => {
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json({ error: "Invalid JSON body" }, 400);
+			}
+			const fallback = (body as { default_fallback_models?: unknown }).default_fallback_models;
+			const roles = (body as { roles?: unknown }).roles;
+			if (fallback !== undefined) {
+				if (!Array.isArray(fallback) || !fallback.every((m) => typeof m === "string")) {
+					return c.json({ error: "default_fallback_models must be an array of strings" }, 400);
+				}
+			}
+			if (roles !== undefined) {
+				if (typeof roles !== "object" || roles === null || Array.isArray(roles)) {
+					return c.json({ error: "roles must be an object" }, 400);
+				}
+				// Every entry is a cluster-wide name → logical model (§2.1, #281): the three
+				// reserved roles and operator-named aliases share this map. Names must be
+				// non-empty and free of the `@` RouteId-pin syntax; targets must be strings.
+				for (const [name, target] of Object.entries(roles as Record<string, unknown>)) {
+					if (!isValidModelRoleName(name)) {
+						return c.json(
+							{ error: `Invalid role/alias name "${name}": must be non-empty and contain no '@'` },
+							400,
+						);
+					}
+					if (typeof target !== "string") {
+						return c.json(
+							{ error: `Role/alias "${name}" must map to a string logical model` },
+							400,
+						);
+					}
+				}
+			}
+			if (fallback !== undefined || roles !== undefined) {
+				const supplied = collectSupply(db);
+				const parseStored = (key: string): unknown => {
+					try {
+						const raw = findClusterConfigValueByKey(db, key)?.value;
+						return raw ? JSON.parse(raw) : null;
+					} catch {
+						return null;
+					}
+				};
+				if (roles !== undefined) {
+					const stored = (parseStored(ROUTING_MODEL_ROLES_KEY) ?? {}) as Record<string, unknown>;
+					for (const [name, target] of Object.entries(roles as Record<string, string>)) {
+						if (target === "" || supplied.has(target) || stored[name] === target) continue;
+						return c.json({ error: `Role/alias "${name}" targets unknown model "${target}"` }, 422);
+					}
+				}
+				if (fallback !== undefined) {
+					const stored = parseStored(ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
+					const prior = new Set(Array.isArray(stored) ? stored : []);
+					const unknown = (fallback as string[]).find((m) => !supplied.has(m) && !prior.has(m));
+					if (unknown !== undefined) {
+						return c.json({ error: `Unknown default fallback model "${unknown}"` }, 422);
+					}
+				}
+			}
+			try {
+				if (fallback !== undefined) {
+					upsertClusterConfig(ROUTING_DEFAULT_FALLBACK_MODELS_KEY, fallback);
+				}
+				if (roles !== undefined) {
+					upsertClusterConfig(ROUTING_MODEL_ROLES_KEY, roles);
+				}
+				return c.json({ ok: true });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to set cluster defaults", details: message }, 500);
+			}
+		})
+
+		// GET /cluster-defaults — the current default fallback list + roles + aliases.
+		.get("/cluster-defaults", (c) => {
+			try {
+				const fbRow = findClusterConfigValueByKey(db, ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
+				const rolesRow = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
+				const parse = (raw: string | undefined): unknown => {
+					if (!raw) return null;
+					try {
+						return JSON.parse(raw);
+					} catch {
+						return null;
+					}
+				};
+				return c.json({
+					default_fallback_models: parse(fbRow?.value) ?? [],
+					roles: parse(rolesRow?.value) ?? {},
+					aliases: listModelAliases(db).map((a) => ({
+						provider_key: a.provider_key,
+						logical_model: a.logical_model,
+					})),
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to read cluster defaults", details: message }, 500);
+			}
+		});
 
 	return app;
 }

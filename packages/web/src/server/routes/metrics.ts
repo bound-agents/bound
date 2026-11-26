@@ -152,14 +152,12 @@ export interface MetricsResponse {
 	};
 }
 
-export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]): Hono {
-	const app = new Hono();
+export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]) {
 	const pricingById = new Map<string, BackendPricing>();
 	for (const b of backends ?? []) {
 		pricingById.set(b.id, b);
 	}
-
-	app.get("/", (c) => {
+	const app = new Hono().get("/", (c) => {
 		try {
 			// Get query parameters
 			const fromParam = c.req.query("from");

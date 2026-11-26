@@ -12,6 +12,7 @@ import { isToolVisibilityAppOnly } from "@modelcontextprotocol/ext-apps/app-brid
 // AppBridge.callServerTool callbacks back to the server. The render trigger
 // watches the conversation message stream for results on tools the capability
 // inventory flags as UI-bearing (see mcp-app-store / McpAppPanel).
+import { createApi } from "./api";
 import { McpAppHost, connectToMcpServer } from "./mcp-app-host";
 import { mcpAppHost } from "./mcp-app-store";
 
@@ -37,11 +38,11 @@ let started = false;
 
 /** Fetch the configured MCP App servers from the web router. */
 async function fetchMcpAppServers(): Promise<McpAppServer[]> {
-	const res = await fetch("/api/mcp-apps");
+	const res = await createApi().api["mcp-apps"].$get();
 	if (!res.ok) {
 		throw new Error(`GET /api/mcp-apps failed: ${res.status}`);
 	}
-	const body = (await res.json()) as { servers?: McpAppServer[] };
+	const body: { servers?: McpAppServer[] } = await res.json();
 	return body.servers ?? [];
 }
 

@@ -74,10 +74,8 @@ export function createResponsesRoutes(
 	topologyRole?: "hub" | "spoke",
 	inferenceTimeoutMs: number = resolveRelayConfig(undefined).inference_timeout_ms,
 ) {
-	const app = new Hono();
 	const log = logger ?? createLogger("web", "responses");
-
-	app.post("/", async (c) => {
+	const app = new Hono().post("/", async (c) => {
 		if (!modelRouter) {
 			return c.json(errorObject("No model router configured on this host", "server_error"), 503);
 		}

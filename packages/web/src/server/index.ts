@@ -15,6 +15,7 @@ import {
 	type BackendPricing,
 	type ModelsConfig,
 	type RoutesConfig,
+	mountRoutes,
 	registerRoutes,
 } from "./routes/index";
 
@@ -113,32 +114,12 @@ export async function createWebApp(
 		return next();
 	});
 
-	app.route("/api/threads", routes.threads);
-	app.route("/api/threads", routes.messages);
-	app.route("/api/files", routes.files);
-	app.route("/api/memory", routes.memory);
-	app.route("/api/status", routes.status);
-	app.route("/api/tasks", routes.tasks);
-	app.route("/api/advisories", routes.advisories);
-	app.route("/api/mcp", routes.mcp);
-	app.route("/api/mcp-apps", routes.mcpApps);
-	app.route("/api/connectors", routes.connectors);
-	app.route("/api/webhooks", routes.webhooks);
-	app.route("/api/rss-feeds", routes.rssFeeds);
-	app.route("/api/skills", routes.skills);
-	app.route("/api/metrics", routes.metrics);
-	app.route("/api/sandbox", routes.sandbox);
-	app.route("/api/persona", routes.persona);
-	app.route("/api/routing", routes.routing);
-	app.route("/v1/responses", routes.responses);
-
-	// MCP OAuth challenge resolution (MCP OAuth RFC §8/§11, R-MO17/R-MO27/R-MO27e).
-	// `POST /oauth/mcp/claim` + `GET /oauth/mcp/callback` back `bound login`; the
-	// consent-card list surface mounts at `/api/mcp-challenges`. These factories
-	// are built in registerRoutes but, like the /api/mcp-apps regression guarded in
-	// routes.integration.test.ts, 404 in the browser unless mounted here.
-	app.route("/oauth/mcp", routes.oauthMcp);
-	app.route("/api/mcp-challenges", routes.mcpChallenges);
+	// MCP OAuth challenge resolution (MCP OAuth RFC §8/§11, R-MO17/R-MO27/R-MO27e)
+	// mounts in mountRoutes too: `POST /oauth/mcp/claim` + `GET /oauth/mcp/callback`
+	// back `bound login`, and the consent-card list surface is `/api/mcp-challenges`.
+	// Like the /api/mcp-apps regression guarded in routes.integration.test.ts, a
+	// factory built in registerRoutes 404s in the browser unless mounted there.
+	app.route("/", mountRoutes(routes));
 
 	const assets = await loadEmbeddedAssets();
 	if (assets.size > 0) {

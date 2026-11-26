@@ -55,90 +55,90 @@ export function createMcpChallengesRoutes(
 	db: Database,
 	webBindHost: string,
 	bridge: OauthMcpResolverBridge | null,
-): Hono {
-	const app = new Hono();
+) {
 	const loopback = isLoopbackBind(webBindHost);
+	const app = new Hono()
 
-	app.get("/", (c) => {
-		try {
-			const rows = findPendingChallenges(db);
-			const challenges: PendingChallengeView[] = rows.map((r) => ({
-				challengeId: r.id,
-				serverName: r.server_name,
-				scopeDemand: r.scope_demand,
-				failureReason: r.failure_reason,
-			}));
-			// The card reads `loopback` to decide its affordance: a live authorize
-			// button (loopback) or the `bound login --challenge <id>` instruction
-			// (non-loopback). Also report whether a resolver is present at all —
-			// a loopback bind with no resolver still cannot mint a URL.
-			return c.json({
-				challenges,
-				loopback,
-				canResolve: loopback && bridge !== null,
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to list pending challenges", details: message }, 500);
-		}
-	});
-
-	// GET /by-server — per-server authorization state for the Connections MCP-server
-	// rows (R-MO27c). Unlike `GET /` (pending only, for the thread-top consent card),
-	// this carries BOTH pending and failed challenges keyed by server name: a pending
-	// row is an actionable demand, a failed one shows the last failure. The row
-	// renders a badge + affordance (loopback: an Authorize button reusing the claim
-	// path; non-loopback: the `bound login --challenge <id>` instruction).
-	app.get("/by-server", (c) => {
-		try {
-			const byServer: Record<string, PendingChallengeView & { status: string }> = {};
-			for (const r of findActionableChallenges(db)) {
-				// One live row per (owning site, server name); the server row shows a
-				// single state, preferring a pending demand over a stale failure.
-				const existing = byServer[r.server_name];
-				if (existing && existing.status === "pending" && r.status !== "pending") continue;
-				byServer[r.server_name] = {
+		.get("/", (c) => {
+			try {
+				const rows = findPendingChallenges(db);
+				const challenges: PendingChallengeView[] = rows.map((r) => ({
 					challengeId: r.id,
 					serverName: r.server_name,
 					scopeDemand: r.scope_demand,
 					failureReason: r.failure_reason,
-					status: r.status,
-				};
+				}));
+				// The card reads `loopback` to decide its affordance: a live authorize
+				// button (loopback) or the `bound login --challenge <id>` instruction
+				// (non-loopback). Also report whether a resolver is present at all —
+				// a loopback bind with no resolver still cannot mint a URL.
+				return c.json({
+					challenges,
+					loopback,
+					canResolve: loopback && bridge !== null,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to list pending challenges", details: message }, 500);
 			}
-			return c.json({
-				servers: byServer,
-				loopback,
-				canResolve: loopback && bridge !== null,
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to list per-server challenges", details: message }, 500);
-		}
-	});
+		})
 
-	app.post("/:id/claim", async (c) => {
-		// R-MO27c: the live authorize flow exists ONLY under a loopback bind. A
-		// callback minted for a loopback `redirect_uri` would land nowhere from a
-		// remote browser, so refuse rather than hand back an unreachable URL.
-		if (!loopback) {
-			return c.json(
-				{
-					error:
-						"the web consent card cannot resolve a challenge on a non-loopback bind; run `bound login --challenge <id>` from a local session",
-				},
-				409,
-			);
-		}
-		if (!bridge) {
-			return c.json({ error: "this host runs no MCP OAuth resolver" }, 503);
-		}
-		const id = c.req.param("id");
-		const result = await bridge.claimForLogin({ challengeId: id });
-		if (!result.ok) {
-			return c.json({ error: result.error }, 400);
-		}
-		return c.json({ authorizeUrl: result.authorizeUrl, challengeId: result.challengeId });
-	});
+		// GET /by-server — per-server authorization state for the Connections MCP-server
+		// rows (R-MO27c). Unlike `GET /` (pending only, for the thread-top consent card),
+		// this carries BOTH pending and failed challenges keyed by server name: a pending
+		// row is an actionable demand, a failed one shows the last failure. The row
+		// renders a badge + affordance (loopback: an Authorize button reusing the claim
+		// path; non-loopback: the `bound login --challenge <id>` instruction).
+		.get("/by-server", (c) => {
+			try {
+				const byServer: Record<string, PendingChallengeView & { status: string }> = {};
+				for (const r of findActionableChallenges(db)) {
+					// One live row per (owning site, server name); the server row shows a
+					// single state, preferring a pending demand over a stale failure.
+					const existing = byServer[r.server_name];
+					if (existing && existing.status === "pending" && r.status !== "pending") continue;
+					byServer[r.server_name] = {
+						challengeId: r.id,
+						serverName: r.server_name,
+						scopeDemand: r.scope_demand,
+						failureReason: r.failure_reason,
+						status: r.status,
+					};
+				}
+				return c.json({
+					servers: byServer,
+					loopback,
+					canResolve: loopback && bridge !== null,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to list per-server challenges", details: message }, 500);
+			}
+		})
+
+		.post("/:id/claim", async (c) => {
+			// R-MO27c: the live authorize flow exists ONLY under a loopback bind. A
+			// callback minted for a loopback `redirect_uri` would land nowhere from a
+			// remote browser, so refuse rather than hand back an unreachable URL.
+			if (!loopback) {
+				return c.json(
+					{
+						error:
+							"the web consent card cannot resolve a challenge on a non-loopback bind; run `bound login --challenge <id>` from a local session",
+					},
+					409,
+				);
+			}
+			if (!bridge) {
+				return c.json({ error: "this host runs no MCP OAuth resolver" }, 503);
+			}
+			const id = c.req.param("id");
+			const result = await bridge.claimForLogin({ challengeId: id });
+			if (!result.ok) {
+				return c.json({ error: result.error }, 400);
+			}
+			return c.json({ authorizeUrl: result.authorizeUrl, challengeId: result.challengeId });
+		});
 
 	return app;
 }

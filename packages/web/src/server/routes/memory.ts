@@ -23,10 +23,8 @@ export interface MemoryGraphResponse {
 	edges: MemoryGraphEdge[];
 }
 
-export function createMemoryRoutes(db: Database): Hono {
-	const app = new Hono();
-
-	app.get("/graph", (c) => {
+export function createMemoryRoutes(db: Database) {
+	const app = new Hono().get("/graph", (c) => {
 		try {
 			// Query all non-deleted memories
 			const memoryRows = db

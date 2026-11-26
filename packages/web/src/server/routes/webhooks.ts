@@ -46,9 +46,7 @@ export interface WebhooksRoutesConfig {
 	siteId?: string;
 }
 
-export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig = {}): Hono {
-	const app = new Hono();
-
+export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig = {}) {
 	function resolveSiteId(): string {
 		return getSiteId(db);
 	}
@@ -68,403 +66,404 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		const { no_history, ...rest } = row;
 		return { ...rest, no_history: no_history === 1 };
 	}
+	const app = new Hono()
 
-	app.get("/", (c) => {
-		try {
-			const rows = listWebhooksWithTask(db) as unknown as Array<Record<string, unknown>>;
+		.get("/", (c) => {
+			try {
+				const rows = listWebhooksWithTask(db) as unknown as Array<Record<string, unknown>>;
 
-			return c.json(rows.map((r) => shapeWebhook(r)));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to list webhooks",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	// GET /unauthenticated-switch — Read the cluster-wide unauthenticated-webhook
-	// kill switch (#195). Registered BEFORE `/:id` so the literal path is not
-	// captured as a webhook id. Absent row reads as disabled (the default).
-	app.get("/unauthenticated-switch", (c) => {
-		try {
-			const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
-			return c.json({ allow_unauthenticated: row?.value === "true" });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to read switch", details: message }, 500);
-		}
-	});
-
-	// PUT /unauthenticated-switch — Flip the switch. Body: { allow_unauthenticated:
-	// boolean }. Upserts the cluster_config row (un-tombstoning a prior value).
-	// Disabling immediately stops delivery to existing "none" webhooks (the
-	// handler re-checks live) as well as blocking new "none" creates.
-	app.put("/unauthenticated-switch", async (c) => {
-		try {
-			const body = (await c.req.json()) as Record<string, unknown>;
-			if (typeof body.allow_unauthenticated !== "boolean") {
-				return c.json({ error: "allow_unauthenticated must be a boolean" }, 400);
-			}
-			const siteId = resolveSiteId();
-			const value = body.allow_unauthenticated ? "true" : "false";
-			const now = new Date().toISOString();
-			if (findClusterConfigKeyByKeyIncludingDeleted(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY)) {
-				updateRow(
-					db,
-					"cluster_config",
-					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
-					{ value, deleted: 0 },
-					siteId,
-				);
-			} else {
-				insertRow(
-					db,
-					"cluster_config",
-					{ key: WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, value, modified_at: now, deleted: 0 },
-					siteId,
-				);
-			}
-			return c.json({ allow_unauthenticated: body.allow_unauthenticated });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to update switch", details: message }, 500);
-		}
-	});
-
-	app.get("/:id", (c) => {
-		try {
-			const id = c.req.param("id");
-
-			const webhook = getWebhookWithTaskById(db, id) as Record<string, unknown> | null;
-
-			if (!webhook) {
-				return c.json({ error: "Webhook not found" }, 404);
-			}
-
-			return c.json(shapeWebhook(webhook));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to get webhook",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	// GET /:id/urls — Enumerate webhook delivery URLs across the cluster (#36)
-	app.get("/:id/urls", (c) => {
-		try {
-			const id = c.req.param("id");
-
-			// Look up by id to get the webhook's name (delivery URLs use name).
-			const webhook = findWebhookNameById(db, id);
-
-			if (!webhook) {
-				return c.json({ error: "Webhook not found" }, 404);
-			}
-
-			// Non-deleted hosts. Rows with null/empty sync_url are filtered
-			// inside the helper.
-			const clusterHosts = listHostSyncTargets(db);
-
-			const urls = buildWebhookUrls({
-				name: webhook.name,
-				syncBindHost: config.syncBindHost ?? "localhost",
-				syncPort: config.syncPort ?? 3000,
-				localHostName: config.hostName,
-				localSiteId: config.siteId,
-				hubUrl: config.hubUrl,
-				clusterHosts,
-			});
-
-			return c.json({ name: webhook.name, urls });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to list webhook URLs",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	app.post("/", async (c) => {
-		try {
-			const body = (await c.req.json()) as Record<string, unknown>;
-			const siteId = resolveSiteId();
-
-			const name = body.name as string | undefined;
-			const format = (body.format || "github") as SignatureFormat;
-			const description = body.description as string | undefined;
-			const prompt = body.prompt as string | undefined;
-			// model_hint: missing/null/empty all mean "use system default"
-			const rawModelHint = body.model_hint;
-			const modelHint =
-				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
-			// no_history: missing or non-boolean → false (default). Boolean values
-			// are stored as 0/1 on the task row; the response coerces back to bool.
-			const noHistory = body.no_history === true ? 1 : 0;
-
-			if (!VALID_SIGNATURE_FORMATS.has(format)) {
-				return c.json({ error: `Invalid format '${String(format)}'` }, 400);
-			}
-
-			// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
-			if (!name) {
-				return c.json({ error: "name is required" }, 400);
-			}
-
-			const nameRegex = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-			if (!nameRegex.test(name)) {
+				return c.json(rows.map((r) => shapeWebhook(r)));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error:
-							"Invalid webhook name. Must match /^[a-z0-9][a-z0-9_-]{0,63}$/ (lowercase, digits, underscores, dashes, 1-64 chars)",
+						error: "Failed to list webhooks",
+						details: message,
 					},
-					400,
+					500,
 				);
 			}
+		})
 
-			// "none" (unauthenticated) webhooks are gated behind an explicit,
-			// operator-controlled cluster_config switch (#195), default off. This
-			// runs before the duplicate-name check so a rejected create doesn't
-			// leak whether the name is taken.
-			if (format === "none") {
-				const allowUnauthenticated = findClusterConfigValueByKey(
-					db,
-					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
-				);
-				if (allowUnauthenticated?.value !== "true") {
-					return c.json({ error: UNAUTHENTICATED_DISABLED_ERROR }, 403);
+		// GET /unauthenticated-switch — Read the cluster-wide unauthenticated-webhook
+		// kill switch (#195). Registered BEFORE `/:id` so the literal path is not
+		// captured as a webhook id. Absent row reads as disabled (the default).
+		.get("/unauthenticated-switch", (c) => {
+			try {
+				const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+				return c.json({ allow_unauthenticated: row?.value === "true" });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to read switch", details: message }, 500);
+			}
+		})
+
+		// PUT /unauthenticated-switch — Flip the switch. Body: { allow_unauthenticated:
+		// boolean }. Upserts the cluster_config row (un-tombstoning a prior value).
+		// Disabling immediately stops delivery to existing "none" webhooks (the
+		// handler re-checks live) as well as blocking new "none" creates.
+		.put("/unauthenticated-switch", async (c) => {
+			try {
+				const body = (await c.req.json()) as Record<string, unknown>;
+				if (typeof body.allow_unauthenticated !== "boolean") {
+					return c.json({ error: "allow_unauthenticated must be a boolean" }, 400);
 				}
+				const siteId = resolveSiteId();
+				const value = body.allow_unauthenticated ? "true" : "false";
+				const now = new Date().toISOString();
+				if (findClusterConfigKeyByKeyIncludingDeleted(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY)) {
+					updateRow(
+						db,
+						"cluster_config",
+						WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+						{ value, deleted: 0 },
+						siteId,
+					);
+				} else {
+					insertRow(
+						db,
+						"cluster_config",
+						{ key: WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, value, modified_at: now, deleted: 0 },
+						siteId,
+					);
+				}
+				return c.json({ allow_unauthenticated: body.allow_unauthenticated });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to update switch", details: message }, 500);
 			}
+		})
 
-			const existing = findWebhookIdByName(db, name);
+		.get("/:id", (c) => {
+			try {
+				const id = c.req.param("id");
 
-			if (existing) {
-				return c.json({ error: `Webhook '${name}' already exists` }, 400);
+				const webhook = getWebhookWithTaskById(db, id) as Record<string, unknown> | null;
+
+				if (!webhook) {
+					return c.json({ error: "Webhook not found" }, 404);
+				}
+
+				return c.json(shapeWebhook(webhook));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to get webhook",
+						details: message,
+					},
+					500,
+				);
 			}
+		})
 
-			const { webhookId, secret } = createWebhookBinding(db, siteId, {
-				name,
-				signatureFormat: format,
-				description: description || null,
-				prompt: prompt || null,
-				modelHint,
-				noHistory,
-			});
+		// GET /:id/urls — Enumerate webhook delivery URLs across the cluster (#36)
+		.get("/:id/urls", (c) => {
+			try {
+				const id = c.req.param("id");
 
-			// Return full webhook object INCLUDING secret. Re-SELECT through
-			// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)
-			// matches GET/PATCH and the client can avoid a follow-up fetch.
-			const fresh = findWebhookResponseById(db, webhookId);
-			const shaped = shapeWebhook(fresh) ?? {};
-			return c.json({ ...shaped, secret }, 201);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to create webhook",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+				// Look up by id to get the webhook's name (delivery URLs use name).
+				const webhook = findWebhookNameById(db, id);
 
-	app.patch("/:id", async (c) => {
-		try {
-			const id = c.req.param("id");
-			const body = (await c.req.json()) as Record<string, unknown>;
-			const siteId = resolveSiteId();
+				if (!webhook) {
+					return c.json({ error: "Webhook not found" }, 404);
+				}
 
-			// Look up webhook by id
-			const webhook = findWebhookIdsById(db, id);
+				// Non-deleted hosts. Rows with null/empty sync_url are filtered
+				// inside the helper.
+				const clusterHosts = listHostSyncTargets(db);
 
-			if (!webhook) {
-				return c.json({ error: "Webhook not found" }, 404);
+				const urls = buildWebhookUrls({
+					name: webhook.name,
+					syncBindHost: config.syncBindHost ?? "localhost",
+					syncPort: config.syncPort ?? 3000,
+					localHostName: config.hostName,
+					localSiteId: config.siteId,
+					hubUrl: config.hubUrl,
+					clusterHosts,
+				});
+
+				return c.json({ name: webhook.name, urls });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to list webhook URLs",
+						details: message,
+					},
+					500,
+				);
 			}
+		})
 
-			const description = body.description as string | undefined;
-			const prompt = body.prompt as string | undefined;
-			const format = body.format as SignatureFormat | undefined;
-			if (format !== undefined) {
-				if (typeof format !== "string" || !VALID_SIGNATURE_FORMATS.has(format)) {
+		.post("/", async (c) => {
+			try {
+				const body = (await c.req.json()) as Record<string, unknown>;
+				const siteId = resolveSiteId();
+
+				const name = body.name as string | undefined;
+				const format = (body.format || "github") as SignatureFormat;
+				const description = body.description as string | undefined;
+				const prompt = body.prompt as string | undefined;
+				// model_hint: missing/null/empty all mean "use system default"
+				const rawModelHint = body.model_hint;
+				const modelHint =
+					typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
+				// no_history: missing or non-boolean → false (default). Boolean values
+				// are stored as 0/1 on the task row; the response coerces back to bool.
+				const noHistory = body.no_history === true ? 1 : 0;
+
+				if (!VALID_SIGNATURE_FORMATS.has(format)) {
 					return c.json({ error: `Invalid format '${String(format)}'` }, 400);
 				}
+
+				// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
+				if (!name) {
+					return c.json({ error: "name is required" }, 400);
+				}
+
+				const nameRegex = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+				if (!nameRegex.test(name)) {
+					return c.json(
+						{
+							error:
+								"Invalid webhook name. Must match /^[a-z0-9][a-z0-9_-]{0,63}$/ (lowercase, digits, underscores, dashes, 1-64 chars)",
+						},
+						400,
+					);
+				}
+
+				// "none" (unauthenticated) webhooks are gated behind an explicit,
+				// operator-controlled cluster_config switch (#195), default off. This
+				// runs before the duplicate-name check so a rejected create doesn't
+				// leak whether the name is taken.
 				if (format === "none") {
-					const allow = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
-					if (allow?.value !== "true") {
+					const allowUnauthenticated = findClusterConfigValueByKey(
+						db,
+						WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+					);
+					if (allowUnauthenticated?.value !== "true") {
 						return c.json({ error: UNAUTHENTICATED_DISABLED_ERROR }, 403);
 					}
 				}
-			}
-			// model_hint three-state:
-			//   key absent          → leave alone
-			//   null / ""           → clear back to system default
-			//   non-empty string    → set
-			const modelHintProvided = "model_hint" in body;
-			const rawModelHint = body.model_hint;
-			const modelHintValue =
-				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
-			// no_history is two-state on PATCH:
-			//   key absent → leave alone
-			//   boolean    → set 0/1
-			// Non-boolean values are rejected with 400 to avoid ambiguity.
-			const noHistoryProvided = "no_history" in body;
-			let noHistoryValue: 0 | 1 = 0;
-			if (noHistoryProvided) {
-				if (typeof body.no_history !== "boolean") {
-					return c.json({ error: "no_history must be a boolean" }, 400);
+
+				const existing = findWebhookIdByName(db, name);
+
+				if (existing) {
+					return c.json({ error: `Webhook '${name}' already exists` }, 400);
 				}
-				noHistoryValue = body.no_history ? 1 : 0;
-			}
 
-			if (prompt !== undefined) {
-				updateRow(
-					db,
-					"tasks",
-					webhook.task_id,
+				const { webhookId, secret } = createWebhookBinding(db, siteId, {
+					name,
+					signatureFormat: format,
+					description: description || null,
+					prompt: prompt || null,
+					modelHint,
+					noHistory,
+				});
+
+				// Return full webhook object INCLUDING secret. Re-SELECT through
+				// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)
+				// matches GET/PATCH and the client can avoid a follow-up fetch.
+				const fresh = findWebhookResponseById(db, webhookId);
+				const shaped = shapeWebhook(fresh) ?? {};
+				return c.json({ ...shaped, secret }, 201);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
 					{
-						system_prompt_addition: prompt || null,
+						error: "Failed to create webhook",
+						details: message,
 					},
-					siteId,
+					500,
 				);
 			}
+		})
 
-			if (modelHintProvided) {
-				updateRow(
-					db,
-					"tasks",
-					webhook.task_id,
-					{
-						model_hint: modelHintValue,
-					},
-					siteId,
-				);
-				// Mirror onto the delivery thread (matches CLI + create semantics)
-				updateRow(
-					db,
-					"threads",
-					webhook.thread_id,
-					{
-						model_hint: modelHintValue,
-					},
-					siteId,
-				);
-			}
+		.patch("/:id", async (c) => {
+			try {
+				const id = c.req.param("id");
+				const body = (await c.req.json()) as Record<string, unknown>;
+				const siteId = resolveSiteId();
 
-			// Update task no_history if provided. The flag is read by the
-			// relay-processor at delivery time, so a PATCH takes effect on the
-			// next webhook fire without needing to recreate the task.
-			if (noHistoryProvided) {
-				updateRow(
-					db,
-					"tasks",
-					webhook.task_id,
-					{
-						no_history: noHistoryValue,
-					},
-					siteId,
-				);
-			}
+				// Look up webhook by id
+				const webhook = findWebhookIdsById(db, id);
 
-			if (description !== undefined || format !== undefined) {
-				const updateData: Record<string, unknown> = {};
-				if (description !== undefined) {
-					updateData.description = description || null;
+				if (!webhook) {
+					return c.json({ error: "Webhook not found" }, 404);
 				}
+
+				const description = body.description as string | undefined;
+				const prompt = body.prompt as string | undefined;
+				const format = body.format as SignatureFormat | undefined;
 				if (format !== undefined) {
-					updateData.signature_format = format;
+					if (typeof format !== "string" || !VALID_SIGNATURE_FORMATS.has(format)) {
+						return c.json({ error: `Invalid format '${String(format)}'` }, 400);
+					}
+					if (format === "none") {
+						const allow = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+						if (allow?.value !== "true") {
+							return c.json({ error: UNAUTHENTICATED_DISABLED_ERROR }, 403);
+						}
+					}
+				}
+				// model_hint three-state:
+				//   key absent          → leave alone
+				//   null / ""           → clear back to system default
+				//   non-empty string    → set
+				const modelHintProvided = "model_hint" in body;
+				const rawModelHint = body.model_hint;
+				const modelHintValue =
+					typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
+				// no_history is two-state on PATCH:
+				//   key absent → leave alone
+				//   boolean    → set 0/1
+				// Non-boolean values are rejected with 400 to avoid ambiguity.
+				const noHistoryProvided = "no_history" in body;
+				let noHistoryValue: 0 | 1 = 0;
+				if (noHistoryProvided) {
+					if (typeof body.no_history !== "boolean") {
+						return c.json({ error: "no_history must be a boolean" }, 400);
+					}
+					noHistoryValue = body.no_history ? 1 : 0;
 				}
 
-				updateRow(db, "webhooks", id, updateData, siteId);
+				if (prompt !== undefined) {
+					updateRow(
+						db,
+						"tasks",
+						webhook.task_id,
+						{
+							system_prompt_addition: prompt || null,
+						},
+						siteId,
+					);
+				}
+
+				if (modelHintProvided) {
+					updateRow(
+						db,
+						"tasks",
+						webhook.task_id,
+						{
+							model_hint: modelHintValue,
+						},
+						siteId,
+					);
+					// Mirror onto the delivery thread (matches CLI + create semantics)
+					updateRow(
+						db,
+						"threads",
+						webhook.thread_id,
+						{
+							model_hint: modelHintValue,
+						},
+						siteId,
+					);
+				}
+
+				// Update task no_history if provided. The flag is read by the
+				// relay-processor at delivery time, so a PATCH takes effect on the
+				// next webhook fire without needing to recreate the task.
+				if (noHistoryProvided) {
+					updateRow(
+						db,
+						"tasks",
+						webhook.task_id,
+						{
+							no_history: noHistoryValue,
+						},
+						siteId,
+					);
+				}
+
+				if (description !== undefined || format !== undefined) {
+					const updateData: Record<string, unknown> = {};
+					if (description !== undefined) {
+						updateData.description = description || null;
+					}
+					if (format !== undefined) {
+						updateData.signature_format = format;
+					}
+
+					updateRow(db, "webhooks", id, updateData, siteId);
+				}
+
+				// Fetch and return updated webhook (without secret, with prompt)
+				const updated = findWebhookResponseById(db, id);
+
+				return c.json(shapeWebhook(updated));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to update webhook",
+						details: message,
+					},
+					500,
+				);
 			}
+		})
 
-			// Fetch and return updated webhook (without secret, with prompt)
-			const updated = findWebhookResponseById(db, id);
+		.delete("/:id", (c) => {
+			try {
+				const id = c.req.param("id");
+				const siteId = resolveSiteId();
 
-			return c.json(shapeWebhook(updated));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to update webhook",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+				// Look up webhook
+				const webhook = findWebhookTaskIdById(db, id);
 
-	app.delete("/:id", (c) => {
-		try {
-			const id = c.req.param("id");
-			const siteId = resolveSiteId();
+				if (!webhook) {
+					return c.json({ error: "Webhook not found" }, 404);
+				}
 
-			// Look up webhook
-			const webhook = findWebhookTaskIdById(db, id);
+				// Soft-delete webhook
+				softDelete(db, "webhooks", id, siteId);
 
-			if (!webhook) {
-				return c.json({ error: "Webhook not found" }, 404);
+				// Cancel associated task
+				updateRow(db, "tasks", webhook.task_id, { status: "cancelled" }, siteId);
+
+				return new Response(null, { status: 204 });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to delete webhook",
+						details: message,
+					},
+					500,
+				);
 			}
+		})
 
-			// Soft-delete webhook
-			softDelete(db, "webhooks", id, siteId);
+		.post("/:id/rotate", (c) => {
+			try {
+				const id = c.req.param("id");
+				const siteId = resolveSiteId();
 
-			// Cancel associated task
-			updateRow(db, "tasks", webhook.task_id, { status: "cancelled" }, siteId);
+				// Look up webhook
+				const webhook = findWebhookIdById(db, id);
 
-			return new Response(null, { status: 204 });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to delete webhook",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+				if (!webhook) {
+					return c.json({ error: "Webhook not found" }, 404);
+				}
 
-	app.post("/:id/rotate", (c) => {
-		try {
-			const id = c.req.param("id");
-			const siteId = resolveSiteId();
+				const newSecret = randomBytes(32).toString("hex");
 
-			// Look up webhook
-			const webhook = findWebhookIdById(db, id);
+				updateRow(db, "webhooks", id, { secret: newSecret }, siteId);
 
-			if (!webhook) {
-				return c.json({ error: "Webhook not found" }, 404);
+				return c.json({ secret: newSecret });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to rotate secret",
+						details: message,
+					},
+					500,
+				);
 			}
-
-			const newSecret = randomBytes(32).toString("hex");
-
-			updateRow(db, "webhooks", id, { secret: newSecret }, siteId);
-
-			return c.json({ secret: newSecret });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to rotate secret",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+		});
 
 	return app;
 }

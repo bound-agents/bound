@@ -137,173 +137,173 @@ export async function storeFile(
 	return fileId;
 }
 
-export function createFilesRoutes(db: Database, operatorUserId = "default_web_user"): Hono {
-	const app = new Hono();
+export function createFilesRoutes(db: Database, operatorUserId = "default_web_user") {
+	const app = new Hono()
 
-	app.get("/", (c) => {
-		try {
-			const files = listFilesActiveByCreatedDesc(db);
+		.get("/", (c) => {
+			try {
+				const files = listFilesActiveByCreatedDesc(db);
 
-			// Strip content field from each file in response
-			const filesWithoutContent = files.map((file) => {
-				const { content: _, ...fileWithoutContent } = file;
-				return fileWithoutContent;
-			});
+				// Strip content field from each file in response
+				const filesWithoutContent = files.map((file) => {
+					const { content: _, ...fileWithoutContent } = file;
+					return fileWithoutContent;
+				});
 
-			return c.json(filesWithoutContent);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to list files",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	app.get("/download", (c) => {
-		try {
-			const filePath = c.req.query("path");
-			const fileId = c.req.query("id");
-
-			if (!filePath && !fileId) {
-				return c.json({ error: "Missing required query parameter: path or id" }, 400);
-			}
-
-			let file: AgentFile | null;
-			if (fileId) {
-				file = findFileByIdActive(db, fileId);
-			} else {
-				file = findFileByPathActive(db, filePath as string);
-			}
-
-			if (!file) {
+				return c.json(filesWithoutContent);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error: "File not found",
+						error: "Failed to list files",
+						details: message,
 					},
-					404,
+					500,
 				);
 			}
+		})
 
-			if (file.content === null) {
+		.get("/download", (c) => {
+			try {
+				const filePath = c.req.query("path");
+				const fileId = c.req.query("id");
+
+				if (!filePath && !fileId) {
+					return c.json({ error: "Missing required query parameter: path or id" }, 400);
+				}
+
+				let file: AgentFile | null;
+				if (fileId) {
+					file = findFileByIdActive(db, fileId);
+				} else {
+					file = findFileByPathActive(db, filePath as string);
+				}
+
+				if (!file) {
+					return c.json(
+						{
+							error: "File not found",
+						},
+						404,
+					);
+				}
+
+				if (file.content === null) {
+					return c.json(
+						{
+							error: "File content not available",
+						},
+						404,
+					);
+				}
+
+				const mimeType = detectMimeType(file.path);
+				const filename = getFilename(file.path);
+
+				let responseBody: string | Blob;
+				if (file.is_binary === 1) {
+					responseBody = new Blob([Buffer.from(file.content, "base64")]);
+				} else {
+					responseBody = file.content;
+				}
+
+				// Sanitize filename for Content-Disposition header to prevent injection
+				const safeFilename = filename.replace(/["\\\r\n]/g, "_");
+
+				return new Response(responseBody, {
+					headers: {
+						"Content-Type": mimeType,
+						"Content-Disposition": `attachment; filename="${safeFilename}"`,
+					},
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error: "File content not available",
+						error: "Failed to download file",
+						details: message,
 					},
-					404,
+					500,
 				);
 			}
+		})
 
-			const mimeType = detectMimeType(file.path);
-			const filename = getFilename(file.path);
+		.get("/*", (c) => {
+			try {
+				const path = c.req.path.replace(/^\/api\/files\/?/, "") || "/";
 
-			let responseBody: string | Blob;
-			if (file.is_binary === 1) {
-				responseBody = new Blob([Buffer.from(file.content, "base64")]);
-			} else {
-				responseBody = file.content;
-			}
+				const file = findFileByPathActive(db, path);
 
-			// Sanitize filename for Content-Disposition header to prevent injection
-			const safeFilename = filename.replace(/["\\\r\n]/g, "_");
+				if (!file) {
+					return c.json(
+						{
+							error: "File not found",
+						},
+						404,
+					);
+				}
 
-			return new Response(responseBody, {
-				headers: {
-					"Content-Type": mimeType,
-					"Content-Disposition": `attachment; filename="${safeFilename}"`,
-				},
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to download file",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	app.get("/*", (c) => {
-		try {
-			const path = c.req.path.replace(/^\/api\/files\/?/, "") || "/";
-
-			const file = findFileByPathActive(db, path);
-
-			if (!file) {
+				return c.json(file);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error: "File not found",
+						error: "Failed to get file",
+						details: message,
 					},
-					404,
+					500,
 				);
 			}
+		})
 
-			return c.json(file);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to get file",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+		.post("/upload", async (c) => {
+			try {
+				const formData = await c.req.formData();
+				const file = formData.get("file");
 
-	app.post("/upload", async (c) => {
-		try {
-			const formData = await c.req.formData();
-			const file = formData.get("file");
+				if (!file || !(file instanceof File)) {
+					return c.json(
+						{
+							error: "Invalid request body",
+							details: "file field is required",
+						},
+						400,
+					);
+				}
 
-			if (!file || !(file instanceof File)) {
+				if (file.size > MAX_FILE_STORAGE_BYTES) {
+					return c.json(
+						{
+							error: "File too large",
+							details: `Maximum file size is ${MAX_FILE_STORAGE_BYTES / (1024 * 1024)}MB`,
+						},
+						413,
+					);
+				}
+
+				const siteId = getSiteId(db);
+				const fileId = await storeFile(db, siteId, {
+					name: file.name,
+					mimeType: file.type || "application/octet-stream",
+					data: await file.arrayBuffer(),
+					createdBy: operatorUserId,
+					hostOrigin: getHostMetaHostName(db) ?? siteId,
+				});
+
+				const result = findFileById(db, fileId) as AgentFile;
+
+				return c.json(result, 201);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error: "Invalid request body",
-						details: "file field is required",
+						error: "Failed to upload file",
+						details: message,
 					},
-					400,
+					500,
 				);
 			}
-
-			if (file.size > MAX_FILE_STORAGE_BYTES) {
-				return c.json(
-					{
-						error: "File too large",
-						details: `Maximum file size is ${MAX_FILE_STORAGE_BYTES / (1024 * 1024)}MB`,
-					},
-					413,
-				);
-			}
-
-			const siteId = getSiteId(db);
-			const fileId = await storeFile(db, siteId, {
-				name: file.name,
-				mimeType: file.type || "application/octet-stream",
-				data: await file.arrayBuffer(),
-				createdBy: operatorUserId,
-				hostOrigin: getHostMetaHostName(db) ?? siteId,
-			});
-
-			const result = findFileById(db, fileId) as AgentFile;
-
-			return c.json(result, 201);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to upload file",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+		});
 
 	return app;
 }

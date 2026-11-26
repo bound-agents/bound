@@ -1,4 +1,5 @@
 import type { MetricsResponse, ProviderMetrics } from "../../server/routes/metrics";
+import { createApi } from "./api";
 
 export interface MetricsState {
 	/** Non-null once the first successful load completes. */
@@ -62,11 +63,8 @@ export class MetricsStore {
 		}
 
 		try {
-			const params = new URLSearchParams();
-			params.append("from", from);
-			params.append("to", to);
-
-			const response = await this.fetchFn(`/api/metrics?${params}`);
+			const api = createApi((input) => this.fetchFn(String(input)));
+			const response = await api.api.metrics.$get({ query: { from, to } });
 			if (seq !== this.loadSeq) return; // superseded by a newer load
 			if (!response.ok) {
 				const body = await response.json().catch(() => ({}));
@@ -84,7 +82,7 @@ export class MetricsStore {
 				return;
 			}
 
-			const data = (await response.json()) as MetricsResponse;
+			const data: MetricsResponse = await response.json();
 			if (seq !== this.loadSeq) return;
 			this._state = {
 				data,

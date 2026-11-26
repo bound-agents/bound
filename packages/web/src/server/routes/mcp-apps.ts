@@ -261,194 +261,193 @@ export function createMcpAppsRoutes(
 	fetchImpl: FetchImpl = fetch,
 	getAccessTokenForServer?: GetAccessTokenForServer,
 	relayMcpAppProxy?: RelayMcpAppProxy,
-): Hono {
-	const app = new Hono();
-
+) {
 	// Only http servers are proxyable from a browser; index this host's own by name.
 	const httpServersByName = new Map(
 		(mcpConfig?.servers ?? [])
 			.filter((s): s is Extract<typeof s, { transport: "http" }> => s.transport === "http")
 			.map((s) => [s.name, s]),
 	);
+	const app = new Hono()
 
-	app.get("/", (c) => {
-		const servers = resolveAppServers(db, localSiteId, new Set(httpServersByName.keys())).map(
-			(s) => ({
-				name: s.name,
-				transport: "http" as const,
-				// Browser connects here, NOT to the real url; secrets stay server-side.
-				// The path carries the owning site so `(site, name)` is unambiguous.
-				proxyPath: `/api/mcp-apps/proxy/${encodeURIComponent(s.siteId)}/${encodeURIComponent(s.name)}`,
-				tools: s.tools,
-			}),
-		);
-		return c.json({ servers });
-	});
+		.get("/", (c) => {
+			const servers = resolveAppServers(db, localSiteId, new Set(httpServersByName.keys())).map(
+				(s) => ({
+					name: s.name,
+					transport: "http" as const,
+					// Browser connects here, NOT to the real url; secrets stay server-side.
+					// The path carries the owning site so `(site, name)` is unambiguous.
+					proxyPath: `/api/mcp-apps/proxy/${encodeURIComponent(s.siteId)}/${encodeURIComponent(s.name)}`,
+					tools: s.tools,
+				}),
+			);
+			return c.json({ servers });
+		})
 
-	app.all("/proxy/:site/:name", async (c) => {
-		// R-MO27b binding: the upstream URL and credential resolve SERVER-SIDE from
-		// config, keyed by the `(site, name)` selector this route controls (never a
-		// browser-supplied URL). A selector that does not resolve to exactly one
-		// known server is rejected BEFORE any fetch.
-		const site = c.req.param("site");
-		const name = c.req.param("name");
+		.all("/proxy/:site/:name", async (c) => {
+			// R-MO27b binding: the upstream URL and credential resolve SERVER-SIDE from
+			// config, keyed by the `(site, name)` selector this route controls (never a
+			// browser-supplied URL). A selector that does not resolve to exactly one
+			// known server is rejected BEFORE any fetch.
+			const site = c.req.param("site");
+			const name = c.req.param("name");
 
-		if (site === localSiteId) {
-			// LEG A: this host owns the server. Fetch upstream directly and attach the
-			// credential at this edge. Only a server in THIS host's local config is
-			// directly fetchable — a browser-supplied `(site, name)` naming a server
-			// this host does not configure is rejected before any fetch.
-			const server = httpServersByName.get(name);
-			if (!server) {
+			if (site === localSiteId) {
+				// LEG A: this host owns the server. Fetch upstream directly and attach the
+				// credential at this edge. Only a server in THIS host's local config is
+				// directly fetchable — a browser-supplied `(site, name)` naming a server
+				// this host does not configure is rejected before any fetch.
+				const server = httpServersByName.get(name);
+				if (!server) {
+					return c.json({ error: `Unknown MCP App server: ${site}/${name}` }, 404);
+				}
+
+				const forwardHeaders = new Headers();
+				for (const [key, value] of c.req.raw.headers) {
+					if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) {
+						forwardHeaders.set(key, value);
+					}
+				}
+
+				if (server.auth?.type === "oauth" && !server.headers) {
+					// R-MO27b LEG A: the credential is a bound-owned OAuth token whose custody
+					// belongs to this owning host. Attach `Authorization: Bearer` at this fetch
+					// edge, sourced through the owner's token store (with its refresh path). A
+					// missing bundle / lost grant → 401 naming the pending challenge; NEVER a
+					// direct unauthenticated fetch (it would 401-loop upstream).
+					if (!getAccessTokenForServer) {
+						return c.json(
+							{
+								error: `MCP App server "${name}" requires OAuth but no token accessor is wired on this host.`,
+							},
+							503,
+						);
+					}
+					const tokenResult = await getAccessTokenForServer(name);
+					if (!tokenResult.ok) {
+						const challenge = findChallengeByServer(db, localSiteId, name);
+						return c.json(
+							{
+								error: `MCP App server "${name}" has no live OAuth grant (${tokenResult.error.kind}). Resolve it (bound login --mcp ${name}) before the app can load.`,
+								challenge_id: challenge?.id,
+								pending: challenge?.status === "pending",
+							},
+							401,
+						);
+					}
+					forwardHeaders.set("authorization", `Bearer ${tokenResult.value}`);
+				} else {
+					// Static-headers and no-auth servers keep byte-identical behavior:
+					// configured headers are injected here so they never reach the browser.
+					for (const [key, value] of Object.entries(server.headers ?? {})) {
+						forwardHeaders.set(key, value);
+					}
+				}
+
+				const method = c.req.method;
+				const hasBody = method !== "GET" && method !== "HEAD";
+				let upstream: Response;
+				try {
+					upstream = await fetchImpl(server.url, {
+						method,
+						headers: forwardHeaders,
+						body: hasBody ? await c.req.raw.arrayBuffer() : undefined,
+						redirect: "follow",
+					});
+				} catch (err) {
+					return c.json(
+						{
+							error: `MCP App proxy to "${name}" failed: ${err instanceof Error ? err.message : String(err)}`,
+						},
+						502,
+					);
+				}
+
+				const responseHeaders = new Headers();
+				for (const [key, value] of upstream.headers) {
+					const lower = key.toLowerCase();
+					// Drop hop-by-hop headers and any upstream CORS headers (the browser
+					// talks to us same-origin, so they're unnecessary and can conflict).
+					if (!HOP_BY_HOP_RESPONSE_HEADERS.has(lower) && !lower.startsWith("access-control-")) {
+						responseHeaders.set(key, value);
+					}
+				}
+
+				// Stream the body through unbuffered so SSE / chunked responses work.
+				return new Response(upstream.body, {
+					status: upstream.status,
+					statusText: upstream.statusText,
+					headers: responseHeaders,
+				});
+			}
+
+			// LEG B: a peer owns the server. Relay the MCP call through the owning host
+			// (R-UD12 doctrine). Reject a `(site, name)` that no host advertises as
+			// app-bearing BEFORE relaying — the owner-side resolution is keyed by name,
+			// and an unknown selector must not spend a relay hop.
+			const owners = collectServerOwners(db);
+			const bindings = collectAppBindings(db);
+			if (!owners.get(name)?.has(site) || !bindings.get(name)?.size) {
 				return c.json({ error: `Unknown MCP App server: ${site}/${name}` }, 404);
 			}
-
-			const forwardHeaders = new Headers();
-			for (const [key, value] of c.req.raw.headers) {
-				if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) {
-					forwardHeaders.set(key, value);
-				}
-			}
-
-			if (server.auth?.type === "oauth" && !server.headers) {
-				// R-MO27b LEG A: the credential is a bound-owned OAuth token whose custody
-				// belongs to this owning host. Attach `Authorization: Bearer` at this fetch
-				// edge, sourced through the owner's token store (with its refresh path). A
-				// missing bundle / lost grant → 401 naming the pending challenge; NEVER a
-				// direct unauthenticated fetch (it would 401-loop upstream).
-				if (!getAccessTokenForServer) {
-					return c.json(
-						{
-							error: `MCP App server "${name}" requires OAuth but no token accessor is wired on this host.`,
-						},
-						503,
-					);
-				}
-				const tokenResult = await getAccessTokenForServer(name);
-				if (!tokenResult.ok) {
-					const challenge = findChallengeByServer(db, localSiteId, name);
-					return c.json(
-						{
-							error: `MCP App server "${name}" has no live OAuth grant (${tokenResult.error.kind}). Resolve it (bound login --mcp ${name}) before the app can load.`,
-							challenge_id: challenge?.id,
-							pending: challenge?.status === "pending",
-						},
-						401,
-					);
-				}
-				forwardHeaders.set("authorization", `Bearer ${tokenResult.value}`);
-			} else {
-				// Static-headers and no-auth servers keep byte-identical behavior:
-				// configured headers are injected here so they never reach the browser.
-				for (const [key, value] of Object.entries(server.headers ?? {})) {
-					forwardHeaders.set(key, value);
-				}
-			}
-
-			const method = c.req.method;
-			const hasBody = method !== "GET" && method !== "HEAD";
-			let upstream: Response;
-			try {
-				upstream = await fetchImpl(server.url, {
-					method,
-					headers: forwardHeaders,
-					body: hasBody ? await c.req.raw.arrayBuffer() : undefined,
-					redirect: "follow",
-				});
-			} catch (err) {
+			if (!relayMcpAppProxy) {
 				return c.json(
 					{
-						error: `MCP App proxy to "${name}" failed: ${err instanceof Error ? err.message : String(err)}`,
+						error: `MCP App server "${name}" is owned by ${site}; this host cannot relay to it (no relay dispatcher wired).`,
 					},
 					502,
 				);
 			}
 
+			// Build the relay payload: the JSON-RPC body + an ALLOW-LISTED header subset.
+			// Browser cookies and Authorization are NEVER forwarded — the owner mints its
+			// own token at its own edge (R-MO27b).
+			const relayHeaders: Record<string, string> = {};
+			for (const [key, value] of c.req.raw.headers) {
+				if (RELAY_FORWARD_REQUEST_HEADERS.has(key.toLowerCase())) {
+					relayHeaders[key] = value;
+				}
+			}
+			const method = c.req.method;
+			const hasBody = method !== "GET" && method !== "HEAD";
+			const bodyBuf = hasBody ? Buffer.from(await c.req.raw.arrayBuffer()) : Buffer.alloc(0);
+
+			let relayed: { status: number; headers: Record<string, string>; body_base64: string };
+			try {
+				relayed = await relayMcpAppProxy(site, {
+					server_name: name,
+					method,
+					headers: relayHeaders,
+					body_base64: bodyBuf.toString("base64"),
+				});
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				// A relay timeout is a distinct, retryable class; everything else is a bad
+				// upstream/relay hop (502). The dispatcher tags timeouts in its message.
+				const isTimeout = /timeout|timed out/i.test(message);
+				return c.json(
+					{
+						error: `MCP App proxy relay to owner ${site} for "${name}" ${isTimeout ? "timed out" : "failed"}: ${message}`,
+					},
+					isTimeout ? 504 : 502,
+				);
+			}
+
 			const responseHeaders = new Headers();
-			for (const [key, value] of upstream.headers) {
+			for (const [key, value] of Object.entries(relayed.headers)) {
 				const lower = key.toLowerCase();
-				// Drop hop-by-hop headers and any upstream CORS headers (the browser
-				// talks to us same-origin, so they're unnecessary and can conflict).
 				if (!HOP_BY_HOP_RESPONSE_HEADERS.has(lower) && !lower.startsWith("access-control-")) {
 					responseHeaders.set(key, value);
 				}
 			}
-
-			// Stream the body through unbuffered so SSE / chunked responses work.
-			return new Response(upstream.body, {
-				status: upstream.status,
-				statusText: upstream.statusText,
-				headers: responseHeaders,
-			});
-		}
-
-		// LEG B: a peer owns the server. Relay the MCP call through the owning host
-		// (R-UD12 doctrine). Reject a `(site, name)` that no host advertises as
-		// app-bearing BEFORE relaying — the owner-side resolution is keyed by name,
-		// and an unknown selector must not spend a relay hop.
-		const owners = collectServerOwners(db);
-		const bindings = collectAppBindings(db);
-		if (!owners.get(name)?.has(site) || !bindings.get(name)?.size) {
-			return c.json({ error: `Unknown MCP App server: ${site}/${name}` }, 404);
-		}
-		if (!relayMcpAppProxy) {
-			return c.json(
+			return new Response(
+				relayed.body_base64.length > 0 ? Buffer.from(relayed.body_base64, "base64") : null,
 				{
-					error: `MCP App server "${name}" is owned by ${site}; this host cannot relay to it (no relay dispatcher wired).`,
+					status: relayed.status,
+					headers: responseHeaders,
 				},
-				502,
 			);
-		}
-
-		// Build the relay payload: the JSON-RPC body + an ALLOW-LISTED header subset.
-		// Browser cookies and Authorization are NEVER forwarded — the owner mints its
-		// own token at its own edge (R-MO27b).
-		const relayHeaders: Record<string, string> = {};
-		for (const [key, value] of c.req.raw.headers) {
-			if (RELAY_FORWARD_REQUEST_HEADERS.has(key.toLowerCase())) {
-				relayHeaders[key] = value;
-			}
-		}
-		const method = c.req.method;
-		const hasBody = method !== "GET" && method !== "HEAD";
-		const bodyBuf = hasBody ? Buffer.from(await c.req.raw.arrayBuffer()) : Buffer.alloc(0);
-
-		let relayed: { status: number; headers: Record<string, string>; body_base64: string };
-		try {
-			relayed = await relayMcpAppProxy(site, {
-				server_name: name,
-				method,
-				headers: relayHeaders,
-				body_base64: bodyBuf.toString("base64"),
-			});
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			// A relay timeout is a distinct, retryable class; everything else is a bad
-			// upstream/relay hop (502). The dispatcher tags timeouts in its message.
-			const isTimeout = /timeout|timed out/i.test(message);
-			return c.json(
-				{
-					error: `MCP App proxy relay to owner ${site} for "${name}" ${isTimeout ? "timed out" : "failed"}: ${message}`,
-				},
-				isTimeout ? 504 : 502,
-			);
-		}
-
-		const responseHeaders = new Headers();
-		for (const [key, value] of Object.entries(relayed.headers)) {
-			const lower = key.toLowerCase();
-			if (!HOP_BY_HOP_RESPONSE_HEADERS.has(lower) && !lower.startsWith("access-control-")) {
-				responseHeaders.set(key, value);
-			}
-		}
-		return new Response(
-			relayed.body_base64.length > 0 ? Buffer.from(relayed.body_base64, "base64") : null,
-			{
-				status: relayed.status,
-				headers: responseHeaders,
-			},
-		);
-	});
+		});
 
 	return app;
 }

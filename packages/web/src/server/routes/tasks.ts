@@ -49,152 +49,154 @@ function enrichTask(task: Task, hostMap: Map<string, string>, db: Database): Tas
 	return { ...task, displayName, schedule, hostName, lastDurationMs };
 }
 
-export function createTasksRoutes(db: Database): Hono {
-	const app = new Hono();
+export function createTasksRoutes(db: Database) {
+	const app = new Hono()
 
-	app.get("/", (c) => {
-		try {
-			const status = c.req.query("status");
+		.get("/", (c) => {
+			try {
+				const status = c.req.query("status");
 
-			const tasks = listActiveTasks(db, status);
-			const hostMap = buildHostMap(db);
-			const enrichedTasks: TaskWithComputed[] = tasks.map((task) => enrichTask(task, hostMap, db));
+				const tasks = listActiveTasks(db, status);
+				const hostMap = buildHostMap(db);
+				const enrichedTasks: TaskWithComputed[] = tasks.map((task) =>
+					enrichTask(task, hostMap, db),
+				);
 
-			return c.json(enrichedTasks);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to list tasks",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	app.get("/:id", (c) => {
-		try {
-			const { id } = c.req.param();
-			const task = findActiveTaskById(db, id);
-
-			if (!task) {
-				return c.json({ error: "Task not found" }, 404);
-			}
-
-			return c.json(enrichTask(task, buildHostMap(db), db));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json({ error: "Failed to get task", details: message }, 500);
-		}
-	});
-
-	app.post("/:id/cancel", (c) => {
-		try {
-			const { id } = c.req.param();
-			const task = findActiveTaskById(db, id);
-
-			if (!task) {
-				return c.json({ error: "Task not found" }, 404);
-			}
-
-			if (task.status !== "pending" && task.status !== "running" && task.status !== "claimed") {
+				return c.json(enrichedTasks);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
 					{
-						error: `Cannot cancel task in '${task.status}' status`,
+						error: "Failed to list tasks",
+						details: message,
 					},
-					400,
+					500,
 				);
 			}
+		})
 
-			const siteId = getSiteId(db);
+		.get("/:id", (c) => {
+			try {
+				const { id } = c.req.param();
+				const task = findActiveTaskById(db, id);
 
-			updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
-
-			const updated = findTaskById(db, id) as Task;
-			return c.json(updated);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to cancel task",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	// PATCH /:id — update mutable task config (no_history, model_hint,
-	// alert_threshold) in place. Mirrors the agent `task` tool's update action
-	// so the agent doesn't have to recreate a task to toggle these (#100).
-	// Lifecycle/scheduling fields are not mutable here — use the cancel route.
-	app.patch("/:id", async (c) => {
-		try {
-			const { id } = c.req.param();
-			const task = findActiveTaskById(db, id);
-
-			if (!task) {
-				return c.json({ error: "Task not found" }, 404);
-			}
-
-			const body = (await c.req.json().catch(() => null)) as {
-				no_history?: unknown;
-				model_hint?: unknown;
-				alert_threshold?: unknown;
-			} | null;
-
-			if (!body || typeof body !== "object") {
-				return c.json({ error: "Request body must be a JSON object" }, 400);
-			}
-
-			const updates: Record<string, unknown> = {};
-
-			if (body.no_history !== undefined) {
-				if (typeof body.no_history !== "boolean") {
-					return c.json({ error: "no_history must be a boolean" }, 400);
+				if (!task) {
+					return c.json({ error: "Task not found" }, 404);
 				}
-				updates.no_history = body.no_history ? 1 : 0;
-			}
 
-			if (body.model_hint !== undefined) {
-				if (typeof body.model_hint !== "string") {
-					return c.json({ error: "model_hint must be a string" }, 400);
+				return c.json(enrichTask(task, buildHostMap(db), db));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json({ error: "Failed to get task", details: message }, 500);
+			}
+		})
+
+		.post("/:id/cancel", (c) => {
+			try {
+				const { id } = c.req.param();
+				const task = findActiveTaskById(db, id);
+
+				if (!task) {
+					return c.json({ error: "Task not found" }, 404);
 				}
-				// Empty string clears back to the system default (null).
-				updates.model_hint = body.model_hint === "" ? null : body.model_hint;
-			}
 
-			if (body.alert_threshold !== undefined) {
-				if (typeof body.alert_threshold !== "number" || body.alert_threshold <= 0) {
-					return c.json({ error: "alert_threshold must be a number greater than 0" }, 400);
+				if (task.status !== "pending" && task.status !== "running" && task.status !== "claimed") {
+					return c.json(
+						{
+							error: `Cannot cancel task in '${task.status}' status`,
+						},
+						400,
+					);
 				}
-				updates.alert_threshold = body.alert_threshold;
-			}
 
-			if (Object.keys(updates).length === 0) {
+				const siteId = getSiteId(db);
+
+				updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
+
+				const updated = findTaskById(db, id) as Task;
+				return c.json(updated);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
 				return c.json(
-					{ error: "Provide at least one of: no_history, model_hint, alert_threshold" },
-					400,
+					{
+						error: "Failed to cancel task",
+						details: message,
+					},
+					500,
 				);
 			}
+		})
 
-			const siteId = getSiteId(db);
-			updateRow(db, "tasks", id, updates, siteId);
+		// PATCH /:id — update mutable task config (no_history, model_hint,
+		// alert_threshold) in place. Mirrors the agent `task` tool's update action
+		// so the agent doesn't have to recreate a task to toggle these (#100).
+		// Lifecycle/scheduling fields are not mutable here — use the cancel route.
+		.patch("/:id", async (c) => {
+			try {
+				const { id } = c.req.param();
+				const task = findActiveTaskById(db, id);
 
-			const updated = findTaskById(db, id) as Task;
-			return c.json(updated);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to update task",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
+				if (!task) {
+					return c.json({ error: "Task not found" }, 404);
+				}
+
+				const body = (await c.req.json().catch(() => null)) as {
+					no_history?: unknown;
+					model_hint?: unknown;
+					alert_threshold?: unknown;
+				} | null;
+
+				if (!body || typeof body !== "object") {
+					return c.json({ error: "Request body must be a JSON object" }, 400);
+				}
+
+				const updates: Record<string, unknown> = {};
+
+				if (body.no_history !== undefined) {
+					if (typeof body.no_history !== "boolean") {
+						return c.json({ error: "no_history must be a boolean" }, 400);
+					}
+					updates.no_history = body.no_history ? 1 : 0;
+				}
+
+				if (body.model_hint !== undefined) {
+					if (typeof body.model_hint !== "string") {
+						return c.json({ error: "model_hint must be a string" }, 400);
+					}
+					// Empty string clears back to the system default (null).
+					updates.model_hint = body.model_hint === "" ? null : body.model_hint;
+				}
+
+				if (body.alert_threshold !== undefined) {
+					if (typeof body.alert_threshold !== "number" || body.alert_threshold <= 0) {
+						return c.json({ error: "alert_threshold must be a number greater than 0" }, 400);
+					}
+					updates.alert_threshold = body.alert_threshold;
+				}
+
+				if (Object.keys(updates).length === 0) {
+					return c.json(
+						{ error: "Provide at least one of: no_history, model_hint, alert_threshold" },
+						400,
+					);
+				}
+
+				const siteId = getSiteId(db);
+				updateRow(db, "tasks", id, updates, siteId);
+
+				const updated = findTaskById(db, id) as Task;
+				return c.json(updated);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Unknown error";
+				return c.json(
+					{
+						error: "Failed to update task",
+						details: message,
+					},
+					500,
+				);
+			}
+		});
 
 	return app;
 }
