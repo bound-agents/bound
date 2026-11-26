@@ -948,7 +948,14 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const sandboxedGit = `git -c safe.directory=* ${identity.join(" ")}`;
 			const command = [
 				"$env:GIT_CONFIG_GLOBAL = 'NUL'",
-				"Set-Content -LiteralPath (Join-Path $PWD 'lowbox-wt.txt') -Value 'lowbox'",
+				'"DIAG-PWD=$PWD"',
+				'"DIAG-CD=$([Environment]::CurrentDirectory)"',
+				"try { $f = [IO.File]::Open('NUL', 'Open', 'ReadWrite'); $f.Close(); 'DIAG-NUL=OK' } catch { \"DIAG-NUL=$($_.Exception.Message)\" }",
+				"try { $f = [IO.File]::Open('\\\\.\\NUL', 'Open', 'ReadWrite'); $f.Close(); 'DIAG-DEVNUL=OK' } catch { \"DIAG-DEVNUL=$($_.Exception.Message)\" }",
+				"git --version",
+				'"DIAG-VER=$LASTEXITCODE"',
+				'"DIAG-GIT=$((Get-Command git).Source)"',
+				`Set-Content -LiteralPath ${psLiteral(join(wt, "lowbox-wt.txt"))} -Value 'lowbox'`,
 				`${sandboxedGit} add lowbox-wt.txt`,
 				'"ADD_EXIT=$LASTEXITCODE"',
 				`${sandboxedGit} commit -m lowbox-wt-commit`,
