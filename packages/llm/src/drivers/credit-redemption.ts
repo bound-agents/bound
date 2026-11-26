@@ -27,6 +27,7 @@
  *    loop-host router owns the fallback.
  */
 
+import { handleWhen, retry } from "cockatiel";
 import {
 	type CreditRedemptionPlan,
 	type CreditStep,
@@ -78,6 +79,11 @@ export interface CreditRedemptionDriverConfig {
 
 /** Transient-redemption retries are bounded so a stuck provider can't hot-loop. */
 const MAX_TRANSIENT_RETRIES = 3;
+
+const transientRedemptionRetry = retry(
+	handleWhen((err) => isTransientRedemptionError(err instanceof Error ? err.message : String(err))),
+	{ maxAttempts: MAX_TRANSIENT_RETRIES },
+);
 
 /** The classified refusal on a done chunk, or null when the stream finished clean. */
 function refusalOf(chunks: StreamChunk[]): ModelDeclinedOutcome | null {
@@ -159,28 +165,16 @@ async function* walkStepDown(
 	config: CreditRedemptionDriverConfig,
 ): AsyncIterable<StreamChunk> {
 	for (const step of plan.steps) {
-		let transientRetries = 0;
 		for (;;) {
-			const stepChunks: StreamChunk[] = [];
-			let threw = false;
-			try {
+			// A transient redemption error retries the SAME step with the same token
+			// inside the 5-minute window (§7.3); any other error propagates.
+			const stepChunks = await transientRedemptionRetry.execute(async () => {
+				const chunks: StreamChunk[] = [];
 				for await (const chunk of config.runStep(step, target, refusedChunks)) {
-					stepChunks.push(chunk);
+					chunks.push(chunk);
 				}
-			} catch (err) {
-				if (
-					isTransientRedemptionError(err instanceof Error ? err.message : String(err)) &&
-					transientRetries < MAX_TRANSIENT_RETRIES
-				) {
-					// Transient "redemption temporarily unavailable": retry the same step
-					// with the same token inside the 5-minute window (§7.3).
-					transientRetries++;
-					threw = true;
-				} else {
-					throw err;
-				}
-			}
-			if (threw) continue;
+				return chunks;
+			});
 
 			// Step completed. If it did not refuse, it served the turn: emit its
 			// chunks and stop the walk.
