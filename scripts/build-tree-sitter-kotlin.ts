@@ -91,17 +91,59 @@ async function main(): Promise<void> {
 	}
 
 	console.log(`[build-tree-sitter-kotlin] building native addon in ${packageRoot}`);
-	const child = Bun.spawn([process.execPath, nodeGypBuildBin], {
-		cwd: packageRoot,
-		stdout: "inherit",
-		stderr: "inherit",
-		env: process.env,
+	const code = await runBuildWithRetries(async () => {
+		const child = Bun.spawn([process.execPath, nodeGypBuildBin], {
+			cwd: packageRoot,
+			stdout: "inherit",
+			stderr: "inherit",
+			env: process.env,
+		});
+		return child.exited;
 	});
-	const code = await child.exited;
 	if (code !== 0) throw new Error(`[build-tree-sitter-kotlin] node-gyp-build exited ${code}`);
 	if (!hasBuiltAddon(packageRoot))
 		throw new Error("[build-tree-sitter-kotlin] build produced no build/Release/*.node");
 	console.log("[build-tree-sitter-kotlin] native addon built");
+}
+
+interface RetryOptions {
+	attempts: number;
+	delayMs: number;
+	sleep: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_RETRY: RetryOptions = {
+	attempts: 3,
+	delayMs: 5_000,
+	sleep: (ms) => Bun.sleep(ms),
+};
+
+/**
+ * Run the native build, retrying non-zero exits with linear backoff.
+ *
+ * node-gyp downloads the Node headers tarball from nodejs.org on a cold
+ * runner and makes one attempt; a transient ECONNREFUSED there (CI job
+ * 140211925352, macos-latest) failed the whole `bun install`. node-gyp rolls
+ * back the partial header install on failure, so a plain re-run is safe.
+ * Returns 0 on the first success, otherwise the last attempt's exit code.
+ */
+export async function runBuildWithRetries(
+	build: () => Promise<number>,
+	options: RetryOptions = DEFAULT_RETRY,
+): Promise<number> {
+	let code = 1;
+	for (let attempt = 1; attempt <= options.attempts; attempt++) {
+		code = await build();
+		if (code === 0) return 0;
+		if (attempt < options.attempts) {
+			const wait = options.delayMs * attempt;
+			console.warn(
+				`[build-tree-sitter-kotlin] node-gyp-build exited ${code} (attempt ${attempt}/${options.attempts}); retrying in ${wait}ms`,
+			);
+			await options.sleep(wait);
+		}
+	}
+	return code;
 }
 
 if (import.meta.main) await main();
