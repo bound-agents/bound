@@ -82,6 +82,7 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 - **Language**: TypeScript 6.x (strict, ES2022, bundler module resolution)
 - **Database**: `bun:sqlite` in WAL mode with STRICT tables
 - **Validation**: Zod v4
+- **Typed reads**: Kysely as a compile-only SQL builder (`packages/core/src/query-builder.ts`); queries compile to SQL and run synchronously through `bun:sqlite`
 - **Web**: Hono (server) + Svelte 5 (client, Vite build)
 - **Linting**: Biome linter (its formatter is disabled)
 - **Formatting**: `bun fmt` (tabs, 100-char lines, configured in `bunfig.toml` `[fmt]`; Markdown and YAML excluded via `.prettierignore`)
@@ -169,7 +170,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 
 ### Adding a new synced table
 
-1. Declare the CREATE TABLE in `packages/core/src/schema.ts` (or `metrics-schema.ts` for observability tables) as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` (if LWW) and `modified_at TEXT NOT NULL`.
+1. Declare the CREATE TABLE in `packages/core/src/schema.ts` (or `metrics-schema.ts` for observability tables) as a STRICT table with `deleted INTEGER NOT NULL DEFAULT 0` (if LWW) and `modified_at TEXT NOT NULL`. Mirror its columns in `BOUND_TABLE_COLUMNS` (`packages/core/src/db-types.ts`); `db-types.test.ts` fails on any table or column the DDL and the map disagree on.
 2. Add the name to `SyncedTableName` and `TABLE_REDUCER_MAP` in `packages/shared/src/types.ts`.
 3. If its primary key is not `id`, add an entry to `TABLE_PK_COLUMN` in `packages/core/src/change-log.ts`.
 4. Decide the reducer (`lww` or `append-only`) — wiring lives in `packages/sync/src/reducers.ts`, keyed off `TABLE_REDUCER_MAP`.

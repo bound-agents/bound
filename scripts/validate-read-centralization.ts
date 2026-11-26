@@ -43,6 +43,7 @@ const EXCLUDED_PATHS = [
 	"packages/core/src/dispatch.ts",
 	"packages/core/src/schema.ts",
 	"packages/core/src/schema-introspection.ts",
+	"packages/core/src/query-builder.ts",
 	"packages/core/src/metrics-schema.ts",
 	"packages/core/src/consistency.ts",
 	"packages/sync/src/reducers.ts",
