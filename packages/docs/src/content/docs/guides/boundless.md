@@ -161,6 +161,14 @@ web-server URL with `--url` or set the server URL in `~/.bound/less/config.json`
 
 Copy the full thread ID from the status area and pass that value to `--attach`.
 
+### Git fails inside the Windows sandbox with `could not open '/dev/null'`
+
+Windows' null device refuses AppContainer processes by default, and Git opens `NUL` at startup.
+The lowbox helper adds a read/write grant for ALL APPLICATION PACKAGES to the null device, which
+needs an elevated `boundless` (the device is owned by Administrators). The grant lasts until
+reboot, so one elevated `boundless` command per boot is enough; unelevated sessions see Git exit
+128 until then.
+
 ### Windows sandbox is unavailable
 
 On Windows, `boundless` requires unprivileged AppContainer profile creation. If host policy

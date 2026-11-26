@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
-import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
+import { type ResolvedSandboxConfig, resolveSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 
 /**
@@ -221,6 +221,40 @@ function waitForProcessExit(
  * This suite deliberately has no availability probe, skip, or passthrough mode:
  * before the bound-owned lowbox backend exists, the Windows lane must stay red.
  */
+/**
+ * DACL of the null device as SDDL, read outside the lowbox. PowerShell has no
+ * Get-Acl path for a device object, so a handle opened with READ_CONTROL goes
+ * through GetSecurityInfo directly.
+ */
+function nullDeviceDacl(): string {
+	const source = [
+		"using System; using System.Runtime.InteropServices;",
+		"public static class BoundNullDacl {",
+		' [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFileW(string n, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);',
+		' [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);',
+		' [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr h, int t, uint si, IntPtr o, IntPtr g, IntPtr d, IntPtr s, out IntPtr sd);',
+		' [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr sd, uint r, uint si, out IntPtr str, out uint len);',
+		" public static string Read() {",
+		'  IntPtr h = CreateFileW("\\\\\\\\.\\\\NUL", 0x00020000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero);',
+		'  if (h == new IntPtr(-1)) return "OPEN-FAILED " + Marshal.GetLastWin32Error();',
+		"  IntPtr sd; uint e = GetSecurityInfo(h, 1, 4, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd);",
+		'  CloseHandle(h); if (e != 0) return "READ-FAILED " + e;',
+		"  IntPtr str; uint len; ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 4, out str, out len);",
+		"  return Marshal.PtrToStringUni(str); }",
+		"}",
+	].join("\n");
+	const script = `Add-Type -TypeDefinition @'\n${source}\n'@\n[BoundNullDacl]::Read()`;
+	const run = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], { encoding: "utf8" });
+	const sddl = run.stdout.trim();
+	expect(sddl.startsWith("D:"), `null device DACL: ${sddl}\n${run.stderr}`).toBe(true);
+	return sddl;
+}
+
+/** The DACL's ACEs, minus any ALL APPLICATION PACKAGES (AC) entry. */
+function nonPackageAces(sddl: string): string[] {
+	return (sddl.match(/\([^)]*\)/g) ?? []).filter((ace) => !ace.endsWith(";;;AC)")).sort();
+}
+
 describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracle", () => {
 	it("round-trips and rejects malformed Recoverable authority journals", () => {
 		const helper = lowboxHelperPath();
@@ -867,6 +901,67 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 		} finally {
 			rmSync(absoluteHome, { force: true });
 			await removeFixtureAfterHandlesClose(fixture);
+		}
+	});
+
+	it("opens NUL inside the lowbox so git starts", async () => {
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+
+		const before = nullDeviceDacl();
+		const runId = randomBytes(8).toString("hex");
+		const cwd = join(realpathSync.native(tmpdir()), `bound-lowbox-nul-${runId}`);
+		mkdirSync(cwd, { recursive: true });
+		try {
+			const sandbox = resolveSandboxConfig(
+				{ writablePaths: [], network: "blocked", onUnavailable: "error" },
+				cwd,
+			);
+			const open = (id: string, access: string) =>
+				`try { $f = [IO.File]::Open('NUL', 'Open', '${access}'); $f.Close(); '${id}=OK' } catch { '${id}=DENIED' }`;
+			const command = [
+				"$env:GIT_CONFIG_GLOBAL = 'NUL'",
+				open("NUL-READ", "Read"),
+				open("NUL-WRITE", "Write"),
+				open("NUL-READWRITE", "ReadWrite"),
+				"git --version",
+				'"GIT_VERSION_EXIT=$LASTEXITCODE"',
+			].join("; ");
+			const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+			const logger = {
+				info: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+				warn: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+			};
+			const tool = createBashTool(
+				"windows-latest",
+				resolveShell(undefined),
+				sandbox,
+				logger,
+				runId,
+			);
+			const result = await tool({ command, timeout: 30_000 }, new AbortController().signal, cwd);
+			const resultText = result.content.map((item) => ("text" in item ? item.text : "")).join("\n");
+			const diagnose = () =>
+				`${resultText}\n${events.map((entry) => `${entry.event}: ${JSON.stringify(entry.fields)}`).join("\n")}`;
+			const spawnEvent = events.findLast((entry) => entry.event === "sandbox_spawn");
+			expect(spawnEvent?.fields?.backend, diagnose()).toBe("appcontainer_lowbox");
+			expect(result.isError, diagnose()).toBeUndefined();
+			const outcomes = new Set(resultText.split(/\r?\n/).map((line) => line.trim()));
+			for (const id of ["NUL-READ", "NUL-WRITE", "NUL-READWRITE"])
+				expect(outcomes.has(`${id}=OK`), `${id}; output=${JSON.stringify(resultText)}`).toBe(true);
+			expect(
+				outcomes.has("GIT_VERSION_EXIT=0"),
+				`git --version failed; output=${JSON.stringify(resultText)}`,
+			).toBe(true);
+
+			// The grant is one ALL APPLICATION PACKAGES ACE on the null device;
+			// every other ACE on the device is exactly as the helper found it.
+			const after = nullDeviceDacl();
+			expect(after).toMatch(/\(A;;[^;]*;;;AC\)/);
+			expect(nonPackageAces(after)).toEqual(nonPackageAces(before));
+		} finally {
+			await removeFixtureAfterHandlesClose(cwd);
 		}
 	});
 
