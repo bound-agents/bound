@@ -21,7 +21,7 @@
 
 import { escapeXmlAttr } from "@bound/shared";
 
-export interface RelayInfo {
+interface RelayInfo {
 	remoteHost: string;
 	localHost: string;
 	model: string;

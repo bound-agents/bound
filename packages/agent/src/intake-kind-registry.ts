@@ -6,7 +6,7 @@ import {
 } from "@bound/core";
 import { PASSIVE_INTAKE_TTL_MS, type RelayPassiveKind } from "@bound/shared";
 
-export interface PassiveIntakeBinding {
+interface PassiveIntakeBinding {
 	id: string;
 	name: string;
 	task_id: string;

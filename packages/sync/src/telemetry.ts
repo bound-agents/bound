@@ -181,9 +181,9 @@ export function startReplicationDrain(
 }
 
 export type BackfillTrigger = "initial" | "reconnect" | "periodic";
-export type BackfillSkipGuard = "running" | "cooldown";
+type BackfillSkipGuard = "running" | "cooldown";
 
-export interface BackfillChildSpan {
+interface BackfillChildSpan {
 	run<T>(fn: () => T): T;
 	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
 	complete(attributes: Record<string, string | number | boolean>): void;

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	formatYardInspectorValue,
-	formatYardResult,
-	formatYardValue,
-	sanitizeYardResult,
-} from "../yard-format";
+import { formatYardInspectorValue, formatYardValue, sanitizeYardResult } from "../yard-format";
 
 describe("sanitizeYardResult", () => {
 	it("recursively omits encrypted reasoning and signature fields without changing ordinary values", () => {
@@ -35,9 +30,9 @@ describe("sanitizeYardResult", () => {
 	});
 });
 
-describe("formatYardResult", () => {
+describe("formatYardValue", () => {
 	it("unwraps a Yard result envelope before sanitizing, displaying, and classifying its return value", () => {
-		const formatted = formatYardResult('{"result":{"nested":[1,2],"redacted_data":"secret"}}');
+		const formatted = formatYardValue('{"result":{"nested":[1,2],"redacted_data":"secret"}}');
 
 		expect(formatted).toEqual({
 			display: '{\n  "nested": [\n    1,\n    2\n  ]\n}',
@@ -47,11 +42,11 @@ describe("formatYardResult", () => {
 	});
 
 	it("reports object keys, array items, and raw byte size", () => {
-		expect(formatYardResult('{"alpha":1,"beta":2}')).toMatchObject({
+		expect(formatYardValue('{"alpha":1,"beta":2}')).toMatchObject({
 			hint: "object · 2 keys · 20 B",
 			isJson: true,
 		});
-		expect(formatYardResult('["a","b","c"]')).toMatchObject({
+		expect(formatYardValue('["a","b","c"]')).toMatchObject({
 			hint: "array · 3 items · 13 B",
 			isJson: true,
 		});
@@ -60,7 +55,7 @@ describe("formatYardResult", () => {
 	it("unwraps a persisted tool-result envelope and pretty-prints the same JSON value it classifies", () => {
 		const raw = JSON.stringify({ result: { listing: "first\nsecond", status: "ok" } });
 
-		expect(formatYardResult(raw)).toEqual({
+		expect(formatYardValue(raw)).toEqual({
 			display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
 			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
 			isJson: true,
@@ -72,7 +67,7 @@ describe("formatYardResult", () => {
 			{ type: "text", text: '{"result":{"listing":"first\\nsecond","status":"ok"}}' },
 		]);
 
-		expect(formatYardResult(raw)).toMatchObject({
+		expect(formatYardValue(raw)).toMatchObject({
 			display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
 			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
 			isJson: true,
@@ -89,7 +84,7 @@ describe("formatYardResult", () => {
 		const raw = `${JSON.stringify(envelope)}\n\n[duration: 900.005s]`;
 
 		for (const persisted of [raw, JSON.stringify([{ type: "text", text: raw }])]) {
-			expect(formatYardResult(persisted)).toEqual({
+			expect(formatYardValue(persisted)).toEqual({
 				display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
 				hint: `object · 2 keys · ${new TextEncoder().encode(persisted).byteLength} B`,
 				isJson: true,
@@ -99,7 +94,7 @@ describe("formatYardResult", () => {
 	});
 
 	it("keeps genuinely unparseable result text readable", () => {
-		expect(formatYardResult("not valid {json")).toEqual({
+		expect(formatYardValue("not valid {json")).toEqual({
 			display: "not valid {json",
 			hint: "string · 15 B",
 			isJson: false,
@@ -168,7 +163,7 @@ describe("formatYardValue", () => {
 
 	it("preserves the result formatting path as an alias", () => {
 		const raw = '{"answer":"kept"}';
-		expect(formatYardResult(raw)).toEqual(formatYardValue(raw));
+		expect(formatYardValue(raw)).toEqual(formatYardValue(raw));
 	});
 
 	it("keeps run programs as JavaScript source while retaining the shared value hint", () => {

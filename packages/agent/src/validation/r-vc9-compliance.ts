@@ -9,15 +9,7 @@ const R_VC9B_CHILD_COVERAGE_THRESHOLD = 0.8;
 const SAMPLE_SIZE = 50;
 const SAMPLE_WINDOW_DAYS = 7;
 
-export {
-	ISO_8601_RE,
-	MIN_TOKEN_LENGTH,
-	MIN_TOKEN_FREQ,
-	R_VC9_PASS_THRESHOLD,
-	R_VC9B_CHILD_COVERAGE_THRESHOLD,
-	SAMPLE_SIZE,
-	SAMPLE_WINDOW_DAYS,
-};
+export { SAMPLE_SIZE, SAMPLE_WINDOW_DAYS };
 
 /**
  * §8.4 step 3a — extract topic-slug tokens from a memory key.

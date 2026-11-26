@@ -62,7 +62,7 @@ export function makeRouteId(siteId: string, provider: string, backendId: string)
  * leaves today's 128k output limits on 512k+ windows untouched. A
  * `max_output_tokens` set in local config is never capped.
  */
-export const MAX_OUTPUT_CONTEXT_FRACTION = 0.25;
+const MAX_OUTPUT_CONTEXT_FRACTION = 0.25;
 
 /**
  * Reasoning-effort levels in ascending strength, used to clamp a configured or
@@ -81,7 +81,7 @@ const EFFORT_STRENGTH_ORDER = ["none", "minimal", "low", "medium", "high", "xhig
  * or an absent/empty ladder, means there is nothing to clamp against, so the
  * value passes through unchanged and the driver's own protocol gate decides.
  */
-export function clampEffortToLadder(effort: string, ladder: string[] | undefined): string {
+function clampEffortToLadder(effort: string, ladder: string[] | undefined): string {
 	if (!ladder || ladder.length === 0) return effort;
 	if (ladder.includes(effort)) return effort;
 	const target = EFFORT_STRENGTH_ORDER.indexOf(effort);

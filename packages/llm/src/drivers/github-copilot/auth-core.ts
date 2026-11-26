@@ -39,16 +39,16 @@ export const COPILOT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_t
 /** GitHub API host for the account/plan lookup (NOT the Copilot API host). */
 export const COPILOT_USER_INFO_URL = "https://api.github.com/copilot_internal/user";
 /** The device-flow grant type (RFC 8628). */
-export const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
+const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 
 /**
  * Refresh this many milliseconds BEFORE the access token's expiry, so an
  * in-flight request never races the boundary. Mirrors the chatgpt-oauth skew.
  */
-export const TOKEN_REFRESH_SKEW_MS = 5 * 60_000;
+const TOKEN_REFRESH_SKEW_MS = 5 * 60_000;
 
 /** The X-GitHub-Api-Version for the account/plan lookup. */
-export const COPILOT_USER_INFO_API_VERSION = "2025-04-01";
+const COPILOT_USER_INFO_API_VERSION = "2025-04-01";
 
 export interface AuthCoreDeps {
 	fetch: typeof fetch;
@@ -98,7 +98,7 @@ interface AccessTokenResponse {
 }
 
 /** The subset of the Copilot quota snapshot we read for plan gating. */
-export interface CopilotQuotaSnapshot {
+interface CopilotQuotaSnapshot {
 	has_quota?: boolean;
 	remaining?: number;
 	unlimited?: boolean;

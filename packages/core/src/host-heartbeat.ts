@@ -10,7 +10,7 @@ import { findHostSiteIdById } from "./repositories/index.js";
  */
 export const HOST_HEARTBEAT_INTERVAL = 120_000;
 
-export interface HeartbeatTimer {
+interface HeartbeatTimer {
 	setInterval(callback: () => void, intervalMs: number): unknown;
 	clearInterval(timer: unknown): void;
 }

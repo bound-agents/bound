@@ -77,5 +77,5 @@
  * `__tests__/parity-with-production.test.ts`.
  */
 
-export { sanitizeToolPairs, type SanitizeToolPairsParams } from "./sanitize";
+export { sanitizeToolPairs } from "./sanitize";
 export { extractToolUseIds, hasOrphanedToolResult, hasUnclosedToolCall } from "./helpers";

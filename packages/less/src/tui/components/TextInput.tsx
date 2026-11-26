@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { tokens } from "../theme";
 import { expandTabs } from "../util/wrap";
 
-export interface SlashCompletion {
+interface SlashCompletion {
 	/** The command literal, including the leading slash (e.g. "/model"). */
 	value: string;
 	/** One-line description shown dimmed beside the command in the menu. */

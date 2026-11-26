@@ -12,7 +12,7 @@ import { WsSyncClient } from "../ws-client.js";
 import { WsConnectionManager, createWsHandlers } from "../ws-server.js";
 import { WsTransport } from "../ws-transport.js";
 
-export interface TestInstance {
+interface TestInstance {
 	db: Database;
 	siteId: string;
 	cleanup: () => Promise<void>;
@@ -451,47 +451,6 @@ const FULL_SCHEMA = `
 		modified_at   TEXT NOT NULL
 	) STRICT;
 `;
-
-/**
- * Create a test database instance with the full schema.
- * Used by WS transport tests for setting up test instances.
- */
-export async function createTestInstance(config: {
-	dbPath: string;
-	keypairPath?: string;
-}): Promise<TestInstance> {
-	const { dbPath, keypairPath } = config;
-
-	// Ensure directory exists
-	const dir = dirname(dbPath);
-	if (!existsSync(dir)) {
-		await mkdir(dir, { recursive: true });
-	}
-
-	// Generate or load keypair for this instance
-	const effectiveKeypairPath = keypairPath ?? `${dir}/host-keypair`;
-	const keypair = await ensureKeypair(effectiveKeypairPath);
-	const siteId = keypair.siteId;
-
-	// Create SQLite database with full schema
-	const db = new Database(dbPath);
-	db.run("PRAGMA journal_mode = WAL");
-	db.run("PRAGMA foreign_keys = ON");
-
-	// Execute all schema statements
-	db.exec(FULL_SCHEMA);
-
-	return {
-		db,
-		siteId,
-		cleanup: async () => {
-			db.close();
-			if (dir && existsSync(dir)) {
-				await cleanupTmpDir(dir);
-			}
-		},
-	};
-}
 
 export interface WsTestCluster {
 	hub: TestInstance & {

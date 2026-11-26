@@ -41,7 +41,7 @@ import type { Message, Thread, WsStreamChunk } from "@bound/shared";
 import { BoundAcpAgent, type BoundAcpAgentOptions } from "../server";
 
 /** A no-op AppLogger stand-in (the real one writes to files). */
-export function fakeLogger(): BoundAcpAgentOptions["logger"] {
+function fakeLogger(): BoundAcpAgentOptions["logger"] {
 	return {
 		info: () => {},
 		warn: () => {},
@@ -213,7 +213,7 @@ export function makeThread(id: string): Thread {
 }
 
 /** Records every session/update the agent pushes, and scripts permission answers. */
-export interface RecordingClient {
+interface RecordingClient {
 	notifications: SessionNotification[];
 	/** Resolve each permission request to this option id (FIFO queue, then default). */
 	permissionQueue: string[];

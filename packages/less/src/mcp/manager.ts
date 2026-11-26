@@ -52,7 +52,7 @@ function disabledState(config: McpServerConfig): McpServerState {
  * — late on a starved event loop. A timeout turns either into a fast,
  * non-fatal `failed` server.
  */
-export const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10_000;
 
 export interface McpServerManagerOptions {
 	/** Per-request timeout for the connect handshake and tool listing. */

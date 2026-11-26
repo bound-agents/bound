@@ -181,7 +181,7 @@ export type ReseedRequestPayload = {
 	reason: string;
 };
 
-export type W3CTraceCarrier = {
+type W3CTraceCarrier = {
 	traceparent: string;
 	tracestate?: string;
 };

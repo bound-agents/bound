@@ -32,9 +32,4 @@
  *   Y6 Schema block omits zero-column tables.
  */
 
-export {
-	buildStaticSystemParts,
-	ENVIRONMENT_PARAGRAPH,
-	CONCURRENCY_PARAGRAPH,
-	type BuildStaticSystemPartsParams,
-} from "./build";
+export { buildStaticSystemParts } from "./build";

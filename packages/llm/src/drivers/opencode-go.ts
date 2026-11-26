@@ -1,4 +1,4 @@
-﻿import { createAnthropic } from "@ai-sdk/anthropic";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
@@ -38,12 +38,10 @@ import {
 } from "./shared";
 
 export type { OpenCodeGoCatalogEntry, OpenCodeGoProtocol } from "./opencode-go-catalog";
-export { parseOpenCodeGoModels } from "./opencode-go-catalog";
-
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 const PROVIDER_NAME = "opencode-go";
 const BOUND_USER_AGENT = "bound";
-export const MAX_OPENCODE_SESSION_ID_LENGTH = 256;
+const MAX_OPENCODE_SESSION_ID_LENGTH = 256;
 
 export function deriveOpenCodeGoBaseUrl(override?: string): string {
 	return override ?? DEFAULT_OPENCODE_GO_BASE_URL;

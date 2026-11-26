@@ -198,7 +198,7 @@ async function* walkStepDown(
  * the refused attempt. Surfacing this (rather than retrying uncredited) is the
  * §7.3 "never silently re-run billed server tools" rule.
  */
-export class ServerToolsRanRefusalError extends Error {
+class ServerToolsRanRefusalError extends Error {
 	constructor(public outcome: ModelDeclinedOutcome) {
 		super(
 			"Model refused after billed server tools ran; surfacing the refusal " +

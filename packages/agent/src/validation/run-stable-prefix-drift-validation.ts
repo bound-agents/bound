@@ -81,7 +81,7 @@ const PAIR_WINDOW_MS = 60 * 60 * 1000;
 /** Lookback for the scan. */
 const LOOKBACK_HOURS = 24;
 
-export interface StablePrefixDriftLeak {
+interface StablePrefixDriftLeak {
 	flavor: "compose" | "collect";
 	thread_id: string;
 	prev_turn_id: string;
@@ -105,7 +105,7 @@ export interface StablePrefixDriftLeak {
  *     back to the earlier turn (sync pruning removes peer-confirmed
  *     entries), so the absence of a covering row proves nothing.
  */
-export interface StablePrefixDriftUnknown {
+interface StablePrefixDriftUnknown {
 	reason: "cross-host" | "incomplete-history";
 	thread_id: string;
 	prev_turn_id: string;

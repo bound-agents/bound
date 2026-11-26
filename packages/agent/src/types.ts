@@ -2,13 +2,9 @@ export type {
 	AgentLoopConfig,
 	AgentLoopResult,
 	AgentLoopState,
-	BuiltInToolResult,
 	ClientToolCallRequest,
 	DeferredToolResult,
-	DispatchSpanTracker,
 	RegisteredTool,
-	ToolAnnotations,
-	ToolExecutionResult,
 	ToolResultWithMetadata,
 } from "@bound/loop";
 export {

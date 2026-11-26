@@ -12,7 +12,7 @@ import { resolveEffectiveModelHint } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
 
-export interface TimeoutScheduler {
+interface TimeoutScheduler {
 	setTimeout(callback: () => void, delayMs: number): unknown;
 	clearTimeout(timeoutId: unknown): void;
 }

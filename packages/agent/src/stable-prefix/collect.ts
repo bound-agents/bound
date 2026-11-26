@@ -165,7 +165,7 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
  * also preserves R-VC25 stable-prefix purity: adding or renaming an alias never
  * changes the stable-context bytes, so it cannot churn the cross-thread cache.
  */
-export function loadClusterModelRoles(db: Database): Map<string, "default" | "heavy" | "fast"> {
+function loadClusterModelRoles(db: Database): Map<string, "default" | "heavy" | "fast"> {
 	const out = new Map<string, "default" | "heavy" | "fast">();
 	const row = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
 	if (!row) return out;

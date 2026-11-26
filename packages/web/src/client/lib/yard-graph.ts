@@ -1,9 +1,9 @@
-import { formatYardResult } from "@bound/shared/yard-format";
+import { formatYardValue } from "@bound/shared/yard-format";
 import type { YardNodePhase, YardTreeSnapshot } from "./yard-execution";
 
-export type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
-export type YardFlowPhase = YardNodePhase;
-export interface YardFlowData {
+type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
+type YardFlowPhase = YardNodePhase;
+interface YardFlowData {
 	label: string;
 	kind: YardFlowKind;
 	phase: YardFlowPhase;
@@ -239,7 +239,7 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	const treePhase: YardFlowPhase =
 		tree.phase === "completed" ? "completed" : tree.phase === "failed" ? "failed" : "started";
 	const formatted =
-		tree.resultPreview !== undefined ? formatYardResult(tree.resultPreview) : undefined;
+		tree.resultPreview !== undefined ? formatYardValue(tree.resultPreview) : undefined;
 	nodes.push({
 		id: resultId,
 		type: "yard",

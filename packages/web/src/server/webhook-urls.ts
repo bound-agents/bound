@@ -29,7 +29,7 @@
  * first source label per the order above.
  */
 
-export type WebhookUrlSource = "hub" | "local" | "cluster";
+type WebhookUrlSource = "hub" | "local" | "cluster";
 
 export interface WebhookUrlEntry {
 	url: string;

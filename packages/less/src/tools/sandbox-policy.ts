@@ -80,7 +80,7 @@ export function dnsSocketPaths(platform: NodeJS.Platform, network: SandboxNetwor
 }
 
 export type SandboxNetwork = "open" | "blocked";
-export type SandboxOnUnavailable = "passthrough" | "error";
+type SandboxOnUnavailable = "passthrough" | "error";
 
 /**
  * Git worktree metadata captured while Boundless initializes the session, before
@@ -297,7 +297,7 @@ export function buildPolicy(
  * persistent storage. Bubblewrap's private `/dev` is already writable as long
  * as no readonly bind covers it (see {@link readableRoots}), so Linux needs none.
  */
-export function writableDevices(platform: NodeJS.Platform): string[] {
+function writableDevices(platform: NodeJS.Platform): string[] {
 	return platform === "darwin" ? ["/dev/null", "/dev/zero", "/dev/fd"] : [];
 }
 
@@ -352,7 +352,7 @@ export function readableRoots(
  * 'deny' there. Listeners inside the sandbox stay reachable from inside it on
  * either backend.
  */
-export function openNetwork(platform: NodeJS.Platform) {
+function openNetwork(platform: NodeJS.Platform) {
 	return platform === "linux"
 		? {
 				egress: { default: "allow" as const },
@@ -486,7 +486,7 @@ export function computeGitProtectedPaths(
  * PATH, and stays a pure fs read like the rest of this module. A normal checkout
  * (`.git` is a directory) and a cwd with no `.git` at all both return `[]`.
  */
-export function captureGitWorktreeMetadata(cwd: string): GitWorktreeMetadata | undefined {
+function captureGitWorktreeMetadata(cwd: string): GitWorktreeMetadata | undefined {
 	try {
 		const discovery = spawnSync("git", ["-C", cwd, "rev-parse", "--git-dir", "--git-common-dir"], {
 			encoding: "utf8",

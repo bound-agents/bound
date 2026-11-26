@@ -11,7 +11,7 @@
  * a per-line substring scan (which silently misses matches that span lines).
  */
 
-export interface StringOccurrence {
+interface StringOccurrence {
 	/** 1-based line number where this occurrence begins. */
 	line: number;
 	/** Text of the line where the occurrence begins, for context display. */

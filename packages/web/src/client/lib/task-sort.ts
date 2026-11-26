@@ -1,4 +1,4 @@
-export const STATUS_WEIGHT = {
+const STATUS_WEIGHT = {
 	running: 0,
 	failed: 1,
 	pending: 2,

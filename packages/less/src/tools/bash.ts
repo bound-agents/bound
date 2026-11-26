@@ -19,7 +19,7 @@ import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 
 /** Body layout of a shell tool result; {@link BASH_OUTPUT_PATTERN} parses it back. */
-export function formatBashOutput(exitCode: number, stdout: string, stderr: string): string {
+function formatBashOutput(exitCode: number, stdout: string, stderr: string): string {
 	return `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
 }
 

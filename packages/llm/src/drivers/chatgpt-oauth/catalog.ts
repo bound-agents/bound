@@ -16,7 +16,7 @@ import type { ResolvedCapabilities } from "../../catalog/resolve-metadata";
 export const CODEX_MODELS_CLIENT_VERSION = "1.0.0";
 
 /** One raw row of the Codex `/models` response (fields Bound reads). */
-export interface CodexModelRow {
+interface CodexModelRow {
 	slug?: unknown;
 	display_name?: unknown;
 	visibility?: unknown;

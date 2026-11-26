@@ -543,7 +543,7 @@ export type RouteRelayRequestResult =
  * advertise `work_spool_capable`. This is a stale-topology / version-skew guard — every live host
  * advertises the bit — surfaced to the caller as a retriable relay failure.
  */
-export interface RouteRelayError {
+interface RouteRelayError {
 	path: "error";
 	/** The unreachable destination. */
 	targetSiteId: string;

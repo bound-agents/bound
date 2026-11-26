@@ -15,7 +15,7 @@
 import type { Tool } from "@modelcontextprotocol/server";
 
 /** Attempt to parse a string as JSON; returns undefined on failure. */
-export function parseJsonValue(value: string): unknown {
+function parseJsonValue(value: string): unknown {
 	try {
 		return JSON.parse(value);
 	} catch {
@@ -24,13 +24,13 @@ export function parseJsonValue(value: string): unknown {
 }
 
 /** JSON Schema property with the fields we care about for coercion. */
-export type PropSchema = { type?: string | string[]; enum?: string[]; items?: unknown };
+type PropSchema = { type?: string | string[]; enum?: string[]; items?: unknown };
 
 /**
  * Check whether a JSON Schema property definition declares a given type.
  * Handles both scalar (`type: "string"`) and union (`type: ["string", "null"]`) forms.
  */
-export function hasType(propSchema: PropSchema, typeName: string): boolean {
+function hasType(propSchema: PropSchema, typeName: string): boolean {
 	const { type } = propSchema;
 	if (!type) return false;
 	return Array.isArray(type) ? type.includes(typeName) : type === typeName;
@@ -42,7 +42,7 @@ export function hasType(propSchema: PropSchema, typeName: string): boolean {
  * Handles: array, object, number/integer, boolean, enum, and a safety case for
  * scalar params that received a JSON array string via preserveRepeatedFlags.
  */
-export function coerceStringValue(value: string, propSchema: PropSchema): unknown {
+function coerceStringValue(value: string, propSchema: PropSchema): unknown {
 	// Array: parse JSON array string, or wrap a lone value in a single-element array.
 	if (hasType(propSchema, "array")) {
 		const parsed = parseJsonValue(value);

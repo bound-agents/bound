@@ -55,7 +55,7 @@ async function loadQuickJS(): Promise<QuickJSWASMModule> {
 
 /** A price(turn) callback may return a plain number (total USD) or an object
  * with the four component parts in USD (the total is their sum). */
-export interface DynamicPriceBreakdown {
+interface DynamicPriceBreakdown {
 	input: number;
 	output: number;
 	cacheRead: number;

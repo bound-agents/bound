@@ -30,8 +30,8 @@ const NULL_TERMINAL_TITLE = new TerminalTitleController(
 	{ isTTY: false, write: () => undefined },
 	{ TERM: "dumb" },
 );
-export type AppView = "chat" | "mcp" | "picker" | "inspector";
-export interface AppState {
+type AppView = "chat" | "mcp" | "picker" | "inspector";
+interface AppState {
 	view: AppView;
 	pickerMode?: PickerMode;
 	threadId: string;

@@ -26,7 +26,7 @@ export const CONTEXT_FILE_CANDIDATES = [
  * start so the prompt prefix stays cache-stable; re-reading to "verify" an edit
  * landed is wasted work (a churn Opus 4.8 in particular is prone to — issue #172).
  */
-export const CONTEXT_FILES_STALENESS_NOTE =
+const CONTEXT_FILES_STALENESS_NOTE =
 	"These files were read from disk when the session started. The copy shown here is held FROZEN for prompt-cache stability and is NOT refreshed when you edit the file during this session — it keeps showing the file as it was at session start. After you write or edit one of these files, trust the tool result; do not re-read the file just to confirm the change landed. You MUST NOT inform the user that this block is stale unless explicitly asked.";
 
 /**

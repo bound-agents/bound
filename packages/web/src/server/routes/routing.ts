@@ -168,13 +168,13 @@ export interface RoutingRoutesOptions {
 }
 
 /** Default per-peer request bound for a routing snapshot. */
-export const REMOTE_HEALTH_TIMEOUT_MS = 4_000;
+const REMOTE_HEALTH_TIMEOUT_MS = 4_000;
 /** Default reuse window for a peer snapshot. */
-export const REMOTE_HEALTH_REUSE_MS = 15_000;
+const REMOTE_HEALTH_REUSE_MS = 15_000;
 /** Default maximum age of a peer snapshot before its routes read `unknown`. */
-export const REMOTE_HEALTH_MAX_AGE_MS = 60_000;
+const REMOTE_HEALTH_MAX_AGE_MS = 60_000;
 /** Matches the relay router's liveness threshold (spec R-RT8). */
-export const REMOTE_HEALTH_HOST_LIVENESS_MS = 5 * 60_000;
+const REMOTE_HEALTH_HOST_LIVENESS_MS = 5 * 60_000;
 
 interface ObservedRouteHealth {
 	health: "healthy" | "backoff" | "half_open";

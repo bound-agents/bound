@@ -327,6 +327,3 @@ export function formatYardInspectorValue(
 					: "text",
 	};
 }
-
-/** @deprecated Use formatYardValue; retained for result consumers. */
-export const formatYardResult = formatYardValue;

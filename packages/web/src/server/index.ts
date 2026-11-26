@@ -11,13 +11,7 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import { decodeAssetContent } from "./embedded-assets-codec";
 import { hasLoopbackHostHeader } from "./lib/loopback";
-import {
-	type BackendPricing,
-	type ModelsConfig,
-	type RoutesConfig,
-	mountRoutes,
-	registerRoutes,
-} from "./routes/index";
+import { type ModelsConfig, type RoutesConfig, mountRoutes, registerRoutes } from "./routes/index";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -39,7 +33,7 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 	return decoded;
 }
 
-export type { ModelsConfig, BackendPricing };
+export type { ModelsConfig };
 
 export type WebAppConfig = RoutesConfig & {
 	/** Runs before every route, including routes registered here. */

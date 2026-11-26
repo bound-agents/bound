@@ -53,7 +53,7 @@ export function contextGaugeColor(pct: number): string {
  *   `…/bound/packages/less`) still surface their parent (`packages/less`)
  *   instead of just the leaf (`less`), which would be ambiguous across repos.
  */
-export function shortCwd(cwd: string): string {
+function shortCwd(cwd: string): string {
 	const display = tildifyPath(cwd);
 	// Split on either separator so a Windows path (`C:\Users\alice\repo\pkg`)
 	// collapses to its last two segments just like a POSIX one. Rejoin with the

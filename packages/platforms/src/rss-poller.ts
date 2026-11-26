@@ -175,14 +175,14 @@ interface PollerLogger {
 	warn: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
-export type ResolveHost = (hostname: string) => Promise<readonly string[]>;
+type ResolveHost = (hostname: string) => Promise<readonly string[]>;
 
 /**
  * Fetch a URL through a connection pinned to a previously validated address.
  * Kept injectable so the poller test can assert the address reaching the
  * transport rather than merely the address returned by a DNS preflight.
  */
-export type FetchValidatedUrl = (url: URL, address: string, init: RequestInit) => Promise<Response>;
+type FetchValidatedUrl = (url: URL, address: string, init: RequestInit) => Promise<Response>;
 
 const resolveHost: ResolveHost = async (hostname) =>
 	(await lookup(hostname, { all: true, verbatim: true })).map(({ address }) => address);

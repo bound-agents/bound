@@ -15,14 +15,9 @@
 export {
 	ANTHROPIC_ENVELOPE,
 	BEDROCK_PERMISSIVE_ENVELOPE,
-	MAX_OPENAI_MESSAGE_BREAKPOINTS,
 	MAX_TOOL_USE_ID_LENGTH,
 	OPENAI_RESPONSES_ENVELOPE,
-	OPENAI_RESPONSES_RESERVED_TOOL_NAMES,
 	PERMISSIVE_ENVELOPE,
-	RESERVED_TOOL_NAME_SUFFIX,
-	type ToModelMessagesOptions,
-	type WireEnvelope,
 	sanitizeToolNameForEnvelope,
 	sanitizeToolUseId,
 	toModelMessages,
@@ -30,10 +25,4 @@ export {
 export { type MapChunksOptions, mapChunks } from "./stream";
 export { toToolSet } from "./tools";
 export { mapError } from "./errors";
-export {
-	type MessageShapeSummary,
-	type RequestShapeSummary,
-	isEncryptedReasoningRejection,
-	isResponsesInputRejection,
-	summarizeRequestShape,
-} from "./request-diagnostics";
+export { isResponsesInputRejection, summarizeRequestShape } from "./request-diagnostics";

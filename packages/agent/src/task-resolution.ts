@@ -138,7 +138,7 @@ export function selectFiringHost(
  * `online_at`) is fresh within this window — mirrors the client-session window
  * in `delegation.ts` and `relay-router`'s `STALE_THRESHOLD_MS`.
  */
-export const FIRING_HOST_STALE_MS = 5 * 60 * 1000; // 5 minutes
+const FIRING_HOST_STALE_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Per-host dispatch gate: `canRunHere` AND (when this firing has a schedule key)
@@ -591,7 +591,7 @@ export function seedHeartbeat(db: Database, siteId: string): void {
  * Default consolidation cadence. Like the heartbeat, this is a system-managed,
  * uncancellable task seeded once per install. 4-hour interval.
  */
-export const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
+const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
 
 export function seedConsolidation(db: Database, siteId: string): void {
 	const id = deterministicUUID(BOUND_NAMESPACE, "consolidation");

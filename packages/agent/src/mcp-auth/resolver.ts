@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { type McpAuthChallenge, findChallengeById } from "@bound/core";
+import { findChallengeById } from "@bound/core";
 import {
 	type AuthorizationServerMetadata,
 	type OAuthClientInformationMixed,
@@ -97,7 +97,7 @@ export function unionAttemptScopes(
  * by string equality on the token POST, so the owner byte-replays this exact
  * value (R-MO19/R-MO20). Injectable web port for tests / non-default deployments.
  */
-export function resolverCallbackUrl(webPort = 3001): string {
+function resolverCallbackUrl(webPort = 3001): string {
 	return `http://localhost:${webPort}${MCP_OAUTH_CALLBACK_PATH}`;
 }
 
@@ -327,4 +327,3 @@ export class McpChallengeResolver {
 }
 
 /** Re-export the challenge type for callers that build a resolver over a row. */
-export type { McpAuthChallenge };

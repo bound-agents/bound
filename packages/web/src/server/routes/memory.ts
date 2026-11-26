@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 
-export interface MemoryGraphNode {
+interface MemoryGraphNode {
 	key: string;
 	value: string;
 	tier: string;
@@ -11,14 +11,14 @@ export interface MemoryGraphNode {
 	modifiedAt: string;
 }
 
-export interface MemoryGraphEdge {
+interface MemoryGraphEdge {
 	sourceKey: string;
 	targetKey: string;
 	relation: string;
 	modifiedAt: string;
 }
 
-export interface MemoryGraphResponse {
+interface MemoryGraphResponse {
 	nodes: MemoryGraphNode[];
 	edges: MemoryGraphEdge[];
 }

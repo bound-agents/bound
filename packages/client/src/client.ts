@@ -110,7 +110,7 @@ const wsConnectionDuration = histogram("bound.client.websocket.connection.durati
 	unit: "ms",
 });
 
-export interface McpChallengeView {
+interface McpChallengeView {
 	challengeId: string;
 	serverName: string;
 	scopeDemand: string;

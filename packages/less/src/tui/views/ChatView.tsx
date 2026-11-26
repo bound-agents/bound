@@ -66,7 +66,7 @@ import {
  * lie. takesArgs controls whether Tab-completion appends a trailing space.
  */
 /** How long a `/sandbox` confirmation stays on screen before clearing itself. */
-export const SANDBOX_NOTICE_MS = 8_000;
+const SANDBOX_NOTICE_MS = 8_000;
 
 export const CHAT_SLASH_COMPLETIONS = [
 	{ value: "/help", description: "Show available commands" },
@@ -192,7 +192,7 @@ function yardSpinnerLabel(tree: YardTreeSnapshot): string {
  * (sandbox enabled in config but can't contain here) or disabled in config.
  * Written to read as a transcript notice, not a config dump.
  */
-export function describeSandboxStatus(
+function describeSandboxStatus(
 	effective: ResolvedSandboxConfig,
 	override: SandboxOverride | undefined,
 	base: ResolvedSandboxConfig,

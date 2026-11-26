@@ -205,6 +205,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 
 - `bun run lint` clean (or `bun run lint:fix` first)
 - `bun run typecheck` clean across all packages
+- Dead-code gate: `bun run knip` exits 0. Delete unused files, exports, and dependencies; if something is used dynamically (dynamic import, string-registered tool, embedded asset), suppress it in `knip.ts` with a one-line reason
 - Relevant tests added or updated
 - **Every non-internal feature change ships with documentation in the same PR.** If a change adds or alters something an operator or the agent can observe — a new tool or tool action, a config field, a CLI command, an API route, a UI surface, a behavioral rule — it needs a docs page or a revision to one under `packages/docs/src/content/docs/`, plus a sidebar entry in `packages/docs/src/sidebar.ts` if the page is new. Follow the [documentation style guide](packages/docs/STYLE_GUIDE.md). Purely internal work (refactors, test-only changes, perf, build plumbing) is exempt. Undocumented features are indistinguishable from bugs to everyone who didn't write them.
 - For user-visible changes: also update `README.md` and/or `docs/design/*`

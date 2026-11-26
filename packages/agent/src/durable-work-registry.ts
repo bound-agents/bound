@@ -9,7 +9,7 @@ import {
 	STREAM_RESPONSE_TTL_MS,
 } from "@bound/shared";
 
-export interface DurableWorkSubtype {
+interface DurableWorkSubtype {
 	type: "user_message" | "notification" | "tool_result";
 	idempotencyKey: (identity: Record<string, string>) => string;
 }

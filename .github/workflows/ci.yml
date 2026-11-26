@@ -87,6 +87,9 @@ jobs:
       - name: Validate outbox invariants
         run: bun run scripts/validate-outbox-invariant.ts
 
+      - name: Knip dead-code gate
+        run: bun run knip
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

@@ -30,7 +30,7 @@ import {
 import { CHATGPT_BACKEND_BASE_URL } from "./auth-core";
 import { CODEX_MODELS_CLIENT_VERSION, parseCodexModels } from "./catalog";
 import type { TokenManager } from "./token-store";
-export const PROVIDER_NAME = "chatgpt-oauth";
+const PROVIDER_NAME = "chatgpt-oauth";
 
 export interface ChatGptOAuthDriverConfig {
 	tokenManager: TokenManager;

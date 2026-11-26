@@ -84,10 +84,10 @@ import {
 	resolveInitiator,
 } from "./fetch-wrapper";
 import type { CopilotTokenManager } from "./token-store";
-export const PROVIDER_NAME = "github-copilot";
+const PROVIDER_NAME = "github-copilot";
 
 /** The literal that triggers auto-session routing. */
-export const AUTO_MODEL = "auto";
+const AUTO_MODEL = "auto";
 
 /** True when any message content block is an image part (drives the vision header). */
 export function messagesHaveImages(messages: LLMMessage[]): boolean {

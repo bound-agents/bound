@@ -410,10 +410,10 @@ export const BOUND_TABLE_COLUMNS = {
 
 type TableSpecs = typeof BOUND_TABLE_COLUMNS;
 
-export type BoundTableName = keyof TableSpecs;
+type BoundTableName = keyof TableSpecs;
 
 /** Row shape of one table, as `SELECT *` returns it from `bun:sqlite`. */
-export type BoundRow<T extends BoundTableName> = {
+type BoundRow<T extends BoundTableName> = {
 	-readonly [C in keyof TableSpecs[T]]: TableSpecs[T][C] extends ColumnSpec
 		? ColumnValue<TableSpecs[T][C]>
 		: never;

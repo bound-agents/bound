@@ -11,7 +11,7 @@ import {
 import { countBackgroundToolCallsByThread } from "./repositories/messages";
 
 /** Set BOUND_DURABLE_DISPATCH=0 or false before startup to route new enqueues to legacy dispatch_queue. */
-export let DURABLE_DISPATCH_ENQUEUE_ENABLED = !["0", "false"].includes(
+let DURABLE_DISPATCH_ENQUEUE_ENABLED = !["0", "false"].includes(
 	process.env.BOUND_DURABLE_DISPATCH?.toLowerCase() ?? "",
 );
 

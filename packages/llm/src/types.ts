@@ -253,7 +253,7 @@ export type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/w
  * resolution. Images constrain media_type to the four AI-SDK-supported image
  * IANA types.
  */
-export type ImageSource =
+type ImageSource =
 	| { type: "base64"; media_type: ImageMediaType; data: string }
 	| { type: "file_ref"; file_id: string; media_type?: ImageMediaType };
 
@@ -263,7 +263,7 @@ export type ImageSource =
  * text/plain, etc.) because AI SDK FilePart accepts any media type the
  * provider supports and Bedrock specifically accepts a wide document set.
  */
-export type DocumentSource =
+type DocumentSource =
 	| { type: "base64"; media_type: string; data: string }
 	| { type: "file_ref"; file_id: string; media_type?: string };
 

@@ -34,7 +34,7 @@ interface ModeDefinition {
 }
 
 /** The selectable session modes, in display order. */
-export const SESSION_MODES: readonly ModeDefinition[] = [
+const SESSION_MODES: readonly ModeDefinition[] = [
 	{
 		id: "default",
 		name: "Ask every time",

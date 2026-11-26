@@ -1,4 +1,4 @@
-export type ToolCancelReason = "thread_canceled" | "dispatch_expired" | "session_reset";
+type ToolCancelReason = "thread_canceled" | "dispatch_expired" | "session_reset";
 
 export type EmitToolCancel = (
 	entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,

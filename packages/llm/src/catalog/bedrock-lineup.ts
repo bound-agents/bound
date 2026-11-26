@@ -15,7 +15,7 @@
 import type { DiscoveredModel } from "./discovery";
 
 /** The wire protocol a lineup model is served over. */
-export type BedrockProtocol = "responses" | "converse";
+type BedrockProtocol = "responses" | "converse";
 
 /** One model the namespace entry exposes, with its callable id and protocol. */
 export interface BedrockLineupEntry {

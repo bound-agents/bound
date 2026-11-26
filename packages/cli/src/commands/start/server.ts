@@ -90,7 +90,6 @@ import {
 	type WsTransportHolder,
 	createWsTransportHolderStubs,
 } from "./wire-ws-transport-holder.js";
-export type { AgentLoopFactory } from "./agent-factory.js";
 const getTracer = () => trace.getTracer("bound.web");
 
 /**

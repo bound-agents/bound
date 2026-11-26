@@ -204,10 +204,7 @@ export function parseOpenCodeGoPricing(cost: unknown): ResolvedPricing | undefin
 }
 
 /** One `/models` row → `DiscoveredModel` (no routability filtering). */
-export function opencodeGoRowToDiscoveredModel(
-	row: Record<string, unknown>,
-	id: string,
-): DiscoveredModel {
+function opencodeGoRowToDiscoveredModel(row: Record<string, unknown>, id: string): DiscoveredModel {
 	const capabilities = parseCapabilities(row);
 	const limit = isRecord(row.limit) ? row.limit : undefined;
 	const maxOutputTokens = asNumber(limit?.output);

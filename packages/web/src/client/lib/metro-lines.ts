@@ -2,7 +2,7 @@
 // dots, and thin rule lines — never as backgrounds or glows.
 // Index order mirrors the canonical Tokyo Metro letters (G, M, H, T, C, Y, Z,
 // N, F, E); the matching CSS vars live in App.svelte.
-export const LINE_COLORS = [
+const LINE_COLORS = [
 	"#D9861A", // 0 — Ginza      · amber
 	"#C8331C", // 1 — Marunouchi · red (same hue as the signal accent)
 	"#7D8B93", // 2 — Hibiya     · silver
@@ -15,8 +15,8 @@ export const LINE_COLORS = [
 	"#9B2A6E", // 9 — Oedo       · ruby
 ];
 
-export const LINE_CODES = ["G", "M", "H", "T", "C", "Y", "Z", "N", "F", "E"];
-export const LINE_NAMES = [
+const LINE_CODES = ["G", "M", "H", "T", "C", "Y", "Z", "N", "F", "E"];
+const LINE_NAMES = [
 	"Ginza",
 	"Marunouchi",
 	"Hibiya",

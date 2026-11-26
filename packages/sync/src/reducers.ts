@@ -84,7 +84,7 @@ function validateColumnName(colName: string): boolean {
 	return /^[a-z_]+$/.test(colName);
 }
 
-export function getTableColumns(db: Database, tableName: string): string[] {
+function getTableColumns(db: Database, tableName: string): string[] {
 	if (!validateTableName(tableName)) {
 		throw new Error(`Invalid table name: ${tableName}`);
 	}

@@ -20,18 +20,18 @@ import type { Skill, SkillFileEntry } from "@bound/shared";
 import { unzipSync } from "fflate";
 import { Hono } from "hono";
 
-export const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
+const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
 
 /**
  * Serialize a frontmatter scalar as a double-quoted YAML string. JSON string
  * syntax is a subset of YAML double-quoted scalars, so newlines, colons, and
  * quotes stay inside the value and cannot open a new key.
  */
-export function yamlScalar(value: string): string {
+function yamlScalar(value: string): string {
 	return JSON.stringify(value);
 }
 
-export function buildSkillFrontmatter(fields: {
+function buildSkillFrontmatter(fields: {
 	name?: string;
 	description?: string;
 	allowed_tools?: string;

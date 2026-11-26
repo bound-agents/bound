@@ -6,7 +6,7 @@ import type { McpServerConfig } from "../config";
  * config. `mapped` distinguishes a degraded mapping (server is usable but lost
  * something, e.g. http headers) from a full skip (transport unsupported).
  */
-export interface McpConversionWarning {
+interface McpConversionWarning {
 	name: string;
 	mapped: boolean;
 	reason: string;

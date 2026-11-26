@@ -12,7 +12,7 @@ import {
 } from "./sandbox-policy";
 import type { ResolvedShell } from "./shell";
 
-export class LowboxUnavailableError extends Error {
+class LowboxUnavailableError extends Error {
 	readonly code = "LOWBOX_HELPER_UNAVAILABLE";
 
 	constructor(message: string) {

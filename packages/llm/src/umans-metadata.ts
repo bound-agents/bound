@@ -19,7 +19,6 @@ import type { Result } from "@bound/shared";
 import { z } from "zod";
 
 export const UMANS_ANTHROPIC_BASE = "https://api.code.umans.ai";
-export const UMANS_OPENAI_BASE = "https://api.code.umans.ai/v1";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 

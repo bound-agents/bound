@@ -143,7 +143,7 @@ export interface ToModelMessagesOptions {
  * backstop so a future placer emitting more degrades to "marker dropped"
  * instead of a 400 on every request.
  */
-export const MAX_OPENAI_MESSAGE_BREAKPOINTS = 3;
+const MAX_OPENAI_MESSAGE_BREAKPOINTS = 3;
 
 /**
  * Attach an OpenAI `prompt_cache_breakpoint` for one `{role:"cache"}` marker.
@@ -321,7 +321,7 @@ export interface WireEnvelope {
  * `function_call` with that `call_id`) and tripping the Responses `input`
  * union rejection `Invalid 'input': value did not match any expected variant`.
  */
-export const OPENAI_RESPONSES_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
+const OPENAI_RESPONSES_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"tool_search",
 	"shell",
 	"local_shell",
@@ -330,7 +330,7 @@ export const OPENAI_RESPONSES_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set
 ]);
 
 /** Suffix appended to a reserved tool name to disambiguate it on the wire. */
-export const RESERVED_TOOL_NAME_SUFFIX = "_fn";
+const RESERVED_TOOL_NAME_SUFFIX = "_fn";
 
 // Anthropic API + Claude-on-Bedrock: strict charset on both id and name.
 export const ANTHROPIC_ENVELOPE: WireEnvelope = {

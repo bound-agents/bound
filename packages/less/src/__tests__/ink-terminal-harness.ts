@@ -10,7 +10,7 @@ import type React from "react";
  * Ink falls back to when output height reaches `stdout.rows`, and the
  * log-update erase lines that remove a view when it closes.
  */
-export class FakeStdout extends EventEmitter {
+class FakeStdout extends EventEmitter {
 	isTTY = true;
 	writes: string[] = [];
 	constructor(

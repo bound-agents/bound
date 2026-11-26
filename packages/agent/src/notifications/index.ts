@@ -14,10 +14,5 @@
  *   F7 Order preservation — input order drives output order.
  */
 
-export {
-	renderNotifications,
-	ADVISORY_NOTIF_CAP,
-	type RenderNotificationsParams,
-	type ResolvedAdvisoryRow,
-} from "./render";
-export { loadNotificationInputs, type NotificationInputs } from "./load";
+export { renderNotifications } from "./render";
+export { loadNotificationInputs } from "./load";

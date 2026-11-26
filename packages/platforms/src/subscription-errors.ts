@@ -21,6 +21,8 @@ export const SUBSCRIPTION_REJECTED_CODE = -32050;
 /**
  * Discord-specific alias kept for call-site readability in the connector; the
  * value is the generic {@link SUBSCRIPTION_REJECTED_CODE} the registry checks.
+ *
+ * @alias
  */
 export const CHANNEL_ACCESS_DENIED_CODE = SUBSCRIPTION_REJECTED_CODE;
 

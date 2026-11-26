@@ -23,7 +23,7 @@
 
 import { JSDOM, VirtualConsole } from "jsdom";
 
-export type RouteRequest = {
+type RouteRequest = {
 	method: string;
 	url: URL;
 	path: string;
@@ -31,16 +31,14 @@ export type RouteRequest = {
 	headers: Headers;
 };
 
-export type RouteHandler = (
-	request: RouteRequest,
-) => unknown | Response | Promise<unknown | Response>;
+type RouteHandler = (request: RouteRequest) => unknown | Response | Promise<unknown | Response>;
 
-export type RecordedRequest = { method: string; path: string; body: unknown };
+type RecordedRequest = { method: string; path: string; body: unknown };
 
 type Mounted = { target: HTMLElement; component: Record<string, unknown> };
 
 /** A WebSocket that never connects on its own. Tests drive it explicitly. */
-export class FakeWebSocket {
+class FakeWebSocket {
 	static readonly CONNECTING = 0;
 	static readonly OPEN = 1;
 	static readonly CLOSING = 2;
@@ -104,7 +102,7 @@ class NoopObserver {
 }
 
 export class FakeResizeObserver extends NoopObserver {}
-export class FakeIntersectionObserver extends NoopObserver {}
+class FakeIntersectionObserver extends NoopObserver {}
 
 /** Event constructors replaced with jsdom's, so `new Event(...)` dispatches into jsdom. */
 const EVENT_CONSTRUCTORS = [

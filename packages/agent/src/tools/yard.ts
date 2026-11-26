@@ -277,7 +277,7 @@ function stripCodeFence(text: string): string {
  * ("hello", "42", "true") is a legitimate input value and is passed through
  * untouched, so this cannot swallow a deliberate string payload.
  */
-export function normalizeYardInput(raw: unknown): unknown {
+function normalizeYardInput(raw: unknown): unknown {
 	if (typeof raw !== "string") return raw;
 	const trimmed = raw.trim();
 	if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return raw;

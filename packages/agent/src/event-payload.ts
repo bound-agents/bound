@@ -3,7 +3,7 @@ import { claimDurableWorkByIds, listPendingIntakeDurableWorkForRef } from "@boun
 import { escapeXmlAttr } from "@bound/shared";
 import type { Task } from "@bound/shared";
 
-export interface DurableWakeupClaim {
+interface DurableWakeupClaim {
 	/** The durable_work row id that was claimed for this wakeup. */
 	id: string;
 	/**

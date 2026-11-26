@@ -15,8 +15,6 @@ import { gunzipSync, gzipSync } from "node:zlib";
  */
 export const EMBEDDED_ASSETS_ENCODING = "gzip-base64" as const;
 
-export type EmbeddedAssetsEncoding = typeof EMBEDDED_ASSETS_ENCODING;
-
 /** gzip + base64 an asset's UTF-8 text content for embedding. */
 export function encodeAssetContent(raw: string): string {
 	return gzipSync(Buffer.from(raw, "utf-8")).toString("base64");

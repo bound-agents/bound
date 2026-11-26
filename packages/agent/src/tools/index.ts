@@ -35,18 +35,3 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createYardTool(ctx),
 	];
 }
-
-export { createTaskTool } from "./task.js";
-export { createQueryTool } from "./query.js";
-export { createCancelTool } from "./cancel.js";
-export { createPurgeTool } from "./purge.js";
-export { createAdvisoryTool } from "./advisory.js";
-export { createNotifyTool } from "./notify.js";
-export { createIntrospectTool } from "./introspect.js";
-export { createArchiveTool } from "./archive.js";
-export { createModelHintTool } from "./model-hint.js";
-export { createHostinfoTool } from "./hostinfo.js";
-export { createMemoryTool } from "./memory.js";
-export { createSkillTool } from "./skill.js";
-export { createAuxTool } from "./auxiliary.js";
-export { createYardTool } from "./yard.js";

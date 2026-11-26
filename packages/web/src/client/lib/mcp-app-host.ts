@@ -178,7 +178,7 @@ export class McpAppHost {
 }
 
 /** A transport the SDK `Client` can connect over. Injected in tests. */
-export interface McpClientTransport {
+interface McpClientTransport {
 	start(): Promise<void>;
 	send(message: unknown, options?: unknown): Promise<void>;
 	close(): Promise<void>;

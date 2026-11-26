@@ -16,7 +16,7 @@
 import type { TurnCostBreakdown } from "./turn-pricing";
 
 /** Per-attempt token counts, model-scoped — never summed across models. */
-export interface AttemptTokens {
+interface AttemptTokens {
 	input: number;
 	output: number;
 	cache_read: number;

@@ -195,9 +195,7 @@ type ResponsesCacheTtl = (typeof RESPONSES_CACHE_TTL_VALUES)[number];
  * field is omitted. Never returns a value outside {@link RESPONSES_CACHE_TTL_VALUES},
  * which is the whole point: the SDK rejects anything else locally (#293).
  */
-export function quantizeResponsesCacheTtl(
-	cacheTtl: string | undefined,
-): ResponsesCacheTtl | undefined {
+function quantizeResponsesCacheTtl(cacheTtl: string | undefined): ResponsesCacheTtl | undefined {
 	if (cacheTtl === undefined) return undefined;
 	// A value the SDK already accepts passes through; everything else (the
 	// Anthropic "5m"/"1h", or a future "12h") collapses to the one supported

@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { TypedEventEmitter } from "@bound/shared";
 import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
-import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
+import type { SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import type { EmitToolCancel, HandleMessageTracker } from "./lib/handler-types";
 import { hasLoopbackHostHeader, isLoopbackHost } from "./lib/loopback";
@@ -17,8 +17,6 @@ const UNSAFE_WEB_BIND_OVERRIDE = "BOUND_ALLOW_UNSAFE_WEB_BIND";
 // in-flight client tool call is treated as wedged/dead and force-closed. 45s =
 // 3 missed 15s client heartbeats: rides out a GC pause, still recovers fast.
 const WS_LIVENESS_STALE_MS = 45_000;
-
-export type { ModelsConfig, BackendPricing };
 
 export type WebServerConfig = Omit<WebAppConfig, "modelsConfig" | "emitToolCancel"> & {
 	port?: number;

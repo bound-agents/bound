@@ -167,7 +167,7 @@ function withChildSpan<T>(
  * side advertises a budget; assembly and dispatch must never disagree about
  * how much of the context window generation owns.
  */
-export const DEFAULT_OUTPUT_TOKEN_RESERVE = DEFAULT_MAX_OUTPUT_TOKENS;
+const DEFAULT_OUTPUT_TOKEN_RESERVE = DEFAULT_MAX_OUTPUT_TOKENS;
 
 /**
  * The cold path targets `contextWindow - maxOutputTokens` tokens of history —

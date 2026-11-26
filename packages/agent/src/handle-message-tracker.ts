@@ -27,9 +27,9 @@ import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 /** Default watchdog timeout: spans inactive longer than this are closed with ERROR. */
-export const DEFAULT_WATCHDOG_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_WATCHDOG_TIMEOUT_MS = 15 * 60 * 1000;
 /** Default watchdog poll cadence. */
-export const DEFAULT_WATCHDOG_INTERVAL_MS = 60 * 1000;
+const DEFAULT_WATCHDOG_INTERVAL_MS = 60 * 1000;
 
 interface OpenTurnState {
 	span: Span;

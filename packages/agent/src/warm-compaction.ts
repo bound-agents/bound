@@ -71,7 +71,7 @@ export function hasStrippableThinking(content: string): boolean {
  * losing the model's direct view of the result. Used by both cold-path
  * Stage 1.7 in context-assembly.ts and warm-path compactStoredMessagesInPlace.
  */
-export const COLD_COMPACTION_THRESHOLD = 500;
+const COLD_COMPACTION_THRESHOLD = 500;
 
 /**
  * Default recent-window size for compaction, scaled to the backend's context

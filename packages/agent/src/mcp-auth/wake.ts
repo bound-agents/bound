@@ -23,14 +23,6 @@ import { consumeWaiter, findAllUnconsumedWaiters, findUnconsumedWaiters } from "
  * still serves the thread.
  */
 
-/** The developer-role wake payload the woken turn receives. */
-export interface McpAuthWakePayload {
-	notification_id: string;
-	role: "developer";
-	event_type: "mcp_auth_resolution";
-	text: string;
-}
-
 /**
  * Format the wake message (R-MO16). On `resolved`, invite re-issuing the call.
  * On `failed`, name the challenge and its `failure_reason` and DISTINGUISH a

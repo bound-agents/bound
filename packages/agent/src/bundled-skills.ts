@@ -11,5 +11,4 @@
  * A test (bundled-skills-sync.test.ts) fails if the generated file is stale.
  */
 
-export type { BundledSkill, BundledSkillFile } from "./bundled-skills-types";
 export { BUNDLED_SKILLS } from "./bundled-skills.generated";

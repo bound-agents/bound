@@ -387,28 +387,6 @@ export function calculateTurnCost(
 	return breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite;
 }
 
-/**
- * True when the operator has declared explicit pricing for this model: either a
- * compiled price(turn) callback is active, or the backend carries ANY `price_per_m_*`
- * field set in config (presence is the signal, including a deliberate 0 — the schema
- * keeps these optional, so a set-to-0 override is distinguishable from an unset gap).
- * A model absent from the backends list, or one whose every price field is unset with
- * no callback, counts as NOT explicitly priced — its cost then falls through to catalog
- * (provider/models.dev) pricing or a provider-reported value.
- */
-export function hasExplicitOperatorPricing(modelId: string, backends: BackendPricing[]): boolean {
-	if (hasDynamicPrice(modelId)) return true;
-	const cfg = backends.find((b) => b.id === modelId);
-	if (!cfg) return false;
-	return (
-		cfg.price_per_m_input !== undefined ||
-		cfg.price_per_m_output !== undefined ||
-		cfg.price_per_m_cache_read !== undefined ||
-		cfg.price_per_m_cache_write !== undefined ||
-		cfg.price_per_m_cache_write_1h !== undefined
-	);
-}
-
 export interface ResolveTurnCostInput {
 	modelId: string;
 	usage: UsageTokens;

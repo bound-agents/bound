@@ -29,7 +29,7 @@ export type BwrapVersionResult =
 	| { kind: "output"; path: string; stdout: string };
 
 /** Mirrors the SDK's `BWRAP_FALLBACK_DIRECTORIES`, searched after PATH. */
-export const BWRAP_FALLBACK_DIRECTORIES: readonly string[] = [
+const BWRAP_FALLBACK_DIRECTORIES: readonly string[] = [
 	"/usr/local/sbin",
 	"/usr/local/bin",
 	"/usr/sbin",

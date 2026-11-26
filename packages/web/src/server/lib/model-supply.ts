@@ -35,7 +35,7 @@ export interface RouteSupply {
  * by a real source (provider or models.dev); one equal to its id fell through to
  * the id fallback. This drives the per-model display-name consistency rule.
  */
-export type DisplayNameSource = "named" | "id-fallback" | "none";
+type DisplayNameSource = "named" | "id-fallback" | "none";
 
 /**
  * Choose the single display name for a logical model whose routes may disagree.

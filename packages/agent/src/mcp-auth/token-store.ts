@@ -77,14 +77,14 @@ interface McpAuthFile {
 }
 
 /** A lost grant: a terminal token-endpoint error (R-MO12). Raises a challenge. */
-export interface LostGrant {
+interface LostGrant {
 	kind: "lost_grant";
 	/** The RFC 6749 §5.2 terminal error code (`invalid_grant` | `invalid_client`). */
 	error: string;
 }
 
 /** A refresh that failed transiently and should retry later, not re-auth (R-MO12). */
-export interface RefreshTransient {
+interface RefreshTransient {
 	kind: "transient";
 	detail: string;
 }
@@ -101,7 +101,7 @@ export type RefreshError = LostGrant | RefreshTransient;
 export type RefreshFn = (bundle: McpTokenBundle) => Promise<Result<McpTokenBundle, RefreshError>>;
 
 /** Refresh this many ms before `exp` so an in-flight request never races the boundary. */
-export const MCP_TOKEN_REFRESH_SKEW_MS = 60_000;
+const MCP_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 function isBundle(v: unknown): v is McpTokenBundle {
 	if (typeof v !== "object" || v === null) return false;

@@ -53,7 +53,7 @@ export interface MCPServerConfig {
 
 export type { Tool, Resource, Prompt };
 
-export interface ToolResultImage {
+interface ToolResultImage {
 	media_type: string;
 	data: string;
 }
@@ -65,7 +65,7 @@ export interface ToolResultImage {
  * everything else lands here so the call site can persist the bytes (e.g.
  * write to the files table) and emit a file_ref document block.
  */
-export interface ToolResultDocument {
+interface ToolResultDocument {
 	media_type: string;
 	data: string;
 	uri?: string;
@@ -76,7 +76,7 @@ export interface ToolResultDocument {
  * inlining its bytes. Passed through as a structured text annotation;
  * the agent loads them on demand via the bash `resource` command.
  */
-export interface ToolResultResourceLink {
+interface ToolResultResourceLink {
 	uri: string;
 	name?: string;
 	mimeType?: string;

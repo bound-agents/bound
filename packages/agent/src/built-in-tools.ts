@@ -14,7 +14,7 @@ import type { IFileSystem } from "just-bash";
 import { z } from "zod";
 import { parseToolInput, zodToToolParams } from "./tools/tool-schema";
 
-export type BuiltInToolResult = string | ContentBlock[];
+type BuiltInToolResult = string | ContentBlock[];
 
 export interface BuiltInTool {
 	toolDefinition: ToolDefinition;

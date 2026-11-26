@@ -403,7 +403,7 @@ export interface WebhookRotateResponse {
  *   - `cluster`: derived from a peer host's announced `sync_url`. The local
  *     site_id is excluded to avoid duplicating the local entry.
  */
-export interface WebhookUrlEntry {
+interface WebhookUrlEntry {
 	url: string;
 	source: "hub" | "local" | "cluster";
 	/** Cluster source: the peer host's display name. Local: this host's name. */

@@ -34,12 +34,12 @@ import {
 	resolveModelDisplayName,
 } from "../lib/model-supply";
 
-export interface ModelInfo {
+interface ModelInfo {
 	id: string;
 	provider: string;
 }
 
-export interface ClusterModelInfo {
+interface ClusterModelInfo {
 	id: string;
 	/** Logical model this backend serves (spec §2.1); the picker's selection key. Falls back to the id. */
 	logical_model: string;

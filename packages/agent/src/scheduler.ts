@@ -530,7 +530,7 @@ function resetEventTask(
  *
  * Extracted so eviction recovery can compute next_run_at inside a transaction without writing.
  */
-export function computeHeartbeatNextRunAt(task: Task, lastUserInteractionAt: Date): string {
+function computeHeartbeatNextRunAt(task: Task, lastUserInteractionAt: Date): string {
 	const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
 	if (!specResult.ok) {
 		// On parse error, return current time (fail-safe: task will run immediately on next scheduler tick)

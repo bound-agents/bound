@@ -10,8 +10,8 @@ import type {
 } from "../types";
 
 /** Retry/backoff caps for the background namespace lineup fetch. */
-export const LINEUP_RETRY_BASE_MS = 1000;
-export const LINEUP_RETRY_MAX_MS = 60_000;
+const LINEUP_RETRY_BASE_MS = 1000;
+const LINEUP_RETRY_MAX_MS = 60_000;
 
 /** Per-model override entry (camelCase, from `toRouterConfig`). */
 export type NamespaceModelOverride = NonNullable<BackendConfig["modelOverrides"]>[string];

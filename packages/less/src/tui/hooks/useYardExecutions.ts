@@ -2,7 +2,7 @@ import type { BoundClient } from "@bound/client";
 import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
 import { useEffect, useMemo, useState } from "react";
 
-export interface YardNodeState {
+interface YardNodeState {
 	id: string;
 	parentId: string | null;
 	node: YardExecutionNode;

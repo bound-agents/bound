@@ -60,7 +60,7 @@ export const sandboxTool: ToolDefinition = {
 	},
 };
 
-export interface AuxLoopParentContext {
+interface AuxLoopParentContext {
 	clientTools?: AgentLoopConfig["clientTools"];
 	connectionId?: string;
 	/** Surface tag inherited from the dispatching loop (web, boundless, discord, ...). */

@@ -2,7 +2,7 @@ import { Box } from "ink";
 import type React from "react";
 import { KeyHint } from "./KeyHint.js";
 
-export interface ActionBarAction {
+interface ActionBarAction {
 	keys: string;
 	label: string;
 }

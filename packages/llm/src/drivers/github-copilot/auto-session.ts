@@ -22,7 +22,7 @@
 export const AUTO_SESSION_EXPIRY_MARGIN_MS = 5 * 60_000;
 
 /** Max characters of the prompt forwarded to the auto selector. */
-export const AUTO_PROMPT_MAX_CHARS = 4000;
+const AUTO_PROMPT_MAX_CHARS = 4000;
 
 export interface CopilotAutoSession {
 	sessionToken: string;

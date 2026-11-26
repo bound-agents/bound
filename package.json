@@ -12,6 +12,7 @@
 		"lint:fix": "bunx @biomejs/biome check --write . && bun fmt --no-script .",
 		"check": "bun lint && bun typecheck && bun run scripts/validate-outbox-invariant.ts && bun run scripts/validate-no-fk-on-synced-tables.ts && bun run scripts/validate-events-after-commit.ts && bun run scripts/validate-read-centralization.ts && bun run scripts/validate-sandbox-exec-seam.ts && bun run scripts/validate-just-bash-patch.ts && bun run scripts/validate-no-files-relay-offload.ts && bun run scripts/validate-kotlin-not-link-built.ts",
 		"typecheck": "bun scripts/typecheck-all.ts",
+		"knip": "knip",
 		"build": "bun run scripts/build.ts",
 		"prepare": "git config core.hooksPath .githooks",
 		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts && bun run scripts/build-lowbox-helper.ts --optional && bun run scripts/build-tree-sitter-kotlin.ts"
@@ -21,6 +22,7 @@
 		"@playwright/test": "^1.58.2",
 		"@types/bun": "latest",
 		"abbrev": "3.0.1",
+		"knip": "^6.48.0",
 		"node-gyp": "11.4.0",
 		"nopt": "8.1.0",
 		"typescript": "6.0.2"

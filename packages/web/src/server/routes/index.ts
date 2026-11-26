@@ -27,7 +27,6 @@ import { createThreadsRoutes } from "./threads";
 import { createWebhooksRoutes } from "./webhooks";
 
 export type { ModelsConfig };
-export type { BackendPricing };
 
 export interface RoutesConfig {
 	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined);

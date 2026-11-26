@@ -63,7 +63,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
  * the daemon as speaker rather than asserting a severity it can't recover.
  * ASCII so it survives every editor/terminal that renders the transcript.
  */
-export const ACP_DAEMON_NOTICE_PREFIX = "[bound] ";
+const ACP_DAEMON_NOTICE_PREFIX = "[bound] ";
 
 /** Prefix daemon-notice text for the ACP transcript. Used by the live path
  * (`handleAlert`, stream-error) and session/load replay so a resumed transcript

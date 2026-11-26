@@ -55,7 +55,7 @@ export const CONSISTENCY_TABLES: readonly SyncedTableName[] = [
 ];
 
 /** Primary key column per synced table. Defaults to "id" for all others. */
-export const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
+const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
 	hosts: "site_id",
 	cluster_config: "key",
 	model_routing_rules: "logical_model",

@@ -30,7 +30,7 @@ import { MAX_TOOL_NAMES } from "../fetch-logger";
 import type { ContentBlock, LLMMessage } from "../types";
 
 /** Per-message structural summary. No content, only kinds/counts/ids-shape. */
-export interface MessageShapeSummary {
+interface MessageShapeSummary {
 	/** The Bound message role (user/assistant/tool_result/developer/…). */
 	role: string;
 	/** `true` when `content` was a bare string rather than a block array. */

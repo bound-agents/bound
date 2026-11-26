@@ -40,4 +40,4 @@
  *   P8 Empty input → empty output.
  */
 
-export { substitutePurgedMessages, type SubstitutePurgedMessagesParams } from "./substitute";
+export { substitutePurgedMessages } from "./substitute";

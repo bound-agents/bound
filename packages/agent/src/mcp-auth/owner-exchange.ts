@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { type McpAuthChallenge, findChallengeById, markFailed, markResolved } from "@bound/core";
+import { findChallengeById, markFailed, markResolved } from "@bound/core";
 import type { mcpAuthHandoffPayloadSchema } from "@bound/shared";
 import {
 	type AuthorizationServerMetadata,
@@ -314,5 +314,3 @@ export function extractOAuthErrorCode(e: unknown): string | undefined {
 function isTerminalExchangeThrow(e: unknown): boolean {
 	return e instanceof OAuthClientFlowError;
 }
-
-export type { McpAuthChallenge };

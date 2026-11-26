@@ -21,7 +21,7 @@ export type CopilotRoute = "messages" | "responses" | "chat";
 
 /** Per-row price fields (default or long_context). All USD-per-token after the
  * batch_size/100 conversion is applied by computeCopilotCost. */
-export interface CopilotPriceRow {
+interface CopilotPriceRow {
 	inputPrice: number;
 	outputPrice: number;
 	cacheReadPrice: number;
@@ -33,7 +33,7 @@ export interface CopilotPriceRow {
 }
 
 /** Parsed `billing.token_prices` + discounts for one catalog entry. */
-export interface CopilotPricing {
+interface CopilotPricing {
 	batchSize: number;
 	default: CopilotPriceRow;
 	longContext?: CopilotPriceRow;
@@ -200,7 +200,7 @@ function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 }
 
 /** Token usage for one turn, fed to computeCopilotCost. */
-export interface CopilotCostUsage {
+interface CopilotCostUsage {
 	inputTokens: number;
 	outputTokens: number;
 	cacheReadTokens: number;

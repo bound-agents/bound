@@ -19,7 +19,7 @@ import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
  * Compute the deterministic edge ID from the (source, target, relation) triple.
  * Uses the same deterministicUUID pattern as semantic_memory keys.
  */
-export function edgeId(
+function edgeId(
 	sourceKey: string,
 	targetKey: string,
 	relation: string,

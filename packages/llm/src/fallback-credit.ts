@@ -21,7 +21,7 @@ import type { DriverFallbackSupport } from "./fallback-policy";
 import type { ModelDeclinedOutcome } from "./model-declined";
 
 /** Why a credited inline retry is not planned (eligible === false). */
-export type CreditIneligibleReason =
+type CreditIneligibleReason =
 	"driver-unsupported" | "no-token" | "not-co-located" | "server-tools-ran";
 
 /**
@@ -35,7 +35,7 @@ export type CreditIneligibleReason =
  * - `server-side-fallback`: for a `server_side_auto` driver (Anthropic), express
  *   the fallback server-side (`fallbacks: "default"` / named) rather than replaying.
  */
-export type CreditStepKind =
+type CreditStepKind =
 	"continuation-body" | "unchanged-plus-token" | "drop-token" | "server-side-fallback";
 
 export interface CreditStep {

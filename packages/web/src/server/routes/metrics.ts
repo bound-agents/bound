@@ -33,7 +33,7 @@ export interface ProviderMetrics {
  * `null` when the id is absent or lacks three non-empty segments. Backend ids
  * may themselves contain `:`, so only the first two separators delimit.
  */
-export function providerFromRouteId(routeId: string | null | undefined): string | null {
+function providerFromRouteId(routeId: string | null | undefined): string | null {
 	if (!routeId) return null;
 	const first = routeId.indexOf(":");
 	if (first <= 0) return null;

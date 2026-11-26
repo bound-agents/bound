@@ -61,7 +61,7 @@ function renderTokens(
 	});
 }
 
-export interface HighlightedLineProps {
+interface HighlightedLineProps {
 	line: string;
 	lang?: string;
 	/**
@@ -80,12 +80,7 @@ export interface HighlightedLineProps {
  * is empty, falls back to a plain `<Text>` so callers can drop this
  * in anywhere a `<Text>` was previously used.
  */
-export function HighlightedLine({
-	line,
-	lang,
-	color,
-	dim,
-}: HighlightedLineProps): React.ReactElement {
+function HighlightedLine({ line, lang, color, dim }: HighlightedLineProps): React.ReactElement {
 	const safeLine = stripTerminalControlSequences(line);
 	if (safeLine.length === 0) {
 		// Preserve blank-line layout — shiki returns no tokens for "" so

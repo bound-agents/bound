@@ -53,7 +53,7 @@ export interface YardInferenceRequest {
 }
 
 /** Ceiling on `infer()` schema-repair re-asks per effect. */
-export const MAX_SCHEMA_RETRIES = 2;
+const MAX_SCHEMA_RETRIES = 2;
 
 /**
  * The dispatch seam. The wiring slice implements this over the unified tool
@@ -69,7 +69,7 @@ export interface YardHost {
  * Implementation safety ceilings — NOT Yard tool parameters (design plan,
  * "Execution"). Overridable in tests; the shipped tool uses the defaults.
  */
-export interface YardLimits {
+interface YardLimits {
 	memoryLimitBytes: number;
 	stackSizeBytes: number;
 	/** Max uninterrupted guest CPU per entry into the VM. */
@@ -79,7 +79,7 @@ export interface YardLimits {
 	maxBridgeBytes: number;
 }
 
-export const DEFAULT_YARD_LIMITS: YardLimits = {
+const DEFAULT_YARD_LIMITS: YardLimits = {
 	memoryLimitBytes: 128 * 1024 * 1024,
 	stackSizeBytes: 1024 * 1024,
 	cpuSliceMs: 2_000,
@@ -87,7 +87,7 @@ export const DEFAULT_YARD_LIMITS: YardLimits = {
 	maxBridgeBytes: 4 * 1024 * 1024,
 };
 
-export interface YardUsage {
+interface YardUsage {
 	tool_calls: number;
 	inference_calls: number;
 	/** Populated by the wiring slice once inference dispatch reports usage. */
@@ -119,7 +119,7 @@ export interface RunYardProgramOptions {
 }
 
 /** Validated effect payload copied out of the guest (known fields only). */
-export type YardEffectPayload =
+type YardEffectPayload =
 	| { kind: "tool"; name: string; args: JsonValue }
 	| { kind: "inference"; model: string; request: YardInferenceRequest }
 	| {

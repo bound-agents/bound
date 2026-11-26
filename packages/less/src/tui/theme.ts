@@ -144,6 +144,3 @@ export const tokens = {
 	/** Yellow cautionary notes: empty pickers, disabled tags, hydrate errors. */
 	warningNotice: semantic.warn,
 } as const;
-
-/** A concrete Ink color value exposed by the current semantic theme. */
-export type ThemeColor = (typeof tokens)[keyof typeof tokens];

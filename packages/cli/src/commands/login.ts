@@ -66,7 +66,7 @@ export function defaultTokenStorePath(configDir: string): string {
 }
 
 /** Default bound-owned Copilot token store location. */
-export function defaultCopilotTokenStorePath(configDir: string): string {
+function defaultCopilotTokenStorePath(configDir: string): string {
 	return resolve(configDir, "copilot-auth.json");
 }
 
@@ -326,7 +326,7 @@ export async function runMcpLogin(args: LoginArgs): Promise<void> {
  * the refresh token on each refresh and invalidates the prior one, so two tools
  * sharing a lineage would take turns logging each other out.
  */
-export async function runCopilotLogin(args: LoginArgs): Promise<void> {
+async function runCopilotLogin(args: LoginArgs): Promise<void> {
 	const configDir = args.configDir || "config";
 	const storePath = defaultCopilotTokenStorePath(configDir);
 	const store = new FileCopilotTokenStore(storePath);

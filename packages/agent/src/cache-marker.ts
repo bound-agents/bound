@@ -206,7 +206,7 @@ export interface StableCacheMarkerParams {
 	estimateTokens: (msg: LLMMessage) => number;
 }
 
-export interface StableCacheMarkerPlacement {
+interface StableCacheMarkerPlacement {
 	placed: boolean;
 	/** Splice index for the marker. -1 when not placed. */
 	index: number;

@@ -7,7 +7,7 @@
  */
 
 /** A single file belonging to a bundled skill. */
-export interface BundledSkillFile {
+interface BundledSkillFile {
 	/** Path relative to the skill root, e.g. "SKILL.md" or "references/tools.md". */
 	path: string;
 	content: string;

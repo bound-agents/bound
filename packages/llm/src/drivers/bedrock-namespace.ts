@@ -56,7 +56,7 @@ const LINEUP_RETRY_BASE_MS = 2_000;
  * OpenAI provider appends `/responses`). Distinct from the mantle host, which is
  * `bedrock-mantle.{region}.api.aws/openai/v1`. Both sign SigV4 service `bedrock`.
  */
-export function deriveBedrockRuntimeResponsesBaseUrl(region: string): string {
+function deriveBedrockRuntimeResponsesBaseUrl(region: string): string {
 	return `https://bedrock-runtime.${region}.amazonaws.com/openai/v1`;
 }
 

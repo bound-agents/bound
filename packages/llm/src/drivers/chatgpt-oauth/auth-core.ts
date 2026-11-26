@@ -21,11 +21,11 @@ import { createHash, randomBytes } from "node:crypto";
 
 /** Public OAuth client id used by Codex CLI and compatible tools. */
 export const CHATGPT_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-export const CHATGPT_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
-export const CHATGPT_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const CHATGPT_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
+const CHATGPT_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 /** Loopback callback Codex binds; matched exactly by the authorization server. */
 export const CHATGPT_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback";
-export const CHATGPT_OAUTH_SCOPE = "openid profile email offline_access";
+const CHATGPT_OAUTH_SCOPE = "openid profile email offline_access";
 /** The ChatGPT-backend Responses API base — NOT api.openai.com. */
 export const CHATGPT_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex";
 

@@ -99,7 +99,7 @@ export interface HarnessEnvironmentOptions {
 
 /** Per-call overrides for one `MainAgentLoop` run. `threadId` / `userId` are
  *  supplied by the environment; everything else passes through. */
-export type HarnessLoopConfig = Omit<AgentLoopConfig, "threadId" | "userId">;
+type HarnessLoopConfig = Omit<AgentLoopConfig, "threadId" | "userId">;
 
 export interface HarnessEnvironment {
 	db: Database;

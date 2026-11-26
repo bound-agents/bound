@@ -132,7 +132,7 @@ const TOOL_RESULT_TRUNCATE = 200;
  * interactions and filters out internal plumbing (system/developer messages)
  * to give the summarization LLM a concise view of what happened.
  */
-export function formatDeltaMessages(messages: Array<{ role: string; content: string }>): string {
+function formatDeltaMessages(messages: Array<{ role: string; content: string }>): string {
 	const lines: string[] = [];
 
 	for (const msg of messages) {
@@ -762,7 +762,7 @@ export interface Vc15Tunables {
 export const VC15_DEFAULT_N = 1000;
 export const VC15_DEFAULT_M = 20;
 export const VC15_TIER1_THRESHOLD = 200;
-export const VC15_UNCATEGORIZED_BACKLOG_THRESHOLD = 50;
+const VC15_UNCATEGORIZED_BACKLOG_THRESHOLD = 50;
 export const UNCATEGORIZED_CLUSTER_NAME = "Uncategorized";
 
 export function resolveVc15Tunables(env: NodeJS.ProcessEnv = process.env): Vc15Tunables {
@@ -1521,7 +1521,7 @@ export function truncateGlossForSummary(value: string): string {
 }
 const STALE_CHILD_GLOSS_MAX = 200;
 
-export function truncateGloss(s: string, max: number): string {
+function truncateGloss(s: string, max: number): string {
 	if (s.length <= max) return s;
 	return `${safeSlice(s, 0, max)}...`;
 }
@@ -1772,7 +1772,7 @@ export interface LiveStateInput {
 
 const LIVE_STATE_FOOTER =
 	"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.";
-export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
+const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
 
 /**
  * Meta-note carried on both `<volatile-context>` halves. Tells the model the

@@ -164,7 +164,7 @@ function readStepCacheWriteTokens(
  * Lifetimes are the provider's own vocabulary verbatim ("5m", "1h", "30m", …) —
  * the bridge never invents or quantizes them.
  */
-export interface CacheWriteSplitEntry {
+interface CacheWriteSplitEntry {
 	ttl: string;
 	tokens: number;
 }
