@@ -1320,6 +1320,137 @@ describe("route health half-open trial gating (#285, R-RT12)", () => {
 		const state = router.getRouteHealthState(halfOpenId);
 		expect(state.status === "half_open" && state.trial_in_flight).toBe(false);
 	});
+
+	it("a known model whose only route is in backoff reports the backoff, not 'Unknown model'", () => {
+		const modelId = "copilot-gemini-4-carbon";
+		const nowMs = 1_000_000;
+		const router = makeLocalRouter(modelId, () => nowMs);
+		const routeId = router.getRouteId(modelId) as string;
+		router.recordRouteFailure(modelId, { errorKind: "transport" });
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("transient-unavailable");
+		expect(resolution.error).not.toContain("Unknown model");
+		expect(resolution.error).not.toContain("Local backends");
+		expect(resolution.error).toContain('Model "gemini-4-carbon" is known in the cluster');
+		expect(resolution.error).toContain(
+			`${routeId}: backoff until ${new Date(nowMs + 30_000).toISOString()}`,
+		);
+		expect(resolution.earliestRecovery).toBe(nowMs + 30_000);
+	});
+
+	it("a known model whose half_open trial slot is taken reports the in-flight trial", () => {
+		const modelId = "copilot-gemini-4-carbon";
+		let nowMs = 1_000_000;
+		const router = makeLocalRouter(modelId, () => nowMs);
+		const routeId = router.getRouteId(modelId) as string;
+		router.recordRouteFailure(modelId, { errorKind: "transport" });
+		nowMs += 30_000;
+		// A cold resolution claims the single trial slot.
+		expect(resolveModel("gemini-4-carbon", router, db, "local-site").kind).toBe("local");
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("transient-unavailable");
+		expect(resolution.error).not.toContain("Unknown model");
+		expect(resolution.error).toContain(`${routeId}: half-open trial in flight`);
+	});
+
+	it("a known model whose only route is drained reports the drain", () => {
+		const modelId = "copilot-gemini-4-carbon";
+		const router = makeLocalRouter(modelId);
+		const routeId = router.getRouteId(modelId) as string;
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO route_drains (route_id, drained_at, reason, deleted, modified_at) VALUES (?, ?, ?, 0, ?)",
+			[routeId, now, "maintenance", now],
+		);
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("transient-unavailable");
+		expect(resolution.error).not.toContain("Unknown model");
+		expect(resolution.error).toContain(`${routeId}: drained`);
+	});
+
+	it("a model known only through a stale remote host names that host's route", () => {
+		const router = makeLocalRouter("copilot-other-model");
+		const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		const remoteRoute = "remote-stale:bedrock:gemini-4-carbon";
+		db.run(
+			"INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at) VALUES (?, ?, ?, 0, ?, ?)",
+			[
+				"remote-stale",
+				"Stale Host",
+				JSON.stringify([
+					{
+						id: "gemini-4-carbon",
+						route_id: remoteRoute,
+						logical_model: "gemini-4-carbon",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				stale,
+				stale,
+			],
+		);
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("transient-unavailable");
+		expect(resolution.error).not.toContain("Unknown model");
+		expect(resolution.error).not.toContain("No remote inference backends");
+		expect(resolution.error).toContain(
+			`${remoteRoute}: host "Stale Host" offline (last heartbeat ${stale})`,
+		);
+	});
+
+	it("a model known only through a drained remote route names the drain", () => {
+		const router = makeLocalRouter("copilot-other-model");
+		const now = new Date().toISOString();
+		const remoteRoute = "remote-live:bedrock:gemini-4-carbon";
+		db.run(
+			"INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at) VALUES (?, ?, ?, 0, ?, ?)",
+			[
+				"remote-live",
+				"Live Host",
+				JSON.stringify([
+					{
+						id: "gemini-4-carbon",
+						route_id: remoteRoute,
+						logical_model: "gemini-4-carbon",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				now,
+				now,
+			],
+		);
+		db.run(
+			"INSERT INTO route_drains (route_id, drained_at, reason, deleted, modified_at) VALUES (?, ?, ?, 0, ?)",
+			[remoteRoute, now, "maintenance", now],
+		);
+
+		const resolution = resolveModel("gemini-4-carbon", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("transient-unavailable");
+		expect(resolution.error).toContain(`${remoteRoute}: drained`);
+	});
+
+	it("a model registered nowhere keeps the 'Unknown model' text", () => {
+		const router = makeLocalRouter("copilot-gemini-4-carbon");
+		const resolution = resolveModel("retired-model", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind !== "error") return;
+		expect(resolution.reason).toBe("unknown-model");
+		expect(resolution.error).toContain('Unknown model "retired-model"');
+	});
 });
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -166,6 +166,7 @@ export type LoopTerminalOutcome =
 	| "aborted"
 	| "yielded"
 	| "model-resolution-failed"
+	| "model-unavailable"
 	| "model-failed"
 	| "max-turns"
 	| `guard:${string}`

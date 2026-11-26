@@ -485,6 +485,53 @@ describe("ModularAgentLoop", () => {
 		expect((persisted.turns[0] as { status?: string }).status).toBe("error");
 		expect(persisted.alerts).toEqual(["Loop error: fatal"]);
 	});
+
+	it("posts a route-unavailable notice and yields instead of a loop-error alert", async () => {
+		const backend = new MockBackend([]);
+		const { strategy, persisted } = makeHarness(backend);
+		strategy.resolveModel = () => ({
+			kind: "error",
+			error: "no route",
+			unavailable: { notice: "No route available right now; retrying", redrive: true },
+		});
+
+		const result = await new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" }).run();
+
+		expect(result.outcome).toBe("model-unavailable");
+		expect(result.yielded).toBe(true);
+		expect(result.error).toBe("no route");
+		expect(persisted.alerts).toEqual(["No route available right now; retrying"]);
+		expect(persisted.turns).toHaveLength(0);
+	});
+
+	it("ends a no-redrive unavailable resolution without a notice or a yield", async () => {
+		const backend = new MockBackend([]);
+		const { strategy, persisted } = makeHarness(backend);
+		strategy.resolveModel = () => ({
+			kind: "error",
+			error: "no route",
+			unavailable: { redrive: false },
+		});
+
+		const result = await new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" }).run();
+
+		expect(result.outcome).toBe("model-unavailable");
+		expect(result.yielded).toBeUndefined();
+		expect(result.error).toBe("no route");
+		expect(persisted.alerts).toEqual([]);
+	});
+
+	it("ends as aborted without an alert when resolution was aborted", async () => {
+		const backend = new MockBackend([]);
+		const { strategy, persisted } = makeHarness(backend);
+		strategy.resolveModel = () => ({ kind: "error", error: "aborted", aborted: true });
+
+		const result = await new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" }).run();
+
+		expect(result.outcome).toBe("aborted");
+		expect(result.error).toBeUndefined();
+		expect(persisted.alerts).toEqual([]);
+	});
 });
 
 // A backend driven by a per-call script. Each entry is either fixed chunks or a

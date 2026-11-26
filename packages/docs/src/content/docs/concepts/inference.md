@@ -246,16 +246,37 @@ never retried in it. When every route fails, the surfaced error lists each route
 its own cause in order, including a route on another host that the turn failed over to. A model refusal is not a route failure and never fails over.
 
 **Half-open** is the recovery probe. When the wait expires, the route becomes a candidate
-again, but only for a real turn from a new or cold-cache thread — never a warm thread that
-is already working on another route, and never a synthetic health ping. Each host lets at
-most one such trial through at a time. The trial is an ordinary turn that happens to land
-on the recovering route:
+again for one real trial turn per host at a time, never a synthetic health ping. The trial
+comes from a new or cold-cache thread whenever the model has another eligible route. A warm
+thread first moves to a healthy local route for the same model, then to a remote route.
+When the half-open route is the only route for its model, a warm thread takes the trial
+itself instead of waiting for an unrelated cold thread. The trial is an ordinary turn that
+happens to land on the recovering route:
 
 - If it succeeds, the route returns to healthy. The failure count clears after ten minutes
   without another failure.
 - If it fails, the wait doubles again (still capped at four hours) and that turn fails over
   immediately to the next ranked route for the same model, so the trial never costs the
   thread its turn.
+
+**No route available right now.** A model that the cluster still knows about can have every
+route in backoff, drained, on an offline host, or holding its half-open trial for another
+turn. A turn that hits this waits up to two minutes (or the relay inference timeout, if
+shorter) and starts as soon as a route becomes eligible. If no route frees up in that time,
+the thread gets one notice that names each route's state, such as `backoff until <time>`,
+`half-open trial in flight`, `drained`, or `host offline`. The turn does not end in a loop
+error. What happens next depends on who started the turn:
+
+- An interactive thread keeps retrying in two-minute rounds until a route recovers, the
+  operator cancels, or the thread's model changes. A repeat outage does not post the notice
+  again.
+- A scheduled task run ends as failed. The notice says when it runs next: cron and
+  heartbeat tasks at their next scheduled time, deferred tasks after their limited retries,
+  and event tasks on their next event.
+- A cache-warm poke ends quietly.
+
+Cancelling the turn interrupts the wait at once. The `Unknown model` message is reserved for
+a model that no host advertises any more; see [Route and model removal](#route-and-model-removal).
 
 Some failures also raise an operator alert, because they need a human. An expired
 authentication token (`401`) first tries a token refresh; the route only backs off and

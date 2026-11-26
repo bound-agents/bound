@@ -348,6 +348,21 @@ export abstract class ModularAgentLoop {
 			this.resetResilienceState();
 			await this.beforeRun();
 			const resolution = await this.resolveModel();
+			if (resolution.kind === "error" && resolution.aborted) {
+				result = this.result({ outcome: "aborted" });
+				return result;
+			}
+			if (resolution.kind === "error" && resolution.unavailable) {
+				const { notice, redrive } = resolution.unavailable;
+				const error = resolution.error ?? notice ?? "model unavailable";
+				if (notice !== undefined) await this.persistNotice(notice);
+				result = this.result({
+					error,
+					outcome: "model-unavailable",
+					...(redrive ? { yielded: true } : {}),
+				});
+				return result;
+			}
 			if (resolution.kind === "error" || !resolution.modelId) {
 				const error = resolution.error ?? "model resolution failed";
 				await this.persistAlert(`Loop error: ${error}`);
@@ -1366,6 +1381,14 @@ export abstract class ModularAgentLoop {
 	protected abstract recordTurn(metrics: LoopTurnMetrics): Promise<string | null> | string | null;
 
 	protected abstract persistAlert(content: string): Promise<void> | void;
+
+	/**
+	 * Persist an operator notice that does not end the thread's work (a model
+	 * with no eligible route yet). Defaults to the alert channel.
+	 */
+	protected persistNotice(content: string): Promise<void> | void {
+		return this.persistAlert(content);
+	}
 
 	protected shouldAbort(): boolean {
 		return this.aborted;

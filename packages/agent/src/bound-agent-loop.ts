@@ -6,6 +6,7 @@ import {
 	findMessageById,
 	getLatestChangeLogHlcForRows,
 	listLiveMessageProjectionByThreadNewestFirst,
+	listLiveMessagesByThreadNewestFirst,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
@@ -25,6 +26,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import {
 	DEFAULT_SILENCE_TIMEOUT_MS,
 	type LoopGuardReason,
+	type LoopModelResolution,
 	type LoopModelStream,
 	type LoopToolExecutionBatch,
 	type LoopTurnDecision,
@@ -271,6 +273,8 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	private filesChanged = 0;
 	private yielded = false;
 	protected lastModelResolution: ModelResolution | null = null;
+	/** Aborts an in-flight model-resolution wait; set only while one runs. */
+	private resolutionWaitAbort: AbortController | null = null;
 	protected lastContextDebug?: ContextDebugInfo;
 	private loopStartTime = 0;
 	private prevCacheReadTokens = 0;
@@ -470,7 +474,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	protected override async resolveModel(): Promise<
-		BoundPreparedFrame["resolution"] | { kind: "error"; error: string }
+		BoundPreparedFrame["resolution"] | (LoopModelResolution & { kind: "error"; error: string })
 	> {
 		this.setPhase("HYDRATE_FS");
 		const hydrateSpan = getTracer().startSpan("agent-loop.hydrate-fs");
@@ -504,26 +508,70 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			this.requirements,
 			resolvePrefs,
 		);
-		// A stale host row means the requested remote model is known but its relay
-		// is reconnecting. Wait here, at inference dispatch only: resolveModel()
-		// itself remains synchronous for startup, model listing, and validation.
-		// A hintless loop waits too: an omitted hint resolves the default afresh on
-		// every poll, so a self-configuring namespace placeholder that is still
-		// warming up resolves to the default its discovery selects (#296).
-		this.lastModelResolution = await waitForModelResolution({
-			initial: this.lastModelResolution,
-			resolve: () =>
-				resolveModel(
-					hintedModel,
-					this.modelRouter,
-					this.ctx.db,
-					this.ctx.siteId,
-					this.requirements,
-					resolvePrefs,
-				),
-			timeoutMs: Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS),
-			signal: this.config.abortSignal,
-		});
+		// A known model with no eligible route right now (stale relay host, every
+		// route in backoff, half-open trial slot taken, drained, or a warming
+		// self-configuring backend) is transient-unavailable. Wait here, at
+		// inference dispatch only, re-resolving until a route is eligible: route
+		// health promotes backoff to half_open at expiry and a trial release frees
+		// the slot, so each poll sees recovery directly. resolveModel() itself
+		// remains synchronous for startup, model listing, and validation. A
+		// hintless loop waits too: an omitted hint resolves the default afresh on
+		// every poll (#296). Abort and cancel() end the wait.
+		const waitBudgetMs = Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS);
+		const waitAbort = new AbortController();
+		this.resolutionWaitAbort = waitAbort;
+		const onAbort = () => waitAbort.abort();
+		if (this.aborted || this.config.abortSignal?.aborted) waitAbort.abort();
+		this.config.abortSignal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			this.lastModelResolution = await waitForModelResolution({
+				initial: this.lastModelResolution,
+				resolve: () =>
+					resolveModel(
+						hintedModel,
+						this.modelRouter,
+						this.ctx.db,
+						this.ctx.siteId,
+						this.requirements,
+						resolvePrefs,
+					),
+				timeoutMs: waitBudgetMs,
+				signal: waitAbort.signal,
+			});
+		} finally {
+			this.config.abortSignal?.removeEventListener("abort", onAbort);
+			this.resolutionWaitAbort = null;
+		}
+
+		const unresolved = this.lastModelResolution;
+		if (unresolved.kind === "error" && unresolved.reason === "transient-unavailable") {
+			if (waitAbort.signal.aborted) {
+				return { kind: "error", error: "Model resolution aborted", aborted: true };
+			}
+			// The wait ran out with the model still known but unroutable. This is not
+			// a loop error. Who retries depends on the caller: the thread executor
+			// re-drives an interactive thread (only when a wait budget exists, so a
+			// re-drive cannot spin), the scheduler owns a task run's retry, and a
+			// cache-warm poke ends quietly.
+			const mode = this.routeUnavailableRetryMode(waitBudgetMs);
+			return {
+				kind: "error",
+				error: unresolved.error,
+				unavailable: {
+					...(mode.kind === "quiet"
+						? {}
+						: {
+								notice: formatRouteUnavailableNotice(
+									hintedModel ?? this.config.modelId ?? "default",
+									unresolved,
+									waitBudgetMs,
+									mode,
+								),
+							}),
+					redrive: mode.kind === "thread",
+				},
+			};
+		}
 
 		if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
 			// No same-tier (or any-model) substitution: under the routing redesign
@@ -563,6 +611,48 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	protected override persistAlert(content: string): void {
+		this.emitAlert(content);
+	}
+
+	/**
+	 * Who retries a turn whose model had no eligible route for the whole wait.
+	 * A cache-warm poke (tool-less) ends quietly. A scheduled task run is the
+	 * scheduler's to retry, so the notice says the run failed and when the task
+	 * fires again. An interactive thread is re-driven by the thread executor,
+	 * but only when the wait budget is positive: with no wait, a re-drive would
+	 * spin, so the operator retries by sending a message.
+	 */
+	private routeUnavailableRetryMode(waitBudgetMs: number): RouteUnavailableRetryMode {
+		if (this.config.noTools) return { kind: "quiet" };
+		if (this.config.taskId) return { kind: "task", taskType: this.config.taskType };
+		if (waitBudgetMs <= 0) return { kind: "manual" };
+		return { kind: "thread" };
+	}
+
+	/**
+	 * A later round that finds the same outage does not repeat the notice: skip
+	 * it when the thread's newest alert or assistant message is already this
+	 * notice. Wakeup, user, and tool messages in between do not count, so a
+	 * re-fired task run stays quiet too.
+	 */
+	protected override persistNotice(content: string): void {
+		const identity = noticeIdentity(content);
+		const recent = listLiveMessagesByThreadNewestFirst(this.ctx.db, this.config.threadId, 50);
+		let lastSpoken: (typeof recent)[number] | undefined;
+		for (let i = recent.length - 1; i >= 0; i--) {
+			const message = recent[i];
+			if (message.role === "alert" || message.role === "assistant") {
+				lastSpoken = message;
+				break;
+			}
+		}
+		if (
+			identity !== null &&
+			lastSpoken?.role === "alert" &&
+			noticeIdentity(lastSpoken.content) === identity
+		) {
+			return;
+		}
 		this.emitAlert(content);
 	}
 
@@ -2777,8 +2867,63 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 
 	cancel(): void {
 		this.aborted = true;
+		this.resolutionWaitAbort?.abort();
 		this.ctx.logger.info("Agent loop cancelled");
 	}
+}
+
+const ROUTE_UNAVAILABLE_NOTICE_PREFIX = "No route available right now for model";
+
+type RouteUnavailableRetryMode =
+	{ kind: "thread" } | { kind: "task"; taskType?: string } | { kind: "manual" } | { kind: "quiet" };
+
+/**
+ * The operator notice for a model that is known in the cluster but had no
+ * eligible route for the whole wait budget. States the route conditions, the
+ * earliest backoff expiry when one is known, and who retries and when.
+ */
+function formatRouteUnavailableNotice(
+	modelId: string,
+	resolution: { error: string; earliestRecovery?: number },
+	waitBudgetMs: number,
+	mode: Exclude<RouteUnavailableRetryMode, { kind: "quiet" }>,
+): string {
+	const retryAt =
+		resolution.earliestRecovery !== undefined
+			? ` The earliest route backoff ends at ${new Date(resolution.earliestRecovery).toISOString()}.`
+			: "";
+	const waited = waitBudgetMs > 0 ? ` Waited ${Math.round(waitBudgetMs / 1000)}s.` : "";
+	return `${ROUTE_UNAVAILABLE_NOTICE_PREFIX} "${modelId}". ${resolution.error}${waited}${retryAt} ${routeUnavailableRetryText(mode)}`;
+}
+
+function routeUnavailableRetryText(
+	mode: Exclude<RouteUnavailableRetryMode, { kind: "quiet" }>,
+): string {
+	switch (mode.kind) {
+		case "thread":
+			return "This thread retries automatically and resumes as soon as a route is eligible. Cancel the turn to stop waiting, or pick another model for this thread.";
+		case "manual":
+			return "Send a new message to retry once a route is eligible, or pick another model for this thread.";
+		case "task": {
+			const type = mode.taskType ?? "scheduled";
+			const next =
+				mode.taskType === "cron" || mode.taskType === "heartbeat"
+					? "The scheduler runs it again at its next scheduled time."
+					: mode.taskType === "deferred"
+						? "The scheduler retries it with backoff a limited number of times, then leaves it failed."
+						: mode.taskType === "event"
+							? "It runs again on the task's next event."
+							: "The scheduler's retry policy for the task decides the next run.";
+			return `This ${type} task run ends as failed. ${next}`;
+		}
+	}
+}
+
+/** The model a route-unavailable notice names, or null for any other content. */
+function noticeIdentity(content: string): string | null {
+	if (!content.startsWith(ROUTE_UNAVAILABLE_NOTICE_PREFIX)) return null;
+	const match = /^No route available right now for model "([^"]*)"/.exec(content);
+	return match ? match[1] : null;
 }
 
 /**

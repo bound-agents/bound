@@ -13,7 +13,9 @@ import {
 	computeEffectiveCacheWindowMs,
 	findClusterConfigValueByKey,
 	findLatestOkTurnRouteByThread,
+	isHostFresh,
 	listAllHostModels,
+	listRemoteHostModelLiveness,
 } from "@bound/core";
 import {
 	type ClusterModelRoles,
@@ -525,11 +527,114 @@ export function resolveModel(
 	// → retry). Liveness is deliberately ignored here: an offline host that still
 	// advertises the model means the model may return when the host reconnects.
 	const knownInCluster = isModelRegisteredInCluster(effectiveModelId, modelRouter, db);
+	if (knownInCluster) {
+		const routes = describeUnavailableLocalRoutes(effectiveModelId, modelRouter, drainedRouteIds);
+		routes.states.push(
+			...describeUnavailableRemoteRoutes(effectiveModelId, db, localSiteId, drainedRouteIds),
+		);
+		// Named route states say why; the generic remote error is the fallback only
+		// when no route condition could be named.
+		const routeDetail =
+			routes.states.length > 0 ? `: ${routes.states.join("; ")}.` : `. ${remoteResult.error}`;
+		return {
+			kind: "error",
+			error: `Model "${effectiveModelId}" is known in the cluster, but no route can serve it right now${routeDetail}`,
+			reason: "transient-unavailable",
+			...(routes.earliestRecovery !== null ? { earliestRecovery: routes.earliestRecovery } : {}),
+		};
+	}
 	return {
 		kind: "error",
 		error: `Unknown model "${effectiveModelId}". Local backends: [${localIds.join(", ")}]. ${remoteResult.error}`,
-		reason: knownInCluster ? "transient-unavailable" : "unknown-model",
+		reason: "unknown-model",
 	};
+}
+
+/**
+ * Names why each local route serving `modelId` is ineligible right now (drained,
+ * backoff until a timestamp, half-open with its trial slot taken), plus the
+ * earliest backoff expiry among them. Healthy routes are omitted: they are not
+ * the reason resolution failed.
+ */
+function describeUnavailableLocalRoutes(
+	modelId: string,
+	modelRouter: ModelRouter,
+	drainedRouteIds: Set<string>,
+): { states: string[]; earliestRecovery: number | null } {
+	const states: string[] = [];
+	let earliestRecovery: number | null = null;
+	for (const id of modelRouter.listLocalBackendIdsForHint(modelId)) {
+		const routeId = modelRouter.getRouteId(id);
+		const label = routeId ?? id;
+		if (routeId && drainedRouteIds.has(routeId)) {
+			states.push(`${label}: drained`);
+			continue;
+		}
+		const state = modelRouter.getRouteHealthState(id);
+		if (state.status === "backoff") {
+			states.push(`${label}: backoff until ${new Date(state.next_trial_at).toISOString()}`);
+			if (earliestRecovery === null || state.next_trial_at < earliestRecovery) {
+				earliestRecovery = state.next_trial_at;
+			}
+		} else if (state.status === "half_open") {
+			states.push(
+				state.trial_in_flight
+					? `${label}: half-open trial in flight`
+					: `${label}: half-open, trial reserved for a new or cold thread`,
+			);
+		}
+	}
+	return { states, earliestRecovery };
+}
+
+/**
+ * Names why each remote route advertising `modelId` is ineligible right now:
+ * drained, or its host offline (stale heartbeat). Fresh, undrained routes are
+ * omitted; they failed for a reason findEligibleHostsByModel already states
+ * (capability or context-window filtering).
+ */
+function describeUnavailableRemoteRoutes(
+	modelId: string,
+	db: Database,
+	localSiteId: string,
+	drainedRouteIds: Set<string>,
+): string[] {
+	const states: string[] = [];
+	for (const row of listRemoteHostModelLiveness(db, localSiteId)) {
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+		const fresh = isHostFresh(row);
+		for (const entry of rawModels) {
+			const hostEntry: HostModelEntry | null =
+				typeof entry === "string"
+					? { id: entry }
+					: entry && typeof entry === "object" && typeof (entry as HostModelEntry).id === "string"
+						? (entry as HostModelEntry)
+						: null;
+			if (!hostEntry) continue;
+			const matches =
+				hostEntry.id === modelId ||
+				hintMatchesLogicalModel(
+					modelId,
+					hostEntry.logical_model ?? hostEntry.id,
+					normalizeModelKey,
+				);
+			if (!matches) continue;
+			const label = hostEntry.route_id ?? `${row.host_name}:${hostEntry.id}`;
+			if (hostEntry.route_id && drainedRouteIds.has(hostEntry.route_id)) {
+				states.push(`${label}: drained`);
+			} else if (!fresh) {
+				const lastSeen = row.modified_at ?? row.online_at ?? "never";
+				states.push(`${label}: host "${row.host_name}" offline (last heartbeat ${lastSeen})`);
+			}
+		}
+	}
+	return states;
 }
 
 /**
