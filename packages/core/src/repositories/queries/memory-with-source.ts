@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads that resolve a `semantic_memory` entry's source pointer
@@ -32,28 +33,40 @@ export interface MemoryWithSourceAndDeletedRow extends MemoryWithSourceRow {
 	deleted: number;
 }
 
-const MEMORY_SOURCE_COLUMNS = `t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title`;
+const MEMORY_SOURCE_COLUMNS = [
+	"t_src.trigger_spec as task_name",
+	"th_src.id as thread_id",
+	"th_src.title as thread_title",
+] as const;
 
-const MEMORY_SOURCE_JOIN = `LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-		 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0`;
+/**
+ * `semantic_memory m` LEFT JOINed to the live `tasks` / `threads` row its
+ * `source` names.
+ */
+function memoryWithSourceJoins() {
+	return queryBuilder
+		.selectFrom("semantic_memory as m")
+		.leftJoin("tasks as t_src", (join) =>
+			join.onRef("m.source", "=", "t_src.id").on("t_src.deleted", "=", 0),
+		)
+		.leftJoin("threads as th_src", (join) =>
+			join.onRef("m.source", "=", "th_src.id").on("th_src.deleted", "=", 0),
+		);
+}
 
 /**
  * L0 — all pinned entries with resolved source, ordered `m.key ASC`.
  */
 export function listPinnedMemoryWithSource(db: Database): MemoryWithSourceRow[] {
-	return db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        ${MEMORY_SOURCE_COLUMNS}
-			 FROM semantic_memory m
-			 ${MEMORY_SOURCE_JOIN}
-			 WHERE m.deleted = 0
-			   AND m.tier = 'pinned'
-			 ORDER BY m.key ASC`,
-		)
-		.all() as MemoryWithSourceRow[];
+	return getAll(
+		db,
+		memoryWithSourceJoins()
+			.select(["m.key", "m.value", "m.source", "m.modified_at", "m.tier", ...MEMORY_SOURCE_COLUMNS])
+			.where("m.deleted", "=", 0)
+			.where("m.tier", "=", "pinned")
+			.orderBy("m.key", "asc")
+			.$narrowType<{ tier: string }>(),
+	);
 }
 
 /**
@@ -61,16 +74,16 @@ export function listPinnedMemoryWithSource(db: Database): MemoryWithSourceRow[] 
  * `m.modified_at DESC, m.key ASC`.
  */
 export function listSummaryMemoryWithSource(db: Database): MemoryWithSourceRow[] {
-	return db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        ${MEMORY_SOURCE_COLUMNS}
-			 FROM semantic_memory m
-			 ${MEMORY_SOURCE_JOIN}
-			 WHERE m.tier = 'summary' AND m.deleted = 0
-			 ORDER BY m.modified_at DESC, m.key ASC`,
-		)
-		.all() as MemoryWithSourceRow[];
+	return getAll(
+		db,
+		memoryWithSourceJoins()
+			.select(["m.key", "m.value", "m.source", "m.modified_at", "m.tier", ...MEMORY_SOURCE_COLUMNS])
+			.where("m.tier", "=", "summary")
+			.where("m.deleted", "=", 0)
+			.orderBy("m.modified_at", "desc")
+			.orderBy("m.key", "asc")
+			.$narrowType<{ tier: string }>(),
+	);
 }
 
 /**
@@ -82,17 +95,26 @@ export function listSummaryChildrenWithSource(
 	db: Database,
 	summaryKey: string,
 ): MemoryWithSourceRow[] {
-	return db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        ${MEMORY_SOURCE_COLUMNS}
-			 FROM memory_edges e
-			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-			 ${MEMORY_SOURCE_JOIN}
-			 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
-			 ORDER BY m.key ASC`,
-		)
-		.all(summaryKey) as MemoryWithSourceRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges as e")
+			.innerJoin("semantic_memory as m", (join) =>
+				join.onRef("m.key", "=", "e.target_key").on("m.deleted", "=", 0),
+			)
+			.leftJoin("tasks as t_src", (join) =>
+				join.onRef("m.source", "=", "t_src.id").on("t_src.deleted", "=", 0),
+			)
+			.leftJoin("threads as th_src", (join) =>
+				join.onRef("m.source", "=", "th_src.id").on("th_src.deleted", "=", 0),
+			)
+			.select(["m.key", "m.value", "m.source", "m.modified_at", "m.tier", ...MEMORY_SOURCE_COLUMNS])
+			.where("e.source_key", "=", summaryKey)
+			.where("e.relation", "=", "summarizes")
+			.where("e.deleted", "=", 0)
+			.orderBy("m.key", "asc")
+			.$narrowType<{ tier: string }>(),
+	);
 }
 
 /**
@@ -105,18 +127,12 @@ export function listMemorySourceInfoByKeys(
 	keys: string[],
 ): Array<Pick<MemoryWithSourceRow, "key" | "task_name" | "thread_id" | "thread_title">> {
 	if (keys.length === 0) return [];
-	const placeholders = keys.map(() => "?").join(",");
-	return db
-		.prepare(
-			`SELECT m.key,
-			        ${MEMORY_SOURCE_COLUMNS}
-			 FROM semantic_memory m
-			 ${MEMORY_SOURCE_JOIN}
-			 WHERE m.key IN (${placeholders})`,
-		)
-		.all(...keys) as Array<
-		Pick<MemoryWithSourceRow, "key" | "task_name" | "thread_id" | "thread_title">
-	>;
+	return getAll(
+		db,
+		memoryWithSourceJoins()
+			.select(["m.key", ...MEMORY_SOURCE_COLUMNS])
+			.where("m.key", "in", keys),
+	);
 }
 
 /**
@@ -131,23 +147,40 @@ export function listRecencyMemoryWithSource(
 	baseline: string,
 	limit: number,
 ): MemoryWithSourceAndDeletedRow[] {
-	return db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier, m.deleted,
-			        ${MEMORY_SOURCE_COLUMNS}
-			 FROM semantic_memory m
-			 ${MEMORY_SOURCE_JOIN}
-			 WHERE m.modified_at > ?
-			   AND m.key NOT LIKE '_internal.%'
-			   AND (
-			     m.tier NOT IN ('detail', 'pinned', 'summary')
-			     OR (m.tier = 'detail' AND NOT EXISTS (
-			       SELECT 1 FROM memory_edges e
-			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-			     ))
-			   )
-			 ORDER BY m.modified_at DESC
-			 LIMIT ?`,
-		)
-		.all(baseline, limit) as MemoryWithSourceAndDeletedRow[];
+	return getAll(
+		db,
+		memoryWithSourceJoins()
+			.select([
+				"m.key",
+				"m.value",
+				"m.source",
+				"m.modified_at",
+				"m.tier",
+				"m.deleted",
+				...MEMORY_SOURCE_COLUMNS,
+			])
+			.where("m.modified_at", ">", baseline)
+			.where("m.key", "not like", "_internal.%")
+			.where((eb) =>
+				eb.or([
+					eb("m.tier", "not in", ["detail", "pinned", "summary"]),
+					eb.and([
+						eb("m.tier", "=", "detail"),
+						eb.not(
+							eb.exists(
+								eb
+									.selectFrom("memory_edges as e")
+									.select(eb.lit(1).as("one"))
+									.whereRef("e.target_key", "=", "m.key")
+									.where("e.relation", "=", "summarizes")
+									.where("e.deleted", "=", 0),
+							),
+						),
+					]),
+				]),
+			)
+			.orderBy("m.modified_at", "desc")
+			.limit(limit)
+			.$narrowType<{ tier: string; deleted: number }>(),
+	);
 }

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getAll, getOne, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads joining `webhooks` to its linked event `tasks` row. The
@@ -32,31 +33,34 @@ export interface WebhookWithTaskRow {
  * LEFT JOIN tasks so a webhook with no/soft-deleted task still returns, with
  * null prompt/model_hint and no_history coerced to 0.
  */
-const WEBHOOK_WITH_TASK_SELECT = `SELECT
-		w.id,
-		w.name,
-		w.signature_format,
-		w.description,
-		w.task_id,
-		w.thread_id,
-		w.created_at,
-		w.modified_at,
-		t.system_prompt_addition AS prompt,
-		t.model_hint AS model_hint,
-		CASE WHEN t.no_history = 1 THEN 1 ELSE 0 END AS no_history
-	FROM webhooks w
-	LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
+function selectWebhookWithTask() {
+	return queryBuilder
+		.selectFrom("webhooks as w")
+		.leftJoin("tasks as t", (join) => join.onRef("t.id", "=", "w.task_id").on("t.deleted", "=", 0))
+		.select((eb) => [
+			"w.id",
+			"w.name",
+			"w.signature_format",
+			"w.description",
+			"w.task_id",
+			"w.thread_id",
+			"w.created_at",
+			"w.modified_at",
+			"t.system_prompt_addition as prompt",
+			"t.model_hint as model_hint",
+			eb.case().when("t.no_history", "=", 1).then(1).else(0).end().as("no_history"),
+		]);
+}
 
 export function listWebhooksWithTask(db: Database): WebhookWithTaskRow[] {
-	return db
-		.prepare(`${WEBHOOK_WITH_TASK_SELECT} WHERE w.deleted = 0 ORDER BY w.created_at DESC`)
-		.all() as WebhookWithTaskRow[];
+	return getAll(
+		db,
+		selectWebhookWithTask().where("w.deleted", "=", 0).orderBy("w.created_at", "desc"),
+	);
 }
 
 export function getWebhookWithTaskById(db: Database, id: string): WebhookWithTaskRow | null {
-	return db
-		.prepare(`${WEBHOOK_WITH_TASK_SELECT} WHERE w.id = ? AND w.deleted = 0`)
-		.get(id) as WebhookWithTaskRow | null;
+	return getOne(db, selectWebhookWithTask().where("w.id", "=", id).where("w.deleted", "=", 0));
 }
 
 /**
@@ -64,10 +68,7 @@ export function getWebhookWithTaskById(db: Database, id: string): WebhookWithTas
  * filter: the create/update routes re-read the row they just wrote.
  */
 export function findWebhookResponseById(db: Database, id: string): Record<string, unknown> | null {
-	return db.prepare(`${WEBHOOK_WITH_TASK_SELECT} WHERE w.id = ?`).get(id) as Record<
-		string,
-		unknown
-	> | null;
+	return getOne(db, selectWebhookWithTask().where("w.id", "=", id));
 }
 
 /**
@@ -84,18 +85,22 @@ export interface WebhookListItemRow {
 }
 
 export function listWebhooksForCli(db: Database): WebhookListItemRow[] {
-	return db
-		.prepare(
-			`SELECT w.name AS name,
-			        w.signature_format AS signature_format,
-			        w.description AS description,
-			        w.created_at AS created_at,
-			        t.model_hint AS model_hint,
-			        t.no_history AS no_history
-			 FROM webhooks w
-			 LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0
-			 WHERE w.deleted = 0
-			 ORDER BY w.created_at DESC`,
-		)
-		.all() as WebhookListItemRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("webhooks as w")
+			.leftJoin("tasks as t", (join) =>
+				join.onRef("t.id", "=", "w.task_id").on("t.deleted", "=", 0),
+			)
+			.select([
+				"w.name as name",
+				"w.signature_format as signature_format",
+				"w.description as description",
+				"w.created_at as created_at",
+				"t.model_hint as model_hint",
+				"t.no_history as no_history",
+			])
+			.where("w.deleted", "=", 0)
+			.orderBy("w.created_at", "desc"),
+	);
 }

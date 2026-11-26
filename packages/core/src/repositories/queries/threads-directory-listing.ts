@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type { Thread } from "@bound/shared";
+import { type ExpressionBuilder, sql } from "kysely";
+import type { BoundDatabase } from "../../db-types";
+import { getAll, getOne, queryBuilder } from "../../query-builder";
 import { attachedSessionLabelsSql } from "./sql-fragments";
 
 /**
@@ -18,19 +21,32 @@ export interface ThreadsDirectoryRow extends Thread {
 	hasRunningTask: number;
 }
 
+type ThreadsAliased = BoundDatabase & { t: BoundDatabase["threads"] };
+
 /**
  * Directory filter shared by {@link listThreadsDirectory} and
  * {@link countThreadsDirectory} so the "N threads" total always agrees with the
- * visible list. Binds `userId, includeEmpty ? 1 : 0`.
+ * visible list.
  */
-const THREADS_DIRECTORY_WHERE = `WHERE t.deleted = 0 AND t.user_id = ? AND t.agent_id IS NULL
-			AND (
-				? = 1
-				OR EXISTS(
-					SELECT 1 FROM messages m
-					WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
-				)
-			)`;
+function threadsDirectoryFilter(userId: string, includeEmpty: boolean) {
+	return (eb: ExpressionBuilder<ThreadsAliased, "t">) =>
+		eb.and([
+			eb("t.deleted", "=", 0),
+			eb("t.user_id", "=", userId),
+			eb("t.agent_id", "is", null),
+			eb.or([
+				eb(eb.val(includeEmpty ? 1 : 0), "=", 1),
+				eb.exists(
+					eb
+						.selectFrom("messages as m")
+						.select(eb.lit(1).as("one"))
+						.whereRef("m.thread_id", "=", "t.id")
+						.where("m.role", "=", "user")
+						.where("m.deleted", "=", 0),
+				),
+			]),
+		]);
+}
 
 /**
  * List threads for a user, decorated with message count, last model, attached
@@ -59,41 +75,61 @@ export function listThreadsDirectory(
 	},
 ): ThreadsDirectoryRow[] {
 	const { userId, includeEmpty, beforeTs, beforeId, limit } = args;
-	const hasCursor = beforeTs !== null && beforeId !== null;
 
-	const cursorClause = hasCursor
-		? "AND (t.last_message_at < ? OR (t.last_message_at = ? AND t.id < ?))"
-		: "";
-	const limitClause = limit !== null ? "LIMIT ?" : "";
-
-	const sql = `
-		SELECT t.*,
-			(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
-			(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.created_at DESC LIMIT 1) as lastModel,
-			(
+	const query = queryBuilder
+		.selectFrom("threads as t")
+		.selectAll("t")
+		.select((eb) => [
+			eb
+				.selectFrom("messages as m")
+				.select(eb.fn.countAll<number>().as("n"))
+				.whereRef("m.thread_id", "=", "t.id")
+				.where("m.deleted", "=", 0)
+				.$asScalar()
+				.$notNull()
+				.as("messageCount"),
+			eb
+				.selectFrom("turns as tu")
+				.select("tu.model_id")
+				.whereRef("tu.thread_id", "=", "t.id")
+				.orderBy("tu.created_at", "desc")
+				.limit(1)
+				.$asScalar()
+				.as("lastModel"),
+			sql<string | null>`(
 				SELECT COALESCE(json_group_array(label), '[]')
-				FROM (${attachedSessionLabelsSql("t.id")})
-			) as attachedSessionHostsJson,
-			EXISTS(
-				SELECT 1 FROM tasks
-				WHERE thread_id = t.id AND status = 'running' AND deleted = 0
-			) as hasRunningTask
-		FROM threads t
-		${THREADS_DIRECTORY_WHERE}
-			${cursorClause}
-		ORDER BY t.last_message_at DESC, t.id DESC
-		${limitClause}
-	`;
+				FROM (${sql.raw(attachedSessionLabelsSql("t.id"))})
+			)`.as("attachedSessionHostsJson"),
+			eb
+				.exists(
+					eb
+						.selectFrom("tasks")
+						.select(eb.lit(1).as("one"))
+						.whereRef("tasks.thread_id", "=", "t.id")
+						.where("tasks.status", "=", "running")
+						.where("tasks.deleted", "=", 0),
+				)
+				.$castTo<number>()
+				.as("hasRunningTask"),
+		])
+		.where(threadsDirectoryFilter(userId, includeEmpty))
+		.$if(beforeTs !== null && beforeId !== null, (qb) =>
+			qb.where((eb) =>
+				eb.or([
+					eb("t.last_message_at", "<", beforeTs as string),
+					eb.and([
+						eb("t.last_message_at", "=", beforeTs as string),
+						eb("t.id", "<", beforeId as string),
+					]),
+				]),
+			),
+		)
+		.orderBy("t.last_message_at", "desc")
+		.orderBy("t.id", "desc")
+		.$if(limit !== null, (qb) => qb.limit(limit as number))
+		.$narrowType<{ color: number; deleted: number }>();
 
-	const params: Array<string | number> = [userId, includeEmpty ? 1 : 0];
-	if (hasCursor) {
-		params.push(beforeTs as string, beforeTs as string, beforeId as string);
-	}
-	if (limit !== null) {
-		params.push(limit);
-	}
-
-	return db.query(sql).all(...params) as ThreadsDirectoryRow[];
+	return getAll(db, query);
 }
 
 /** Count of threads matching {@link listThreadsDirectory}'s filter, ignoring cursor and limit. */
@@ -101,7 +137,11 @@ export function countThreadsDirectory(
 	db: Database,
 	args: { userId: string; includeEmpty: boolean },
 ): { total: number } | null {
-	return db
-		.query(`SELECT COUNT(*) as total FROM threads t ${THREADS_DIRECTORY_WHERE}`)
-		.get(args.userId, args.includeEmpty ? 1 : 0) as { total: number } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads as t")
+			.select((eb) => eb.fn.countAll<number>().as("total"))
+			.where(threadsDirectoryFilter(args.userId, args.includeEmpty)),
+	);
 }

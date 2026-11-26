@@ -1,32 +1,40 @@
 import type { Database } from "bun:sqlite";
 import type { Task } from "@bound/shared";
+import type { NotNull } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
+
+/** `SELECT *` over `tasks`, typed as the shared `Task` domain row (narrower unions than the schema's TEXT columns). */
+function selectTaskRows() {
+	return queryBuilder.selectFrom("tasks").selectAll().$castTo<Task>();
+}
 
 export function findTaskById(db: Database, id: string): Task | null {
-	return db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task | null;
+	return getOne(db, selectTaskRows().where("id", "=", id));
 }
 
 export function findActiveTaskById(db: Database, id: string): Task | null {
-	return db.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0").get(id) as Task | null;
+	return getOne(db, selectTaskRows().where("id", "=", id).where("deleted", "=", 0));
 }
 
 export function findTaskExistenceById(
 	db: Database,
 	id: string,
 ): { id: string; deleted: number } | null {
-	return db.query("SELECT id, deleted FROM tasks WHERE id = ?").get(id) as {
-		id: string;
-		deleted: number;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select(["id", "deleted"])
+			.where("id", "=", id)
+			.$narrowType<{ deleted: NotNull }>(),
+	);
 }
 
 export function findTaskIdAndStatusById(
 	db: Database,
 	id: string,
 ): { id: string; status: string } | null {
-	return db.query("SELECT id, status FROM tasks WHERE id = ?").get(id) as {
-		id: string;
-		status: string;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("tasks").select(["id", "status"]).where("id", "=", id));
 }
 
 export function findTaskClaimById(
@@ -38,71 +46,83 @@ export function findTaskClaimById(
 	status: string;
 	deleted: number;
 } | null {
-	return db
-		.query("SELECT claimed_by, lease_id, status, deleted FROM tasks WHERE id = ?")
-		.get(id) as {
-		claimed_by: string | null;
-		lease_id: string | null;
-		status: string;
-		deleted: number;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select(["claimed_by", "lease_id", "status", "deleted"])
+			.where("id", "=", id)
+			.$narrowType<{ deleted: NotNull }>(),
+	);
 }
 
 export function findTaskIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM tasks WHERE id = ?").get(id) as { id: string } | null;
+	return getOne(db, queryBuilder.selectFrom("tasks").select("id").where("id", "=", id));
 }
 
 export function findTaskClaimedAtById(
 	db: Database,
 	id: string,
 ): { claimed_at: string | null } | null {
-	return db.query("SELECT claimed_at FROM tasks WHERE id = ?").get(id) as {
-		claimed_at: string | null;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("tasks").select("claimed_at").where("id", "=", id));
 }
 
 export function findActiveTaskPayloadById(
 	db: Database,
 	id: string,
 ): { payload: string | null } | null {
-	return db.query("SELECT payload FROM tasks WHERE id = ? AND deleted = 0").get(id) as {
-		payload: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select("payload")
+			.where("id", "=", id)
+			.where("deleted", "=", 0),
+	);
 }
 
 export function findTaskRunTimestampsById(
 	db: Database,
 	id: string,
 ): { last_run_at: string | null; created_at: string } | null {
-	return db.prepare("SELECT last_run_at, created_at FROM tasks WHERE id = ?").get(id) as {
-		last_run_at: string | null;
-		created_at: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("tasks").select(["last_run_at", "created_at"]).where("id", "=", id),
+	);
 }
 
 export function listActiveTasks(db: Database, status?: string): Task[] {
-	let query = "SELECT * FROM tasks WHERE deleted = 0";
-	const params: string[] = [];
-	if (status) {
-		query += " AND status = ?";
-		params.push(status);
-	}
-	query += " ORDER BY created_at DESC";
-	return db.query(query).all(...params) as Task[];
+	return getAll(
+		db,
+		selectTaskRows()
+			.where("deleted", "=", 0)
+			.$if(Boolean(status), (qb) => qb.where("status", "=", status as string))
+			.orderBy("created_at", "desc"),
+	);
 }
 
 export function countRunningTasks(db: Database): { count: number } | null {
-	return db
-		.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'running' AND deleted = 0")
-		.get() as { count: number } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("status", "=", "running")
+			.where("deleted", "=", 0),
+	);
 }
 
 export function findRunningTaskIdForThread(db: Database, threadId: string): { id: string } | null {
-	return db
-		.query(
-			"SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' AND deleted = 0 LIMIT 1",
-		)
-		.get(threadId) as { id: string } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select("id")
+			.where("thread_id", "=", threadId)
+			.where("status", "=", "running")
+			.where("deleted", "=", 0)
+			.limit(1),
+	);
 }
 
 /** Most recently created task's type/no_history/system_prompt_addition for `threadId` — used to inherit those settings for a follow-up wakeup on the same thread. */
@@ -115,22 +135,29 @@ export function findLatestTaskSettingsForThread(
 	no_history: number;
 	system_prompt_addition: string | null;
 } | null {
-	return db
-		.query(
-			"SELECT id, type, no_history, system_prompt_addition FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as {
-		id: string;
-		type: string;
-		no_history: number;
-		system_prompt_addition: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select(["id", "type", "no_history", "system_prompt_addition"])
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.orderBy("created_at", "desc")
+			.limit(1)
+			.$narrowType<{ no_history: NotNull }>(),
+	);
 }
 
 export function listActiveTasksWithPayload(
 	db: Database,
 ): { id: string; payload: string; thread_id: string | null }[] {
-	return db
-		.prepare("SELECT id, payload, thread_id FROM tasks WHERE deleted = 0 AND payload IS NOT NULL")
-		.all() as { id: string; payload: string; thread_id: string | null }[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select(["id", "payload", "thread_id"])
+			.where("deleted", "=", 0)
+			.where("payload", "is not", null)
+			.$narrowType<{ payload: NotNull }>(),
+	);
 }

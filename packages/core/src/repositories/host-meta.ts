@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
+import { getOne, queryBuilder } from "../query-builder";
 
 /** Single-table access for the local, unsynced `host_meta` key/value table. */
 export function getHostMetaValue(db: Database, key: string): string | null {
-	const row = db.query("SELECT value FROM host_meta WHERE key = ?").get(key) as {
-		value: string;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder.selectFrom("host_meta").select("value").where("key", "=", key),
+	);
 	return row?.value ?? null;
 }
 

@@ -1,21 +1,30 @@
 import type { Database } from "bun:sqlite";
-import { agentNamespace } from "./queries/sql-fragments";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /** Includes soft-deleted tombstones. */
 export function findEdgeDeletedStateById(
 	db: Database,
 	id: string,
 ): { id: string; deleted: number } | null {
-	return db.prepare("SELECT id, deleted FROM memory_edges WHERE id = ?").get(id) as {
-		id: string;
-		deleted: number;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges")
+			.select(["id", "deleted"])
+			.where("id", "=", id)
+			.$narrowType<{ deleted: number }>(),
+	);
 }
 
 export function findActiveEdgeIdById(db: Database, id: string): { id: string } | null {
-	return db.prepare("SELECT id FROM memory_edges WHERE id = ? AND deleted = 0").get(id) as {
-		id: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges")
+			.select("id")
+			.where("id", "=", id)
+			.where("deleted", "=", 0),
+	);
 }
 
 export function listActiveEdgeIdsBySourceAndTarget(
@@ -24,12 +33,16 @@ export function listActiveEdgeIdsBySourceAndTarget(
 	targetKey: string,
 	agentId: string | null = null,
 ): Array<{ id: string }> {
-	const ns = agentNamespace(agentId);
-	return db
-		.prepare(
-			`SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0 AND agent_id ${ns.sql}`,
-		)
-		.all(sourceKey, targetKey, ...ns.params) as Array<{ id: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges")
+			.select("id")
+			.where("source_key", "=", sourceKey)
+			.where("target_key", "=", targetKey)
+			.where("deleted", "=", 0)
+			.where("agent_id", agentId === null ? "is" : "=", agentId),
+	);
 }
 
 /** Active edge ids referencing a key as either source or target. */
@@ -38,12 +51,15 @@ export function listActiveEdgeIdsReferencingKey(
 	memoryKey: string,
 	agentId: string | null = null,
 ): Array<{ id: string }> {
-	const ns = agentNamespace(agentId);
-	return db
-		.prepare(
-			`SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0 AND agent_id ${ns.sql}`,
-		)
-		.all(memoryKey, memoryKey, ...ns.params) as Array<{ id: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges")
+			.select("id")
+			.where((eb) => eb.or([eb("source_key", "=", memoryKey), eb("target_key", "=", memoryKey)]))
+			.where("deleted", "=", 0)
+			.where("agent_id", agentId === null ? "is" : "=", agentId),
+	);
 }
 
 /** (child -> parent) pairs for the given detail keys via incoming active `summarizes` edges. */
@@ -51,14 +67,13 @@ export function listSummarizesParentsByChildKeys(
 	db: Database,
 	targetKeys: readonly string[],
 ): Array<{ child: string; parent: string }> {
-	const placeholders = targetKeys.map(() => "?").join(",");
-	return db
-		.prepare(
-			`SELECT e.target_key AS child, e.source_key AS parent
-			 FROM memory_edges e
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.target_key IN (${placeholders})`,
-		)
-		.all(...targetKeys) as Array<{ child: string; parent: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("memory_edges as e")
+			.select(["e.target_key as child", "e.source_key as parent"])
+			.where("e.relation", "=", "summarizes")
+			.where("e.deleted", "=", 0)
+			.where("e.target_key", "in", targetKeys),
+	);
 }

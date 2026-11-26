@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import type { NotNull } from "kysely";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table read joining `tasks` to `hosts` to resolve the host display name
@@ -29,17 +31,30 @@ export function listRecentTaskRunsWithHost(
 	baseline: string,
 	limit: number,
 ): RecentTaskRunWithHostRow[] {
-	return db
-		.prepare(
-			`SELECT t.id, t.type, t.trigger_spec, t.last_run_at, t.run_count, t.consecutive_failures, t.claimed_by,
-			        h.host_name
-			 FROM   tasks t
-			 LEFT JOIN hosts h ON t.claimed_by = h.site_id AND h.deleted = 0
-			 WHERE  t.last_run_at > ?
-			   AND  t.last_run_at IS NOT NULL
-			   AND  t.deleted = 0
-			 ORDER  BY t.last_run_at DESC
-			 LIMIT  ?`,
-		)
-		.all(baseline, limit) as RecentTaskRunWithHostRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("tasks as t")
+			.leftJoin("hosts as h", (join) =>
+				join.onRef("t.claimed_by", "=", "h.site_id").on("h.deleted", "=", 0),
+			)
+			.select([
+				"t.id",
+				"t.type",
+				"t.trigger_spec",
+				"t.last_run_at",
+				"t.run_count",
+				"t.consecutive_failures",
+				"t.claimed_by",
+				"h.host_name",
+			])
+			.where("t.last_run_at", ">", baseline)
+			.where("t.last_run_at", "is not", null)
+			.where("t.deleted", "=", 0)
+			.orderBy("t.last_run_at", "desc")
+			.limit(limit)
+			// last_run_at is filtered non-null above; run_count and consecutive_failures
+			// are `INTEGER DEFAULT 0` columns every task insert populates.
+			.$narrowType<{ last_run_at: NotNull; run_count: NotNull; consecutive_failures: NotNull }>(),
+	);
 }

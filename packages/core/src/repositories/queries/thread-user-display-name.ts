@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getOne, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table read joining `threads` to `users` to resolve the display name of
@@ -19,7 +20,12 @@ export function getThreadUserDisplayName(
 	db: Database,
 	threadId: string,
 ): ThreadUserDisplayNameRow | null {
-	return db
-		.prepare("SELECT u.display_name FROM threads t JOIN users u ON t.user_id = u.id WHERE t.id = ?")
-		.get(threadId) as ThreadUserDisplayNameRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads as t")
+			.innerJoin("users as u", "t.user_id", "u.id")
+			.select("u.display_name")
+			.where("t.id", "=", threadId),
+	);
 }

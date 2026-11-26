@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import type { NotNull } from "kysely";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table read: sibling thread summaries for cross-thread injection (#178).
@@ -35,18 +37,26 @@ export function listCrossThreadSummaries(
 	excludeThreadId: string,
 	recencyCutoff: string,
 ): CrossThreadSummaryRow[] {
-	const sql = `
-		SELECT id, title, summary, summary_through, last_message_at
-		FROM threads
-		WHERE user_id = ?
-		  AND id != ?
-		  AND deleted = 0
-		  AND summary IS NOT NULL
-		  AND summary_through IS NOT NULL
-		  AND summary_through >= ?
-		  AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)
-		ORDER BY last_message_at DESC
-		LIMIT 5
-	`;
-	return db.prepare(sql).all(userId, excludeThreadId, recencyCutoff) as CrossThreadSummaryRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select(["id", "title", "summary", "summary_through", "last_message_at"])
+			.where("user_id", "=", userId)
+			.where("id", "!=", excludeThreadId)
+			.where("deleted", "=", 0)
+			.where("summary", "is not", null)
+			.where("summary_through", "is not", null)
+			.where("summary_through", ">=", recencyCutoff)
+			.where(({ exists, selectFrom, lit }) =>
+				exists(
+					selectFrom("messages")
+						.select(lit(1).as("one"))
+						.whereRef("messages.thread_id", "=", "threads.id"),
+				),
+			)
+			.orderBy("last_message_at", "desc")
+			.limit(5)
+			.$narrowType<{ summary: NotNull; summary_through: NotNull }>(),
+	);
 }

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getAll, queryBuilder } from "../../query-builder";
 
 export interface RecentThreadWithMessagesRow {
 	id: string;
@@ -18,14 +19,23 @@ export function listRecentThreadsWithMessages(
 	userId: string,
 	excludeThreadId?: string,
 ): RecentThreadWithMessagesRow[] {
-	const excludeClause = excludeThreadId ? "AND id != ?" : "";
-	const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
-	return db
-		.prepare(
-			`SELECT id, title, color, last_message_at, summary FROM threads
-			 WHERE user_id = ? ${excludeClause} AND deleted = 0
-			   AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)
-			 ORDER BY last_message_at DESC LIMIT 5`,
-		)
-		.all(...params) as RecentThreadWithMessagesRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select(["id", "title", "color", "last_message_at", "summary"])
+			.where("user_id", "=", userId)
+			.$if(Boolean(excludeThreadId), (qb) => qb.where("id", "!=", excludeThreadId as string))
+			.where("deleted", "=", 0)
+			.where(({ exists, selectFrom, lit }) =>
+				exists(
+					selectFrom("messages")
+						.select(lit(1).as("one"))
+						.whereRef("messages.thread_id", "=", "threads.id"),
+				),
+			)
+			.orderBy("last_message_at", "desc")
+			.limit(5)
+			.$narrowType<{ color: number }>(),
+	);
 }

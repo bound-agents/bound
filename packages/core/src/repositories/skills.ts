@@ -1,26 +1,38 @@
 import type { Database } from "bun:sqlite";
 import type { Skill } from "@bound/shared";
+import type { NotNull } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
+
+/**
+ * `Skill` treats `activation_count` and `deleted` as non-null; the schema
+ * declares them nullable with a default, so full-row reads narrow them.
+ */
+const fullSkillRows = () =>
+	queryBuilder
+		.selectFrom("skills")
+		.selectAll()
+		.$narrowType<{ activation_count: NotNull; deleted: NotNull }>();
 
 export function findSkillByName(db: Database, name: string): Skill | null {
-	return db.query("SELECT * FROM skills WHERE name = ? AND deleted = 0").get(name) as Skill | null;
+	return getOne(db, fullSkillRows().where("name", "=", name).where("deleted", "=", 0));
 }
 
 export function findSkillById(db: Database, id: string): Skill | null {
-	return db.query("SELECT * FROM skills WHERE id = ? AND deleted = 0").get(id) as Skill | null;
+	return getOne(db, fullSkillRows().where("id", "=", id).where("deleted", "=", 0));
 }
 
 /** Full row by id; ignores the `deleted` flag. */
 export function findSkillByIdIncludingDeleted(db: Database, id: string): Skill | null {
-	return db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill | null;
+	return getOne(db, fullSkillRows().where("id", "=", id));
 }
 
 export function listSkills(db: Database): Skill[] {
-	return db.query("SELECT * FROM skills WHERE deleted = 0").all() as Skill[];
+	return getAll(db, fullSkillRows().where("deleted", "=", 0));
 }
 
 /** Existence check by id; ignores the `deleted` flag. */
 export function findSkillIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM skills WHERE id = ?").get(id) as { id: string } | null;
+	return getOne(db, queryBuilder.selectFrom("skills").select("id").where("id", "=", id));
 }
 
 /** Id + `skill_root` (for SKILL.md resolution) of a non-deleted skill. */
@@ -28,17 +40,26 @@ export function findActiveSkillIdAndRootByName(
 	db: Database,
 	name: string,
 ): { id: string; skill_root: string | null } | null {
-	return db.query("SELECT id, skill_root FROM skills WHERE name = ? AND deleted = 0").get(name) as {
-		id: string;
-		skill_root: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("skills")
+			.select(["id", "skill_root"])
+			.where("name", "=", name)
+			.where("deleted", "=", 0),
+	);
 }
 
 /** Active skills (name + description), ordered by most-recently-activated. */
 export function listActiveSkillNameDescriptions(
 	db: Database,
 ): Array<{ name: string; description: string }> {
-	return db
-		.query("SELECT name, description FROM skills WHERE deleted = 0 ORDER BY last_activated_at DESC")
-		.all() as Array<{ name: string; description: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("skills")
+			.select(["name", "description"])
+			.where("deleted", "=", 0)
+			.orderBy("last_activated_at", "desc"),
+	);
 }

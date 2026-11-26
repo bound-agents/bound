@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getAll, getOne, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads joining `rss_feeds` to the linked event `tasks` row.
@@ -36,32 +37,35 @@ export interface RssFeedWithTaskRow {
  * `seen_guids` is deliberately not projected — it's poller-internal dedup
  * state, not part of the API response shape.
  */
-const RSS_FEED_WITH_TASK_SELECT = `SELECT
-		r.id,
-		r.name,
-		r.url,
-		r.description,
-		r.poll_interval_seconds,
-		r.task_id,
-		r.thread_id,
-		r.created_at,
-		r.modified_at,
-		t.system_prompt_addition AS prompt,
-		t.model_hint AS model_hint,
-		CASE WHEN t.no_history = 1 THEN 1 ELSE 0 END AS no_history
-	FROM rss_feeds r
-	LEFT JOIN tasks t ON t.id = r.task_id AND t.deleted = 0`;
+function selectRssFeedWithTask() {
+	return queryBuilder
+		.selectFrom("rss_feeds as r")
+		.leftJoin("tasks as t", (join) => join.onRef("t.id", "=", "r.task_id").on("t.deleted", "=", 0))
+		.select((eb) => [
+			"r.id",
+			"r.name",
+			"r.url",
+			"r.description",
+			"r.poll_interval_seconds",
+			"r.task_id",
+			"r.thread_id",
+			"r.created_at",
+			"r.modified_at",
+			"t.system_prompt_addition as prompt",
+			"t.model_hint as model_hint",
+			eb.case().when("t.no_history", "=", 1).then(1).else(0).end().as("no_history"),
+		]);
+}
 
 /** List all live feeds with their linked task fields, ordered `r.created_at DESC`. */
 export function listRssFeedsWithTask(db: Database): RssFeedWithTaskRow[] {
-	return db
-		.prepare(`${RSS_FEED_WITH_TASK_SELECT} WHERE r.deleted = 0 ORDER BY r.created_at DESC`)
-		.all() as RssFeedWithTaskRow[];
+	return getAll(
+		db,
+		selectRssFeedWithTask().where("r.deleted", "=", 0).orderBy("r.created_at", "desc"),
+	);
 }
 
 /** Fetch a single live feed by id with its linked task fields, or null. */
 export function getRssFeedWithTaskById(db: Database, id: string): RssFeedWithTaskRow | null {
-	return db
-		.prepare(`${RSS_FEED_WITH_TASK_SELECT} WHERE r.id = ? AND r.deleted = 0`)
-		.get(id) as RssFeedWithTaskRow | null;
+	return getOne(db, selectRssFeedWithTask().where("r.id", "=", id).where("r.deleted", "=", 0));
 }

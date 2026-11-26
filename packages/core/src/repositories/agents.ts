@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Agent } from "@bound/shared";
+import type { NotNull } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /**
  * Read repository for the `agents` table (#201 auxiliary-agent identities).
@@ -11,6 +13,10 @@ import type { Agent } from "@bound/shared";
  *    paths need finders that see retired rows while dispatch/list do not.
  */
 
+/** `Agent` treats `deleted` as non-null; the schema declares it nullable with a default. */
+const fullAgentRows = () =>
+	queryBuilder.selectFrom("agents").selectAll().$narrowType<{ deleted: NotNull }>();
+
 /**
  * Dispatch resolution: name -> the active (non-retired, non-deleted) definition.
  * `name` is deliberately not UNIQUE (synced tables can't enforce cluster-wide
@@ -20,11 +26,15 @@ import type { Agent } from "@bound/shared";
  * operator/agent to retire one.
  */
 export function findActiveAgentByName(db: Database, name: string): Agent | null {
-	return db
-		.query(
-			"SELECT * FROM agents WHERE name = ? AND retired_at IS NULL AND deleted = 0 ORDER BY modified_at DESC LIMIT 1",
-		)
-		.get(name) as Agent | null;
+	return getOne(
+		db,
+		fullAgentRows()
+			.where("name", "=", name)
+			.where("retired_at", "is", null)
+			.where("deleted", "=", 0)
+			.orderBy("modified_at", "desc")
+			.limit(1),
+	);
 }
 
 /**
@@ -33,14 +43,19 @@ export function findActiveAgentByName(db: Database, name: string): Agent | null 
  * un-retire or to re-confirm its namespace is still addressable.
  */
 export function findAgentByNameIncludingRetired(db: Database, name: string): Agent | null {
-	return db
-		.query("SELECT * FROM agents WHERE name = ? AND deleted = 0 ORDER BY modified_at DESC LIMIT 1")
-		.get(name) as Agent | null;
+	return getOne(
+		db,
+		fullAgentRows()
+			.where("name", "=", name)
+			.where("deleted", "=", 0)
+			.orderBy("modified_at", "desc")
+			.limit(1),
+	);
 }
 
 /** Full row by id, active only (non-deleted). Includes retired rows. */
 export function findAgentById(db: Database, id: string): Agent | null {
-	return db.query("SELECT * FROM agents WHERE id = ? AND deleted = 0").get(id) as Agent | null;
+	return getOne(db, fullAgentRows().where("id", "=", id).where("deleted", "=", 0));
 }
 
 /**
@@ -54,16 +69,13 @@ export function listAgentsForToolView(db: Database): Array<{
 	persona: string;
 	model_hint: string | null;
 }> {
-	return db
-		.query(
-			`SELECT name, persona, model_hint
-			 FROM agents
-			 WHERE retired_at IS NULL AND deleted = 0
-			 ORDER BY name ASC`,
-		)
-		.all() as Array<{
-		name: string;
-		persona: string;
-		model_hint: string | null;
-	}>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("agents")
+			.select(["name", "persona", "model_hint"])
+			.where("retired_at", "is", null)
+			.where("deleted", "=", 0)
+			.orderBy("name", "asc"),
+	);
 }

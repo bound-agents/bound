@@ -1,16 +1,18 @@
 import type { Database } from "bun:sqlite";
 import type { Webhook } from "@bound/shared";
+import { getOne, queryBuilder } from "../query-builder";
+
+/** Live (`deleted = 0`) webhook rows. */
+function liveWebhooks() {
+	return queryBuilder.selectFrom("webhooks").where("deleted", "=", 0);
+}
 
 export function findWebhookByName(db: Database, name: string): Webhook | null {
-	return db
-		.query("SELECT * FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as Webhook | null;
+	return getOne(db, liveWebhooks().selectAll().$castTo<Webhook>().where("name", "=", name));
 }
 
 export function findWebhookIdByName(db: Database, name: string): { id: string } | null {
-	return db.query("SELECT id FROM webhooks WHERE name = ? AND deleted = 0").get(name) as {
-		id: string;
-	} | null;
+	return getOne(db, liveWebhooks().select("id").where("name", "=", name));
 }
 
 /** Like {@link findWebhookIdByName} but also returns the backing event task's id, for callers that need to touch both rows (e.g. deregistering a webhook and its task together). */
@@ -18,46 +20,33 @@ export function findWebhookIdAndTaskIdByName(
 	db: Database,
 	name: string,
 ): { id: string; task_id: string } | null {
-	return db.query("SELECT id, task_id FROM webhooks WHERE name = ? AND deleted = 0").get(name) as {
-		id: string;
-		task_id: string;
-	} | null;
+	return getOne(db, liveWebhooks().select(["id", "task_id"]).where("name", "=", name));
 }
 
 export function findWebhookIdsByName(
 	db: Database,
 	name: string,
 ): { id: string; task_id: string; thread_id: string } | null {
-	return db
-		.query("SELECT id, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string; thread_id: string } | null;
+	return getOne(db, liveWebhooks().select(["id", "task_id", "thread_id"]).where("name", "=", name));
 }
 
 export function findWebhookIdsById(
 	db: Database,
 	id: string,
 ): { id: string; task_id: string; thread_id: string } | null {
-	return db
-		.query("SELECT id, task_id, thread_id FROM webhooks WHERE id = ? AND deleted = 0")
-		.get(id) as { id: string; task_id: string; thread_id: string } | null;
+	return getOne(db, liveWebhooks().select(["id", "task_id", "thread_id"]).where("id", "=", id));
 }
 
 export function findWebhookIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM webhooks WHERE id = ? AND deleted = 0").get(id) as {
-		id: string;
-	} | null;
+	return getOne(db, liveWebhooks().select("id").where("id", "=", id));
 }
 
 export function findWebhookNameById(db: Database, id: string): { name: string } | null {
-	return db.query("SELECT name FROM webhooks WHERE id = ? AND deleted = 0").get(id) as {
-		name: string;
-	} | null;
+	return getOne(db, liveWebhooks().select("name").where("id", "=", id));
 }
 
 export function findWebhookTaskIdById(db: Database, id: string): { task_id: string } | null {
-	return db.query("SELECT task_id FROM webhooks WHERE id = ? AND deleted = 0").get(id) as {
-		task_id: string;
-	} | null;
+	return getOne(db, liveWebhooks().select("task_id").where("id", "=", id));
 }
 
 /**
@@ -75,9 +64,10 @@ export function findActiveWebhookByThreadId(
 	db: Database,
 	threadId: string,
 ): { id: string; name: string; task_id: string } | null {
-	return db
-		.query("SELECT id, name, task_id FROM webhooks WHERE thread_id = ? AND deleted = 0")
-		.get(threadId) as { id: string; name: string; task_id: string } | null;
+	return getOne(
+		db,
+		liveWebhooks().select(["id", "name", "task_id"]).where("thread_id", "=", threadId),
+	);
 }
 
 /**
@@ -85,7 +75,5 @@ export function findActiveWebhookByThreadId(
  * deterministic-id restore path, which must see a previously soft-deleted row.
  */
 export function findWebhookDeletedFlagById(db: Database, id: string): { deleted: number } | null {
-	return db.query("SELECT deleted FROM webhooks WHERE id = ?").get(id) as {
-		deleted: number;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("webhooks").select("deleted").where("id", "=", id));
 }

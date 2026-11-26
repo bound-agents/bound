@@ -1,24 +1,35 @@
 import type { Database } from "bun:sqlite";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /** Single-table reads for the local, unsynced `change_log` table. */
 export function getChangeLogHorizon(db: Database): string | null {
-	const row = db.query("SELECT MIN(timestamp) AS horizon FROM change_log").get() as {
-		horizon: string | null;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("change_log")
+			.select((eb) => eb.fn.min<string | null>("timestamp").as("horizon")),
+	);
 	return row?.horizon ?? null;
 }
 
 export function countChangeLogEntries(db: Database): number {
-	const row = db.query("SELECT COUNT(*) AS count FROM change_log").get() as {
-		count: number;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder.selectFrom("change_log").select((eb) => eb.fn.countAll<number>().as("count")),
+	);
 	return row?.count ?? 0;
 }
 
 export function getChangeLogHlcAtOffset(db: Database, offset: number): string | null {
-	const row = db
-		.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1 OFFSET ?")
-		.get(offset) as { hlc: string } | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("change_log")
+			.select("hlc")
+			.orderBy("hlc", "desc")
+			.limit(1)
+			.offset(offset),
+	);
 	return row?.hlc ?? null;
 }
 
@@ -33,14 +44,16 @@ export function listChangeLogRowsAffectedAfter(
 	db: Database,
 	timestamp: string,
 ): Array<Pick<ChangeLogRestoreRow, "table_name" | "row_id">> {
-	return db
-		.query(
-			`SELECT DISTINCT table_name, row_id
-		 FROM change_log
-		 WHERE timestamp > ?
-		 ORDER BY table_name, row_id`,
-		)
-		.all(timestamp) as Array<Pick<ChangeLogRestoreRow, "table_name" | "row_id">>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("change_log")
+			.select(["table_name", "row_id"])
+			.distinct()
+			.where("timestamp", ">", timestamp)
+			.orderBy("table_name")
+			.orderBy("row_id"),
+	);
 }
 
 export function findLatestChangeLogRowAtOrBefore(
@@ -49,22 +62,26 @@ export function findLatestChangeLogRowAtOrBefore(
 	rowId: string,
 	timestamp: string,
 ): ChangeLogRestoreRow | null {
-	return db
-		.query(
-			`SELECT table_name, row_id, timestamp, row_data
-		 FROM change_log
-		 WHERE table_name = ? AND row_id = ? AND timestamp <= ?
-		 ORDER BY hlc DESC
-		 LIMIT 1`,
-		)
-		.get(tableName, rowId, timestamp) as ChangeLogRestoreRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("change_log")
+			.select(["table_name", "row_id", "timestamp", "row_data"])
+			.where("table_name", "=", tableName)
+			.where("row_id", "=", rowId)
+			.where("timestamp", "<=", timestamp)
+			.orderBy("hlc", "desc")
+			.limit(1),
+	);
 }
 
+/** The caller picks the row type `T`, so the builder's inferred row is widened to it. */
 export function findChangeLogEntryByHlc<T>(db: Database, hlc: string): T | null {
-	return db
-		.query(
-			`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
-		 FROM change_log WHERE hlc = ?`,
-		)
-		.get(hlc) as T | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("change_log")
+			.select(["hlc", "table_name", "row_id", "site_id", "timestamp", "row_data"])
+			.where("hlc", "=", hlc),
+	) as T | null;
 }

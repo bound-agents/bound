@@ -1,12 +1,19 @@
 import type { Database } from "bun:sqlite";
+import type { NotNull } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 export function listClientSessionSiteIdsByThreadId(
 	db: Database,
 	threadId: string,
 ): Array<{ site_id: string }> {
-	return db
-		.query("SELECT site_id FROM client_sessions WHERE thread_id = ? AND deleted = 0")
-		.all(threadId) as Array<{ site_id: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("client_sessions")
+			.select("site_id")
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -14,15 +21,18 @@ export function listClientSessionSiteIdsByThreadId(
  * upsert read-back in `recordClientSession`, which re-undeletes existing rows.
  */
 export function findClientSessionIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM client_sessions WHERE id = ?").get(id) as {
-		id: string;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("client_sessions").select("id").where("id", "=", id));
 }
 
 export function findLiveClientSessionIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM client_sessions WHERE id = ? AND deleted = 0").get(id) as {
-		id: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("client_sessions")
+			.select("id")
+			.where("id", "=", id)
+			.where("deleted", "=", 0),
+	);
 }
 
 /** List live session ids held by a single connection (cleared on disconnect). */
@@ -30,9 +40,14 @@ export function listClientSessionIdsByConnectionId(
 	db: Database,
 	connectionId: string,
 ): Array<{ id: string }> {
-	return db
-		.query("SELECT id FROM client_sessions WHERE connection_id = ? AND deleted = 0")
-		.all(connectionId) as Array<{ id: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("client_sessions")
+			.select("id")
+			.where("connection_id", "=", connectionId)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -56,23 +71,25 @@ export function listRemoteClientToolsForThreads(
 	now = Date.now(),
 ): string[] {
 	if (threadIds.length === 0) return [];
-	const placeholders = threadIds.map(() => "?").join(", ");
-	const rows = db
-		.query(
-			`SELECT cs.client_tools AS client_tools, h.modified_at AS modified_at, h.online_at AS online_at
-			 FROM client_sessions cs
-			 JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
-			 WHERE cs.thread_id IN (${placeholders})
-			   AND cs.deleted = 0
-			   AND cs.site_id != ?
-			   AND cs.client_tools IS NOT NULL
-			 ORDER BY cs.modified_at DESC`,
-		)
-		.all(...threadIds, localSiteId) as Array<{
-		client_tools: string;
-		modified_at: string | null;
-		online_at: string | null;
-	}>;
+	const rows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("client_sessions as cs")
+			.innerJoin("hosts as h", (join) =>
+				join.onRef("h.site_id", "=", "cs.site_id").on("h.deleted", "=", 0),
+			)
+			.select([
+				"cs.client_tools as client_tools",
+				"h.modified_at as modified_at",
+				"h.online_at as online_at",
+			])
+			.where("cs.thread_id", "in", threadIds)
+			.where("cs.deleted", "=", 0)
+			.where("cs.site_id", "!=", localSiteId)
+			.where("cs.client_tools", "is not", null)
+			.orderBy("cs.modified_at", "desc")
+			.$narrowType<{ client_tools: NotNull }>(),
+	);
 	const cutoff = now - staleMs;
 	const out: string[] = [];
 	for (const row of rows) {

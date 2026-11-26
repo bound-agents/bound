@@ -1,8 +1,21 @@
 import type { Database } from "bun:sqlite";
-import type { Message } from "@bound/shared";
+import type { Message, MessageRole } from "@bound/shared";
+import { sql } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
+
+/**
+ * `SELECT *` over `messages`, narrowed to the `Message` domain shape: `role` is
+ * the `MessageRole` union and `deleted` is declared non-null on `Message`.
+ */
+function selectMessageRow() {
+	return queryBuilder
+		.selectFrom("messages")
+		.selectAll()
+		.$narrowType<{ role: MessageRole; deleted: number }>();
+}
 
 export function findMessageById(db: Database, id: string): Message | null {
-	return db.query("SELECT * FROM messages WHERE id = ?").get(id) as Message | null;
+	return getOne(db, selectMessageRow().where("id", "=", id));
 }
 
 /**
@@ -25,23 +38,28 @@ export function getLatestChangeLogHlcForRows(
 	const CHUNK = 500;
 	for (let i = 0; i < rowIds.length; i += CHUNK) {
 		const chunk = rowIds.slice(i, i + CHUNK);
-		const placeholders = chunk.map(() => "?").join(", ");
-		const rows = db
-			.query(
-				`SELECT row_id, MAX(hlc) AS hlc FROM change_log
-				WHERE table_name = 'messages' AND row_id IN (${placeholders})
-				GROUP BY row_id`,
-			)
-			.all(...chunk) as Array<{ row_id: string; hlc: string }>;
+		const rows = getAll(
+			db,
+			queryBuilder
+				.selectFrom("change_log")
+				.select((eb) => ["row_id", eb.fn.max("hlc").as("hlc")])
+				.where("table_name", "=", "messages")
+				.where("row_id", "in", chunk)
+				.groupBy("row_id"),
+		);
 		for (const r of rows) out.set(r.row_id, r.hlc);
 	}
 	return out;
 }
 
 export function listMessagesByThread(db: Database, threadId: string): Message[] {
-	return db
-		.query("SELECT * FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at ASC")
-		.all(threadId) as Message[];
+	return getAll(
+		db,
+		selectMessageRow()
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.orderBy("created_at", "asc"),
+	);
 }
 
 export function findLiveMessageByIdAndThread(
@@ -49,15 +67,24 @@ export function findLiveMessageByIdAndThread(
 	id: string,
 	threadId: string,
 ): Message | null {
-	return db
-		.query("SELECT * FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
-		.get(id, threadId) as Message | null;
+	return getOne(
+		db,
+		selectMessageRow()
+			.where("id", "=", id)
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0),
+	);
 }
 
 export function countLiveMessagesByThread(db: Database, threadId: string): number {
-	const row = db
-		.query("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
-		.get(threadId) as { count: number } | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0),
+	);
 	return row?.count ?? 0;
 }
 
@@ -71,29 +98,40 @@ export function countLiveMessagesByThread(db: Database, threadId: string): numbe
  * of drifting.
  */
 export function countBackgroundToolCallsByThread(db: Database, threadId: string): number {
-	const row = db
-		.query(
-			`SELECT COUNT(*) as count FROM messages
-			 WHERE thread_id = ? AND role = 'tool_result' AND deleted = 0
-			   AND json_extract(metadata, '$.background') = 1`,
-		)
-		.get(threadId) as { count: number } | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("thread_id", "=", threadId)
+			.where("role", "=", "tool_result")
+			.where("deleted", "=", 0)
+			.where(sql`json_extract(metadata, '$.background')`, "=", 1),
+	);
 	return row?.count ?? 0;
 }
 
 export function countLiveAssistantMessagesByThread(db: Database, threadId: string): number {
-	const row = db
-		.query(
-			"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0",
-		)
-		.get(threadId) as { count: number } | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("thread_id", "=", threadId)
+			.where("role", "=", "assistant")
+			.where("deleted", "=", 0),
+	);
 	return row?.count ?? 0;
 }
 
 export function countAssistantMessages(db: Database): number {
-	const row = db.query("SELECT COUNT(*) as count FROM messages WHERE role = 'assistant'").get() as {
-		count: number;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("role", "=", "assistant"),
+	);
 	return row?.count ?? 0;
 }
 
@@ -103,16 +141,20 @@ export function listLiveMessagesByThreadNewestFirst(
 	threadId: string,
 	limit: number,
 ): Message[] {
-	return db
-		.query(
-			`SELECT * FROM (
-				SELECT * FROM messages
-				WHERE thread_id = ? AND deleted = 0
-				ORDER BY created_at DESC
-				LIMIT ?
-			) sub ORDER BY created_at ASC`,
-		)
-		.all(threadId, limit) as Message[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom(
+				selectMessageRow()
+					.where("thread_id", "=", threadId)
+					.where("deleted", "=", 0)
+					.orderBy("created_at", "desc")
+					.limit(limit)
+					.as("sub"),
+			)
+			.selectAll()
+			.orderBy("created_at", "asc"),
+	);
 }
 
 export function findFirstMessageContentByThreadAndRole(
@@ -120,11 +162,16 @@ export function findFirstMessageContentByThreadAndRole(
 	threadId: string,
 	role: string,
 ): { content: string } | null {
-	return db
-		.query(
-			"SELECT content FROM messages WHERE thread_id = ? AND role = ? ORDER BY created_at LIMIT 1",
-		)
-		.get(threadId, role) as { content: string } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select("content")
+			.where("thread_id", "=", threadId)
+			.where("role", "=", role)
+			.orderBy("created_at")
+			.limit(1),
+	);
 }
 
 export function listMessageRoleContentByThreadSince(
@@ -132,22 +179,22 @@ export function listMessageRoleContentByThreadSince(
 	threadId: string,
 	since: string,
 ): Array<{ role: string; content: string }> {
-	return db
-		.query(
-			"SELECT role, content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
-		)
-		.all(threadId, since) as Array<{ role: string; content: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select(["role", "content"])
+			.where("thread_id", "=", threadId)
+			.where("created_at", ">", since)
+			.orderBy("created_at"),
+	);
 }
 
 export function findLatestLiveUserMessageCreatedAtByThread(
 	db: Database,
 	threadId: string,
 ): { created_at: string } | null {
-	return db
-		.query(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as { created_at: string } | null;
+	return getOne(db, latestLiveCreatedAt(threadId).where("role", "=", "user"));
 }
 
 export function listRecentLiveMessageContentByThread(
@@ -155,24 +202,23 @@ export function listRecentLiveMessageContentByThread(
 	threadId: string,
 	limit: number,
 ): Array<{ content: string }> {
-	return db
-		.query(
-			`SELECT content FROM messages
-			 WHERE thread_id = ? AND deleted = 0
-			 ORDER BY created_at DESC LIMIT ?`,
-		)
-		.all(threadId, limit) as Array<{ content: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select("content")
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.orderBy("created_at", "desc")
+			.limit(limit),
+	);
 }
 
 export function findLatestLiveAssistantMessageCreatedAtByThread(
 	db: Database,
 	threadId: string,
 ): { created_at: string } | null {
-	return db
-		.query(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as { created_at: string } | null;
+	return getOne(db, latestLiveCreatedAt(threadId).where("role", "=", "assistant"));
 }
 
 export function findFirstLiveUserMessageByThreadSince(
@@ -180,34 +226,73 @@ export function findFirstLiveUserMessageByThreadSince(
 	threadId: string,
 	since: string,
 ): { id: string; content: string; role: "user" } | null {
-	return db
-		.query(
-			"SELECT id, content, role FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 AND created_at > ? ORDER BY created_at ASC LIMIT 1",
-		)
-		.get(threadId, since) as { id: string; content: string; role: "user" } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select(["id", "content", "role"])
+			.where("thread_id", "=", threadId)
+			.where("role", "=", "user")
+			.where("deleted", "=", 0)
+			.where("created_at", ">", since)
+			.orderBy("created_at", "asc")
+			.limit(1)
+			.$narrowType<{ role: "user" }>(),
+	);
 }
 
 export function findLatestLiveMessageCreatedAtByThread(
 	db: Database,
 	threadId: string,
 ): { created_at: string } | null {
-	return db
-		.query(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as { created_at: string } | null;
+	return getOne(db, latestLiveCreatedAt(threadId));
 }
+
+/** Newest live `created_at` on a thread; callers add a `role` filter as needed. */
+function latestLiveCreatedAt(threadId: string) {
+	return queryBuilder
+		.selectFrom("messages")
+		.select("created_at")
+		.where("thread_id", "=", threadId)
+		.where("deleted", "=", 0)
+		.orderBy("created_at", "desc")
+		.limit(1);
+}
+
+/**
+ * Columns the delta/projection readers select. They omit `exit_code` and
+ * `metadata` (and the projections omit `deleted`) yet are typed `Message[]`, so
+ * those three readers keep a `$castTo<Message>()`.
+ */
+const MESSAGE_PROJECTION_COLUMNS = [
+	"id",
+	"thread_id",
+	"role",
+	"content",
+	"model_id",
+	"tool_name",
+	"created_at",
+	"modified_at",
+	"host_origin",
+] as const;
 
 export function listLiveMessageDeltaByThreadSince(
 	db: Database,
 	threadId: string,
 	since: string,
 ): Message[] {
-	return db
-		.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
-		)
-		.all(threadId, since) as Message[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select([...MESSAGE_PROJECTION_COLUMNS, "deleted"])
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.where("created_at", ">", since)
+			.orderBy("created_at", "asc")
+			.orderBy(sql`rowid`, "asc")
+			.$castTo<Message>(),
+	);
 }
 
 export function listLiveMessageProjectionByThreadNewestFirst(
@@ -215,11 +300,18 @@ export function listLiveMessageProjectionByThreadNewestFirst(
 	threadId: string,
 	limit: number,
 ): Message[] {
-	return db
-		.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
-		)
-		.all(threadId, limit) as Message[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select(MESSAGE_PROJECTION_COLUMNS)
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.orderBy("created_at", "desc")
+			.orderBy(sql`rowid`, "desc")
+			.limit(limit)
+			.$castTo<Message>(),
+	);
 }
 
 export function listLiveMessageProjectionByThreadSince(
@@ -227,11 +319,18 @@ export function listLiveMessageProjectionByThreadSince(
 	threadId: string,
 	since: string,
 ): Message[] {
-	return db
-		.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at >= ? ORDER BY created_at ASC, rowid ASC",
-		)
-		.all(threadId, since) as Message[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select(MESSAGE_PROJECTION_COLUMNS)
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.where("created_at", ">=", since)
+			.orderBy("created_at", "asc")
+			.orderBy(sql`rowid`, "asc")
+			.$castTo<Message>(),
+	);
 }
 
 /**
@@ -248,13 +347,7 @@ export function findToolResultByThreadAndCallId(
 	threadId: string,
 	callId: string,
 ): { content: string; exit_code: number | null } | null {
-	return db
-		.query(
-			`SELECT content, exit_code FROM messages
-			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
-			 ORDER BY created_at DESC LIMIT 1`,
-		)
-		.get(threadId, callId) as { content: string; exit_code: number | null } | null;
+	return getOne(db, latestLiveToolResult(threadId, callId).select(["content", "exit_code"]));
 }
 
 /**
@@ -271,21 +364,22 @@ export function findBackgroundAuxSeed(
 	db: Database,
 	threadId: string,
 ): { parentThreadId: string; parentCallId: string; instructions: string } | null {
-	const row = db
-		.query(
-			`SELECT content,
-				json_extract(metadata, '$.background_parent.thread_id') AS parent_thread_id,
-				json_extract(metadata, '$.background_parent.call_id') AS parent_call_id
-			 FROM messages
-			 WHERE thread_id = ? AND role = 'user' AND deleted = 0
-				AND json_extract(metadata, '$.background_parent.call_id') IS NOT NULL
-			 ORDER BY created_at ASC LIMIT 1`,
-		)
-		.get(threadId) as {
-		content: string;
-		parent_thread_id: string;
-		parent_call_id: string;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("messages")
+			.select([
+				"content",
+				sql<string>`json_extract(metadata, '$.background_parent.thread_id')`.as("parent_thread_id"),
+				sql<string>`json_extract(metadata, '$.background_parent.call_id')`.as("parent_call_id"),
+			])
+			.where("thread_id", "=", threadId)
+			.where("role", "=", "user")
+			.where("deleted", "=", 0)
+			.where(sql`json_extract(metadata, '$.background_parent.call_id')`, "is not", null)
+			.orderBy("created_at", "asc")
+			.limit(1),
+	);
 	if (!row) return null;
 	return {
 		parentThreadId: row.parent_thread_id,
@@ -305,14 +399,12 @@ export function findUnresolvedBackgroundPlaceholder(
 	threadId: string,
 	callId: string,
 ): { id: string } | null {
-	return db
-		.query(
-			`SELECT id FROM messages
-			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
-				AND json_extract(metadata, '$.background') = 1
-			 ORDER BY created_at DESC LIMIT 1`,
-		)
-		.get(threadId, callId) as { id: string } | null;
+	return getOne(
+		db,
+		latestLiveToolResult(threadId, callId)
+			.select("id")
+			.where(sql`json_extract(metadata, '$.background')`, "=", 1),
+	);
 }
 
 /**
@@ -331,19 +423,36 @@ export function findBackgroundPlaceholderDeliveryState(
 	threadId: string,
 	callId: string,
 ): { id: string; delivered: boolean } | null {
-	const row = db
-		.query(
-			`SELECT id, json_extract(metadata, '$.background_delivered') AS delivered
-			 FROM messages
-			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
-			 ORDER BY created_at DESC LIMIT 1`,
-		)
-		.get(threadId, callId) as { id: string; delivered: number | null } | null;
+	const row = getOne(
+		db,
+		latestLiveToolResult(threadId, callId).select([
+			"id",
+			sql<number | null>`json_extract(metadata, '$.background_delivered')`.as("delivered"),
+		]),
+	);
 	if (!row) return null;
 	return { id: row.id, delivered: row.delivered === 1 };
 }
 
 /** Includes tombstones because sync notifications describe the row just applied. */
 export function findMessageForSyncBroadcast<T>(db: Database, id: string): T | null {
-	return db.query("SELECT * FROM messages WHERE id = ?").get(id) as T | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("messages").selectAll().where("id", "=", id).$castTo<T>(),
+	);
+}
+
+/**
+ * Newest live `tool_result` row for `(thread, call_id)` — the WS layer stores a
+ * client tool's `call_id` in `tool_name`. Callers choose the columns.
+ */
+function latestLiveToolResult(threadId: string, callId: string) {
+	return queryBuilder
+		.selectFrom("messages")
+		.where("thread_id", "=", threadId)
+		.where("role", "=", "tool_result")
+		.where("tool_name", "=", callId)
+		.where("deleted", "=", 0)
+		.orderBy("created_at", "desc")
+		.limit(1);
 }

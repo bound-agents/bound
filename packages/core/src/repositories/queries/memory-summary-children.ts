@@ -1,10 +1,25 @@
 import type { Database } from "bun:sqlite";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads over `memory_edges` JOIN `semantic_memory` that compute the
  * `summarizes` parent/child relationships behind the Working Knowledge and
  * Discoverable Archive renderers.
  */
+
+/**
+ * Active `summarizes` edges JOINed to the live child `semantic_memory` row
+ * they target.
+ */
+function summarizesChildren() {
+	return queryBuilder
+		.selectFrom("memory_edges as e")
+		.innerJoin("semantic_memory as m", (join) =>
+			join.onRef("m.key", "=", "e.target_key").on("m.deleted", "=", 0),
+		)
+		.where("e.relation", "=", "summarizes")
+		.where("e.deleted", "=", 0);
+}
 
 /**
  * Projection for a `summarizes` child resolved against its `semantic_memory`
@@ -33,18 +48,19 @@ export function listSummaryChildrenForStaleness(
 	summaryKeys: string[],
 ): SummaryChildRow[] {
 	if (summaryKeys.length === 0) return [];
-	const placeholders = summaryKeys.map(() => "?").join(",");
-	return db
-		.prepare(
-			`SELECT e.source_key AS parent, e.target_key AS child_key,
-					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
-			 FROM memory_edges e
-			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.source_key IN (${placeholders})`,
-		)
-		.all(...summaryKeys) as SummaryChildRow[];
+	return getAll(
+		db,
+		summarizesChildren()
+			.select([
+				"e.source_key as parent",
+				"e.target_key as child_key",
+				"m.value as child_value",
+				"m.modified_at as child_modified_at",
+				"m.tier as tier",
+			])
+			.where("e.source_key", "in", summaryKeys)
+			.$narrowType<{ tier: string }>(),
+	);
 }
 
 /**
@@ -63,12 +79,10 @@ export function listSummarizesChildrenKeyValue(
 	db: Database,
 	parentKey: string,
 ): SummaryChildKeyValueRow[] {
-	return db
-		.prepare(
-			`SELECT m.key AS key, m.value AS value
-             FROM memory_edges e
-             JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-             WHERE e.relation = 'summarizes' AND e.deleted = 0 AND e.source_key = ?`,
-		)
-		.all(parentKey) as SummaryChildKeyValueRow[];
+	return getAll(
+		db,
+		summarizesChildren()
+			.select(["m.key as key", "m.value as value"])
+			.where("e.source_key", "=", parentKey),
+	);
 }

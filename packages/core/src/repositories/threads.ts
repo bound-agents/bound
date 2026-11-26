@@ -1,38 +1,49 @@
 import type { Database } from "bun:sqlite";
 import type { Thread } from "@bound/shared";
+import { getOne, queryBuilder } from "../query-builder";
+
+/**
+ * `SELECT *` over `threads`, narrowed to the `Thread` domain shape: the DDL
+ * admits NULL in `color` and `deleted`, which `Thread` declares non-null.
+ */
+function selectThreadRow() {
+	return queryBuilder
+		.selectFrom("threads")
+		.selectAll()
+		.$narrowType<{ color: number; deleted: number }>();
+}
 
 export function findThreadById(db: Database, id: string): Thread | null {
-	return db.query("SELECT * FROM threads WHERE id = ?").get(id) as Thread | null;
+	return getOne(db, selectThreadRow().where("id", "=", id));
 }
 
 export function findLiveThreadById(db: Database, id: string): Thread | null {
-	return db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(id) as Thread | null;
+	return getOne(db, selectThreadRow().where("id", "=", id).where("deleted", "=", 0));
 }
 
 export function findThreadIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM threads WHERE id = ?").get(id) as { id: string } | null;
+	return getOne(db, queryBuilder.selectFrom("threads").select("id").where("id", "=", id));
 }
 
 export function findLiveThreadIdById(db: Database, id: string): { id: string } | null {
-	return db.query("SELECT id FROM threads WHERE id = ? AND deleted = 0").get(id) as {
-		id: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("threads").select("id").where("id", "=", id).where("deleted", "=", 0),
+	);
 }
 
 export function findThreadUserAndInterfaceById(
 	db: Database,
 	id: string,
 ): { user_id: string; interface: string } | null {
-	return db.query("SELECT user_id, interface FROM threads WHERE id = ?").get(id) as {
-		user_id: string;
-		interface: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("threads").select(["user_id", "interface"]).where("id", "=", id),
+	);
 }
 
 export function findThreadSummaryById(db: Database, id: string): { summary: string | null } | null {
-	return db.query("SELECT summary FROM threads WHERE id = ?").get(id) as {
-		summary: string | null;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("threads").select("summary").where("id", "=", id));
 }
 
 export function findThreadSummaryStateById(
@@ -43,44 +54,45 @@ export function findThreadSummaryStateById(
 	summary_through: string | null;
 	last_message_at: string | null;
 } | null {
-	return db
-		.query("SELECT summary, summary_through, last_message_at FROM threads WHERE id = ?")
-		.get(id) as {
-		summary: string | null;
-		summary_through: string | null;
-		last_message_at: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select(["summary", "summary_through", "last_message_at"])
+			.where("id", "=", id),
+	);
 }
 
 export function findThreadTitleById(db: Database, id: string): Pick<Thread, "title"> | null {
-	return db.query("SELECT title FROM threads WHERE id = ?").get(id) as Pick<Thread, "title"> | null;
+	return getOne(db, queryBuilder.selectFrom("threads").select("title").where("id", "=", id));
 }
 
 export function findThreadCreatedAtById(db: Database, id: string): { created_at: string } | null {
-	return db.query("SELECT created_at FROM threads WHERE id = ?").get(id) as {
-		created_at: string;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("threads").select("created_at").where("id", "=", id));
 }
 
 export function findThreadModelHintById(
 	db: Database,
 	id: string,
 ): { model_hint: string | null } | null {
-	return db.query("SELECT model_hint FROM threads WHERE id = ?").get(id) as {
-		model_hint: string | null;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("threads").select("model_hint").where("id", "=", id));
 }
 
 export function findLatestThreadColorExcludingInterfaces(
 	db: Database,
 	excludedInterfaces: readonly string[],
 ): { color: number } | null {
-	const placeholders = excludedInterfaces.map(() => "?").join(", ");
-	return db
-		.query(
-			`SELECT color FROM threads WHERE deleted = 0 AND interface NOT IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`,
-		)
-		.get(...excludedInterfaces) as { color: number } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select("color")
+			.where("deleted", "=", 0)
+			.where("interface", "not in", excludedInterfaces)
+			.orderBy("created_at", "desc")
+			.limit(1)
+			.$narrowType<{ color: number }>(),
+	);
 }
 
 /** One link up the ancestry chain (live rows only). */
@@ -88,9 +100,14 @@ export function findThreadParentIdById(
 	db: Database,
 	id: string,
 ): { parent_thread_id: string | null } | null {
-	return db.query("SELECT parent_thread_id FROM threads WHERE id = ? AND deleted = 0").get(id) as {
-		parent_thread_id: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select("parent_thread_id")
+			.where("id", "=", id)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -103,7 +120,12 @@ export function findThreadAgentIdById(
 	db: Database,
 	id: string,
 ): { agent_id: string | null } | null {
-	return db.query("SELECT agent_id FROM threads WHERE id = ? AND deleted = 0").get(id) as {
-		agent_id: string | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("threads")
+			.select("agent_id")
+			.where("id", "=", id)
+			.where("deleted", "=", 0),
+	);
 }

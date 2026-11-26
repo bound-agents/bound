@@ -1,41 +1,64 @@
 import type { Database } from "bun:sqlite";
 import { PASSIVE_INTAKE_KINDS, RELAY_RESPONSE_KINDS } from "@bound/shared";
+import { type NotNull, sql } from "kysely";
 import {
+	type DurableWorkClaimState,
 	type DurableWorkInspectionRow,
 	type DurableWorkRow,
 	LOCAL_WORK_TARGET,
 } from "../durable-work";
+import { getAll, getOne, queryBuilder } from "../query-builder";
+
+/** `DurableWorkRow.claim_state` is the closed state union; the column is plain TEXT. */
+const fullDurableWorkRows = () =>
+	queryBuilder
+		.selectFrom("durable_work")
+		.selectAll()
+		.$narrowType<{ claim_state: DurableWorkClaimState }>();
 
 export function listDurableWorkForInspection(
 	db: Database,
 	staleBefore: string,
 ): DurableWorkInspectionRow[] {
-	return db
-		.query(
-			`SELECT *, CAST((julianday('now') - julianday(created_at)) * 86400000 AS INTEGER) AS age_ms
-			 FROM durable_work
-			 WHERE claim_state = 'dead_letter'
-			    OR (claim_state IN ('pending', 'processing') AND created_at <= ?)
-			    OR (claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?)
-			 ORDER BY created_at ASC`,
-		)
-		.all(staleBefore, staleBefore) as DurableWorkInspectionRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.select(
+				sql<number>`CAST((julianday('now') - julianday(created_at)) * 86400000 AS INTEGER)`.as(
+					"age_ms",
+				),
+			)
+			.where((eb) =>
+				eb.or([
+					eb("claim_state", "=", "dead_letter"),
+					eb.and([
+						eb("claim_state", "in", ["pending", "processing"]),
+						eb("created_at", "<=", staleBefore),
+					]),
+					eb.and([
+						eb("claim_state", "=", "transferring"),
+						eb("claimed_at", "is not", null),
+						eb("claimed_at", "<=", staleBefore),
+					]),
+				]),
+			)
+			.orderBy("created_at", "asc"),
+	);
 }
 
 export function getDurableWork(db: Database, id: string): DurableWorkRow | null {
-	return db.query("SELECT * FROM durable_work WHERE id = ?").get(id) as DurableWorkRow | null;
+	return getOne(db, fullDurableWorkRows().where("id", "=", id));
 }
 
 export function listDeadLetterDurableWork(db: Database, kind: string): DurableWorkRow[] {
-	return db
-		.query(
-			"SELECT * FROM durable_work WHERE kind = ? AND claim_state = 'dead_letter' ORDER BY created_at",
-		)
-		.all(kind) as DurableWorkRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.where("kind", "=", kind)
+			.where("claim_state", "=", "dead_letter")
+			.orderBy("created_at"),
+	);
 }
-
-const RESPONSE_KIND_PLACEHOLDERS = RELAY_RESPONSE_KINDS.map(() => "?").join(", ");
-const INTAKE_KIND_PLACEHOLDERS = PASSIVE_INTAKE_KINDS.map(() => "?").join(", ");
 
 /**
  * Earliest pending durable response row targeted at self for `refId`. Ordered
@@ -49,14 +72,16 @@ export function readDurableResponseByRefId(
 	refId: string,
 	ownSiteId: string,
 ): DurableWorkRow | null {
-	return db
-		.query(
-			`SELECT * FROM durable_work
-			 WHERE ref_id = ? AND target_site_id IN (?, ?) AND claim_state = 'pending'
-			   AND kind IN (${RESPONSE_KIND_PLACEHOLDERS})
-			 ORDER BY created_at ASC LIMIT 1`,
-		)
-		.get(refId, ownSiteId, LOCAL_WORK_TARGET, ...RELAY_RESPONSE_KINDS) as DurableWorkRow | null;
+	return getOne(
+		db,
+		fullDurableWorkRows()
+			.where("ref_id", "=", refId)
+			.where("target_site_id", "in", [ownSiteId, LOCAL_WORK_TARGET])
+			.where("claim_state", "=", "pending")
+			.where("kind", "in", RELAY_RESPONSE_KINDS)
+			.orderBy("created_at", "asc")
+			.limit(1),
+	);
 }
 
 /** All pending durable response rows targeted at self for `streamId`, oldest first. */
@@ -65,14 +90,15 @@ export function readDurableResponsesByStreamId(
 	streamId: string,
 	ownSiteId: string,
 ): DurableWorkRow[] {
-	return db
-		.query(
-			`SELECT * FROM durable_work
-			 WHERE stream_id = ? AND target_site_id IN (?, ?) AND claim_state = 'pending'
-			   AND kind IN (${RESPONSE_KIND_PLACEHOLDERS})
-			 ORDER BY created_at ASC`,
-		)
-		.all(streamId, ownSiteId, LOCAL_WORK_TARGET, ...RELAY_RESPONSE_KINDS) as DurableWorkRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.where("stream_id", "=", streamId)
+			.where("target_site_id", "in", [ownSiteId, LOCAL_WORK_TARGET])
+			.where("claim_state", "=", "pending")
+			.where("kind", "in", RELAY_RESPONSE_KINDS)
+			.orderBy("created_at", "asc"),
+	);
 }
 
 /**
@@ -90,14 +116,15 @@ export function readDurablePartsByStreamId(
 	ownSiteId: string,
 	kind: string,
 ): DurableWorkRow[] {
-	return db
-		.query(
-			`SELECT * FROM durable_work
-			 WHERE stream_id = ? AND target_site_id IN (?, ?) AND claim_state IN ('pending', 'processing')
-			   AND kind = ?
-			 ORDER BY created_at ASC`,
-		)
-		.all(streamId, ownSiteId, LOCAL_WORK_TARGET, kind) as DurableWorkRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.where("stream_id", "=", streamId)
+			.where("target_site_id", "in", [ownSiteId, LOCAL_WORK_TARGET])
+			.where("claim_state", "in", ["pending", "processing"])
+			.where("kind", "=", kind)
+			.orderBy("created_at", "asc"),
+	);
 }
 
 export interface StalePendingIntakeDurableWorkGroup {
@@ -117,17 +144,25 @@ export function findStalePendingIntakeDurableWork(
 	kind: string,
 	staleBeforeIso: string,
 ): StalePendingIntakeDurableWorkGroup[] {
-	return db
-		.query(
-			`SELECT ref_id, kind, COUNT(*) AS count,
-			        MIN(COALESCE(received_at, created_at)) AS oldest_received_at
-			 FROM durable_work
-			 WHERE claim_state = 'pending' AND kind = ? AND ref_id IS NOT NULL
-			   AND COALESCE(received_at, created_at) < ?
-			 GROUP BY ref_id
-			 ORDER BY oldest_received_at ASC`,
-		)
-		.all(kind, staleBeforeIso) as StalePendingIntakeDurableWorkGroup[];
+	const receivedOrCreated = sql<string>`COALESCE(received_at, created_at)`;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("durable_work")
+			.select((eb) => [
+				"ref_id",
+				"kind",
+				eb.fn.countAll<number>().as("count"),
+				eb.fn.min<string>(receivedOrCreated).as("oldest_received_at"),
+			])
+			.where("claim_state", "=", "pending")
+			.where("kind", "=", kind)
+			.where("ref_id", "is not", null)
+			.where(receivedOrCreated, "<", staleBeforeIso)
+			.groupBy("ref_id")
+			.orderBy("oldest_received_at", "asc")
+			.$narrowType<{ ref_id: NotNull }>(),
+	);
 }
 
 export function listPendingIntakeDurableWork(
@@ -135,29 +170,38 @@ export function listPendingIntakeDurableWork(
 	kind: string,
 	refId: string,
 ): DurableWorkRow[] {
-	return db
-		.query(
-			`SELECT * FROM durable_work WHERE kind = ? AND ref_id = ? AND claim_state = 'pending' ORDER BY COALESCE(received_at, created_at) ASC`,
-		)
-		.all(kind, refId) as DurableWorkRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.where("kind", "=", kind)
+			.where("ref_id", "=", refId)
+			.where("claim_state", "=", "pending")
+			.orderBy(sql`COALESCE(received_at, created_at)`, "asc"),
+	);
 }
 
 export function listPendingIntakeDurableWorkForRef(db: Database, refId: string): DurableWorkRow[] {
-	return db
-		.query(
-			`SELECT * FROM durable_work WHERE ref_id = ? AND kind IN (${INTAKE_KIND_PLACEHOLDERS}) AND claim_state = 'pending' ORDER BY COALESCE(received_at, created_at) ASC`,
-		)
-		.all(refId, ...PASSIVE_INTAKE_KINDS) as DurableWorkRow[];
+	return getAll(
+		db,
+		fullDurableWorkRows()
+			.where("ref_id", "=", refId)
+			.where("kind", "in", PASSIVE_INTAKE_KINDS)
+			.where("claim_state", "=", "pending")
+			.orderBy(sql`COALESCE(received_at, created_at)`, "asc"),
+	);
 }
 
 export function countPendingIntakeDurableWork(db: Database, refId: string): number {
-	return (
-		db
-			.query(
-				`SELECT COUNT(*) AS count FROM durable_work WHERE ref_id = ? AND kind IN (${INTAKE_KIND_PLACEHOLDERS}) AND claim_state = 'pending'`,
-			)
-			.get(refId, ...PASSIVE_INTAKE_KINDS) as { count: number }
-	).count;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("durable_work")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("ref_id", "=", refId)
+			.where("kind", "in", PASSIVE_INTAKE_KINDS)
+			.where("claim_state", "=", "pending"),
+	);
+	return row?.count ?? 0;
 }
 
 /**
@@ -167,11 +211,14 @@ export function countPendingIntakeDurableWork(db: Database, refId: string): numb
  * never transfer, so they must not block a hub switch.
  */
 export function countPendingPeerTargetedDurableWork(db: Database, ownSiteId: string): number {
-	return (
-		db
-			.query(
-				"SELECT COUNT(*) AS count FROM durable_work WHERE target_site_id != ? AND target_site_id != ? AND claim_state IN ('pending', 'transferring')",
-			)
-			.get(ownSiteId, LOCAL_WORK_TARGET) as { count: number }
-	).count;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("durable_work")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("target_site_id", "!=", ownSiteId)
+			.where("target_site_id", "!=", LOCAL_WORK_TARGET)
+			.where("claim_state", "in", ["pending", "transferring"]),
+	);
+	return row?.count ?? 0;
 }

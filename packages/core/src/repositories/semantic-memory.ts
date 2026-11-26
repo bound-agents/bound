@@ -1,24 +1,35 @@
 import type { Database } from "bun:sqlite";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /** All active entry values (used for token-frequency analysis). */
 export function listMemoryValues(db: Database): Array<{ value: string }> {
-	return db.query("SELECT value FROM semantic_memory WHERE deleted = 0").all() as Array<{
-		value: string;
-	}>;
+	return getAll(
+		db,
+		queryBuilder.selectFrom("semantic_memory").select("value").where("deleted", "=", 0),
+	);
 }
 
 export function findMemoryValueByKey(db: Database, key: string): { value: string } | null {
-	return db.query("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0").get(key) as {
-		value: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory")
+			.select("value")
+			.where("key", "=", key)
+			.where("deleted", "=", 0),
+	);
 }
 
 export function countMemoryByKeyPrefix(db: Database, keyPattern: string): number {
-	return (
-		db
-			.query("SELECT COUNT(*) as count FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
-			.get(keyPattern) as { count: number }
-	).count;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory")
+			.select((eb) => eb.fn.countAll<number>().as("count"))
+			.where("key", "like", keyPattern)
+			.where("deleted", "=", 0),
+	);
+	return row?.count ?? 0;
 }
 
 /**
@@ -29,34 +40,45 @@ export function findMemoryIdByKeyIncludingDeleted(
 	db: Database,
 	key: string,
 ): { id: string } | null {
-	return db.query("SELECT id FROM semantic_memory WHERE key = ?").get(key) as { id: string } | null;
+	return getOne(db, queryBuilder.selectFrom("semantic_memory").select("id").where("key", "=", key));
 }
 
 /** Active detail-tier entries ordered by most recently accessed. */
 export function listDetailMemoryAccessOrder(
 	db: Database,
 ): Array<{ id: string; key: string; last_accessed_at: string | null }> {
-	return db
-		.query(
-			"SELECT id, key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
-		)
-		.all() as Array<{ id: string; key: string; last_accessed_at: string | null }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory")
+			.select(["id", "key", "last_accessed_at"])
+			.where("tier", "=", "detail")
+			.where("deleted", "=", 0)
+			.orderBy("last_accessed_at", "desc"),
+	);
 }
 
 /** Distinct keys of active, non-internal entries modified after the baseline. */
 export function listMemoryDeltaKeysSince(db: Database, baseline: string): Array<{ key: string }> {
-	return db
-		.query(
-			`SELECT DISTINCT key FROM semantic_memory
-			 WHERE modified_at > ?
-			   AND deleted = 0
-			   AND key NOT LIKE '_internal.%'`,
-		)
-		.all(baseline) as Array<{ key: string }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory")
+			.select("key")
+			.distinct()
+			.where("modified_at", ">", baseline)
+			.where("deleted", "=", 0)
+			.where("key", "not like", "_internal.%"),
+	);
 }
 
 export function countActiveMemory(db: Database): number {
-	return (
-		db.query("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as { c: number }
-	).c;
+	const row = getOne(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory")
+			.select((eb) => eb.fn.countAll<number>().as("c"))
+			.where("deleted", "=", 0),
+	);
+	return row?.c ?? 0;
 }

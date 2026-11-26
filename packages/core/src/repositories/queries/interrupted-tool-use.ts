@@ -29,9 +29,13 @@ WHERE t.deleted = 0
 	  AND dq.status IN ('pending', 'processing')
   )`;
 
+/**
+ * Stays raw: the SQL text is exported and pinned by the CLI startup-wiring tests
+ * and `bootstrap.ts`, so a compiled builder query would change a public string.
+ */
 export function listInterruptedToolUseThreadIds(
 	db: Database,
 	siteId: string,
 ): Array<{ thread_id: string }> {
-	return db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{ thread_id: string }>;
+	return db.query<{ thread_id: string }, [string]>(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId);
 }

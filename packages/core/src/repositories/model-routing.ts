@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { ModelAliasRow, ModelRoutingRuleRow, RouteDrainRow } from "@bound/shared";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /**
  * Read repository for the three synced routing-preference tables
@@ -18,9 +19,15 @@ export function findModelRoutingRule(
 	db: Database,
 	logicalModel: string,
 ): ModelRoutingRuleRow | null {
-	return db
-		.query("SELECT * FROM model_routing_rules WHERE logical_model = ? AND deleted = 0 LIMIT 1")
-		.get(logicalModel) as ModelRoutingRuleRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("model_routing_rules")
+			.selectAll()
+			.where("logical_model", "=", logicalModel)
+			.where("deleted", "=", 0)
+			.limit(1),
+	);
 }
 
 /** Existence check INCLUDING tombstones — write path uses this to UPDATE-vs-INSERT. */
@@ -28,22 +35,37 @@ export function findModelRoutingRuleIncludingDeleted(
 	db: Database,
 	logicalModel: string,
 ): { logical_model: string } | null {
-	return db
-		.query("SELECT logical_model FROM model_routing_rules WHERE logical_model = ?")
-		.get(logicalModel) as { logical_model: string } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("model_routing_rules")
+			.select("logical_model")
+			.where("logical_model", "=", logicalModel),
+	);
 }
 
 export function listModelRoutingRules(db: Database): ModelRoutingRuleRow[] {
-	return db
-		.query("SELECT * FROM model_routing_rules WHERE deleted = 0 ORDER BY logical_model ASC")
-		.all() as ModelRoutingRuleRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("model_routing_rules")
+			.selectAll()
+			.where("deleted", "=", 0)
+			.orderBy("logical_model", "asc"),
+	);
 }
 
 /** Live drain row for a RouteId, or null if the route is not drained. */
 export function findRouteDrain(db: Database, routeId: string): RouteDrainRow | null {
-	return db
-		.query("SELECT * FROM route_drains WHERE route_id = ? AND deleted = 0 LIMIT 1")
-		.get(routeId) as RouteDrainRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("route_drains")
+			.selectAll()
+			.where("route_id", "=", routeId)
+			.where("deleted", "=", 0)
+			.limit(1),
+	);
 }
 
 /** Existence check INCLUDING tombstones for the drain write path. */
@@ -51,15 +73,17 @@ export function findRouteDrainIncludingDeleted(
 	db: Database,
 	routeId: string,
 ): { route_id: string } | null {
-	return db.query("SELECT route_id FROM route_drains WHERE route_id = ?").get(routeId) as {
-		route_id: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("route_drains").select("route_id").where("route_id", "=", routeId),
+	);
 }
 
 export function listDrainedRouteIds(db: Database): string[] {
-	const rows = db.query("SELECT route_id FROM route_drains WHERE deleted = 0").all() as Array<{
-		route_id: string;
-	}>;
+	const rows = getAll(
+		db,
+		queryBuilder.selectFrom("route_drains").select("route_id").where("deleted", "=", 0),
+	);
 	return rows.map((r) => r.route_id);
 }
 
@@ -67,9 +91,13 @@ export function listDrainedRouteIds(db: Database): string[] {
 export function listRouteDrains(
 	db: Database,
 ): Array<{ route_id: string; drained_at: string; reason: string | null }> {
-	return db
-		.query("SELECT route_id, drained_at, reason FROM route_drains WHERE deleted = 0")
-		.all() as Array<{ route_id: string; drained_at: string; reason: string | null }>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("route_drains")
+			.select(["route_id", "drained_at", "reason"])
+			.where("deleted", "=", 0),
+	);
 }
 
 /** Existence check INCLUDING tombstones for the alias write path. */
@@ -77,15 +105,22 @@ export function findModelAliasIncludingDeleted(
 	db: Database,
 	providerKey: string,
 ): { provider_key: string } | null {
-	return db
-		.query("SELECT provider_key FROM model_aliases WHERE provider_key = ?")
-		.get(providerKey) as {
-		provider_key: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("model_aliases")
+			.select("provider_key")
+			.where("provider_key", "=", providerKey),
+	);
 }
 
 export function listModelAliases(db: Database): ModelAliasRow[] {
-	return db
-		.query("SELECT * FROM model_aliases WHERE deleted = 0 ORDER BY provider_key ASC")
-		.all() as ModelAliasRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("model_aliases")
+			.selectAll()
+			.where("deleted", "=", 0)
+			.orderBy("provider_key", "asc"),
+	);
 }

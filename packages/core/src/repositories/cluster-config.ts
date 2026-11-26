@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getOne, queryBuilder } from "../query-builder";
 
 /**
  * `cluster_config` is keyed by `key`, not `id`.
@@ -14,20 +15,29 @@ import type { Database } from "bun:sqlite";
  * (context-assembly persona load, leader lookup, scheduler emergency_stop check)
  */
 export function findClusterConfigValueByKey(db: Database, key: string): { value: string } | null {
-	return db
-		.query<{ value: string }, [string]>(
-			"SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1",
-		)
-		.get(key) as { value: string } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("cluster_config")
+			.select("value")
+			.where("key", "=", key)
+			.where("deleted", "=", 0)
+			.limit(1),
+	);
 }
 
 /**
  * Existence check for a LIVE cluster_config row, returning its `key` or null.
  */
 export function findClusterConfigKeyByKey(db: Database, key: string): { key: string } | null {
-	return db.query("SELECT key FROM cluster_config WHERE key = ? AND deleted = 0").get(key) as {
-		key: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("cluster_config")
+			.select("key")
+			.where("key", "=", key)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -39,7 +49,5 @@ export function findClusterConfigKeyByKeyIncludingDeleted(
 	db: Database,
 	key: string,
 ): { key: string } | null {
-	return db.query("SELECT key FROM cluster_config WHERE key = ?").get(key) as {
-		key: string;
-	} | null;
+	return getOne(db, queryBuilder.selectFrom("cluster_config").select("key").where("key", "=", key));
 }
