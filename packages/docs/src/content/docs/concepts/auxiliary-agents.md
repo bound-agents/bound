@@ -68,8 +68,12 @@ parent's client session: each call relays to the session host. When the parent t
 attached to a client session, the errand needs client tools, and no live session can serve
 them, the invocation fails before the errand starts with `client session unavailable for aux
 dispatch`. An errand needs client tools when its identity has no allowlist or its allowlist
-names a tool that no server-side source provides. In a Yard program, that failure fails the
-`aux()` effect.
+names a tool that no server-side source provides. In a Yard program, that failure ends the whole
+run: in-flight effects are cancelled, unstarted `all()` and `sequence()` children are never
+dispatched (even with `errors: "settled"`), a `try`/`catch` in the program cannot catch it, and
+the `yard` call fails with `client session unavailable for aux dispatch`. A nested Yard that hits
+it ends its parent run too. Other aux failures, such as an errand that completes with an error,
+stay visible to the program, which decides whether to retry or rework.
 
 An auxiliary agent waits on each inherited client tool for the call's own `timeout` plus 30
 seconds, and never less than 300 seconds. A relayed call gets the same wait on the session

@@ -329,6 +329,42 @@ describe("Native Aux Tool (invoke slice)", () => {
 			expect(res.content).toContain("client session unavailable for aux dispatch");
 		});
 
+		it("marks a runner rejection with typed metadata so Yard ends the run (#316)", async () => {
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					auxLoopRunner: async () => ({
+						summary: "Error: client session unavailable for aux dispatch: p",
+						error: "client session unavailable for aux dispatch: p",
+						rejected: true,
+					}),
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+
+			const out = await exec({ action: "invoke", name: "tama", instructions: "edit" });
+
+			const res = out as { content: string; metadata: Record<string, unknown> };
+			expect(res.metadata.aux_dispatch_rejected).toBe(true);
+			expect(res.metadata.aux_dispatch_reason).toBe(
+				"client session unavailable for aux dispatch: p",
+			);
+			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
+		});
+
+		it("leaves an errand that completed with error unmarked (#316)", async () => {
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					auxLoopRunner: async () => ({ summary: "", error: "tests failed" }),
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+			const out = await exec({ action: "invoke", name: "tama", instructions: "edit" });
+			const res = out as { content: string; metadata: Record<string, unknown> };
+			expect(res.metadata.aux_dispatch_rejected).toBeUndefined();
+		});
+
 		it("returns error summary when loop runner errors", async () => {
 			const exec = getExecute(
 				createAuxTool({

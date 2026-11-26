@@ -1148,6 +1148,108 @@ describe("createAgentLoopFactory — Yard aux() from a parent whose session is o
 		expect(parentToolResults(db, parentThreadId)).toContain("aux report: read README");
 	}, 60_000);
 
+	// implement -> review -> rework, catching every failure and moving on: the
+	// shape that kept dispatching into a dead session before #316.
+	const reworkProgram = `function* main() {
+		yield tool("aux", { action: "define", name: "impl", persona: "implements" });
+		yield tool("aux", { action: "define", name: "rev", persona: "reviews" });
+		const log = [];
+		for (let round = 0; round < 3; round++) {
+			try {
+				log.push("impl:" + (yield aux("impl", "implement round " + round)));
+			} catch (e) {
+				log.push("impl failed: " + e.message);
+				continue;
+			}
+			try {
+				log.push("rev:" + (yield aux("rev", "review round " + round)));
+			} catch (e) {
+				log.push("rev failed: " + e.message);
+			}
+		}
+		return log;
+	}`;
+
+	function auxThreadCount(db: Database, parentThreadId: string): number {
+		return (
+			db
+				.prepare("SELECT COUNT(*) AS n FROM threads WHERE parent_thread_id = ?")
+				.get(parentThreadId) as { n: number }
+		).n;
+	}
+
+	function yardResult(db: Database, parentThreadId: string): string {
+		const row = db
+			.prepare(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' ORDER BY created_at LIMIT 1",
+			)
+			.get(parentThreadId) as { content: string } | null;
+		return row?.content ?? "";
+	}
+
+	it("detached: a rejected aux() ends a catching rework Yard after one dispatch (#316)", async () => {
+		const db = makeDb();
+		const appContext = makeAppContext(db);
+		const backend = new ParentAndAuxBackend(reworkProgram);
+		const factory = createAgentLoopFactory(
+			appContext,
+			makeRouter(backend),
+			undefined,
+			createClusterFs({ db, siteId: "test-site-id" }),
+		);
+		const userId = seedUser(db);
+		const parentThreadId = seedParent(db, userId, false);
+		const loop = factory({
+			threadId: parentThreadId,
+			userId,
+			modelId: "mock-model",
+			clientTools,
+			platform: "boundless",
+		} as never);
+		await loop.run();
+
+		expect(auxThreadCount(db, parentThreadId)).toBe(1);
+		expect(backend.auxCalls).toBe(0);
+		const result = yardResult(db, parentThreadId);
+		expect(result).toStartWith("Error: client session unavailable for aux dispatch:");
+		expect(result).not.toContain("impl failed");
+	}, 60_000);
+
+	it("attached: the same catching rework Yard completes its rounds (#316)", async () => {
+		const db = makeDb();
+		const appContext = makeAppContext(db);
+		const backend = new ParentAndAuxBackend(reworkProgram);
+		const factory = createAgentLoopFactory(
+			appContext,
+			makeRouter(backend),
+			undefined,
+			createClusterFs({ db, siteId: "test-site-id" }),
+		);
+		const userId = seedUser(db);
+		const parentThreadId = seedParent(db, userId, true);
+		const stop = answerRelayedClientTools(db, appContext);
+		try {
+			const loop = factory({
+				threadId: parentThreadId,
+				userId,
+				modelId: "mock-model",
+				clientTools,
+				platform: "boundless",
+			} as never);
+			await loop.run();
+		} finally {
+			stop();
+		}
+
+		expect(auxThreadCount(db, parentThreadId)).toBe(6);
+		// The persisted row carries the loop's "[duration: …]" trailer.
+		const raw = yardResult(db, parentThreadId).replace(/\s*\[duration: [^\]]*\]\s*$/, "");
+		const log = (JSON.parse(raw) as { result: string[] }).result;
+		expect(log).toHaveLength(6);
+		expect(log.filter((entry) => entry.startsWith("impl:"))).toHaveLength(3);
+		expect(log.filter((entry) => entry.startsWith("rev:"))).toHaveLength(3);
+	}, 60_000);
+
 	it("detached: the aux() effect rejects and the aux loop never runs", async () => {
 		const db = makeDb();
 		const appContext = makeAppContext(db);

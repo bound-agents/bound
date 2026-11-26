@@ -6,13 +6,15 @@ import { context as otelContext, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution";
 import { createRelayBackend } from "../relay-backend";
-import type { RegisteredTool, ToolContext } from "../types";
+import type { RegisteredTool, ToolContext, ToolResultWithMetadata } from "../types";
 import {
 	type JsonValue,
+	YardFatalDispatchError,
 	type YardHost,
 	type YardInferenceRequest,
 	runYardProgram,
 } from "../yard/driver";
+import { AUX_DISPATCH_REASON_KEY, AUX_DISPATCH_REJECTED_KEY } from "./aux-dispatch-rejection";
 import { defineToolSchema } from "./tool-schema";
 
 /**
@@ -157,8 +159,13 @@ async function raceDeadline<T>(
 	what: string,
 ): Promise<T> {
 	const remaining = scope.deadlineAt - Date.now();
+	// A fatal dispatch rejection aborts the tree with its own typed reason;
+	// propagate it as-is so every waiting effect (including the parent's
+	// nested-yard call) ends the run instead of reporting a deadline.
+	const fatalAbort = () =>
+		scope.abort.signal.reason instanceof YardFatalDispatchError ? scope.abort.signal.reason : null;
 	if (remaining <= 0 || scope.abort.signal.aborted) {
-		throw new Error(`yard deadline exceeded before ${what}`);
+		throw fatalAbort() ?? new Error(`yard deadline exceeded before ${what}`);
 	}
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let onAbort: (() => void) | undefined;
@@ -167,7 +174,7 @@ async function raceDeadline<T>(
 			promise,
 			new Promise<never>((_, reject) => {
 				const fail = () =>
-					reject(new Error(`yard deadline exceeded during ${what} (root timeout)`));
+					reject(fatalAbort() ?? new Error(`yard deadline exceeded during ${what} (root timeout)`));
 				timer = setTimeout(fail, remaining);
 				onAbort = fail;
 				scope.abort.signal.addEventListener("abort", fail, { once: true });
@@ -531,6 +538,18 @@ function checkSchemaReply(
 	return { ok: true, value: parsed };
 }
 
+function fatalDispatchReason(raw: unknown): string | null {
+	if (raw === null || typeof raw !== "object" || !("content" in raw)) return null;
+	const metadata = (raw as { metadata?: unknown }).metadata;
+	if (metadata === null || typeof metadata !== "object") return null;
+	const record = metadata as Record<string, unknown>;
+	if (record[AUX_DISPATCH_REJECTED_KEY] !== true) return null;
+	const reason = record[AUX_DISPATCH_REASON_KEY];
+	if (typeof reason === "string" && reason.length > 0) return reason;
+	const content = (raw as { content: unknown }).content;
+	return typeof content === "string" ? content.replace(/^Error:\s*/, "") : "aux dispatch rejected";
+}
+
 /** Build the YardHost that dispatches effects through Bound's dispatch paths. */
 function createYardHost(
 	ctx: ToolContext,
@@ -637,6 +656,15 @@ function createYardHost(
 					if (!isNestedYard) await scope.semaphore.acquire();
 					try {
 						const raw = await raceDeadline(Promise.resolve(execute()), scope, `tool "${name}"`);
+						const fatalReason = fatalDispatchReason(raw);
+						if (fatalReason !== null) {
+							// No aux can run anywhere in this tree: cancel in-flight
+							// siblings through the shared scope, then end the run
+							// host-side instead of handing the guest a catchable error.
+							const fatal = new YardFatalDispatchError(fatalReason);
+							if (!scope.abort.signal.aborted) scope.abort.abort(fatal);
+							throw fatal;
+						}
 						let content: string;
 						if (typeof raw === "string") {
 							content = raw;
@@ -789,7 +817,11 @@ function createYardHost(
 	};
 }
 
-async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope): Promise<string> {
+async function runYard(
+	ctx: ToolContext,
+	params: YardInput,
+	scope: YardRunScope,
+): Promise<string | ToolResultWithMetadata> {
 	const counters = { inferenceTokens: 0 };
 	const host = createYardHost(ctx, scope, counters);
 	const startedAt = Date.now();
@@ -891,7 +923,16 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 						elapsedMs: Date.now() - startedAt,
 						error: message,
 					});
-					return message.startsWith("Error:") ? message : `Error: ${message}`;
+					const content = message.startsWith("Error:") ? message : `Error: ${message}`;
+					if (err instanceof YardFatalDispatchError && scope.depth > 0) {
+						// Nested run: keep the rejection typed so the parent host
+						// ends its own run instead of throwing it into its guest.
+						return {
+							content,
+							metadata: { [AUX_DISPATCH_REJECTED_KEY]: true, [AUX_DISPATCH_REASON_KEY]: message },
+						};
+					}
+					return content;
 				}
 			}),
 		);

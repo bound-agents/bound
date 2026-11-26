@@ -551,6 +551,122 @@ describe("createYardTool", () => {
 		expect(raw).toMatch(/^Error:/);
 	});
 
+	describe("fatal aux dispatch rejection (#316)", () => {
+		const REASON =
+			"client session unavailable for aux dispatch: parent thread p is attached to a client session, but no live session can serve this errand's client tools";
+		let rejectingCalls: number;
+
+		beforeEach(() => {
+			rejectingCalls = 0;
+			registry.set("rejecting", {
+				kind: "builtin",
+				toolDefinition: {
+					type: "function",
+					function: { name: "rejecting", description: "x", parameters: {} },
+				},
+				execute: async () => {
+					rejectingCalls++;
+					// The message text is deliberately unrelated: Yard must key on
+					// the typed metadata, never on the content string.
+					return {
+						content: "Error: auxiliary agent 'impl' was not started",
+						metadata: { aux_dispatch_rejected: true, aux_dispatch_reason: REASON },
+					};
+				},
+			});
+		});
+
+		it("fails the run, skips the guest catch, and aborts in-flight siblings", async () => {
+			let seenSignal: AbortSignal | undefined;
+			ctx.executeClientTool = async (_name, _args, _timeout, signal) => {
+				seenSignal = signal;
+				await new Promise<void>((resolve) => {
+					if (signal?.aborted) return resolve();
+					signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return null;
+			};
+			registry.set("slow_client", {
+				kind: "client",
+				toolDefinition: {
+					type: "function",
+					function: { name: "slow_client", description: "x", parameters: {} },
+				},
+			});
+			const started = Date.now();
+			const raw = await invoke({
+				program: `function* main() {
+					const caught = [];
+					for (let round = 0; round < 3; round++) {
+						try {
+							yield all([tool("slow_client", {}), tool("rejecting", {})], { errors: "settled" });
+						} catch (e) {
+							caught.push(e.message);
+						}
+					}
+					return caught;
+				}`,
+				budget: { timeout_seconds: 20, concurrency: 2 },
+			});
+			expect(raw).toBe(`Error: ${REASON}`);
+			expect(rejectingCalls).toBe(1);
+			expect(seenSignal?.aborted).toBe(true);
+			expect((seenSignal?.reason as Error).message).toBe(REASON);
+			expect(Date.now() - started).toBeLessThan(10_000);
+		});
+
+		it("ends the parent run when a nested yard hits the rejection", async () => {
+			const raw = await invoke({
+				program: `function* main() {
+					const caught = [];
+					for (let round = 0; round < 3; round++) {
+						try {
+							yield tool("yard", { program: 'function* main() { try { return yield tool("rejecting", {}); } catch (e) { return "inner caught"; } }' });
+						} catch (e) {
+							caught.push(e.message);
+						}
+					}
+					return caught;
+				}`,
+			});
+			expect(raw).toBe(`Error: ${REASON}`);
+			expect(rejectingCalls).toBe(1);
+		});
+
+		it("keeps an ordinary Error: tool result catchable", async () => {
+			registry.set("failing", {
+				kind: "builtin",
+				toolDefinition: {
+					type: "function",
+					function: { name: "failing", description: "x", parameters: {} },
+				},
+				execute: async () => ({
+					content: "Auxiliary agent 'impl' completed with error: tests failed",
+					metadata: { aux_thread: "t" },
+				}),
+			});
+			registry.set("erroring", {
+				kind: "builtin",
+				toolDefinition: {
+					type: "function",
+					function: { name: "erroring", description: "x", parameters: {} },
+				},
+				execute: async () => "Error: file not found",
+			});
+			const raw = await invoke({
+				program: `function* main() {
+					const report = yield tool("failing", {});
+					try { yield tool("erroring", {}); return "unreachable"; }
+					catch (e) { return [report, e.message]; }
+				}`,
+			});
+			expect(JSON.parse(raw).result).toEqual([
+				"Auxiliary agent 'impl' completed with error: tests failed",
+				"Error: file not found",
+			]);
+		});
+	});
+
 	it("surfaces guest failures as an Error: result (exit-code convention)", async () => {
 		const raw = await invoke({ program: "function* main() { throw new Error('boom'); }" });
 		expect(raw).toMatch(/^Error:/);

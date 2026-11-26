@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { runYardProgram } from "../driver";
+import { YardFatalDispatchError, runYardProgram } from "../driver";
 import type { YardHost } from "../driver";
 
 /**
@@ -527,5 +527,104 @@ describe("runYardProgram — hardened intrinsics", () => {
 			host,
 		});
 		expect(out.result).toBe("YardEffectError: tool exploded");
+	});
+});
+
+describe("runYardProgram — fatal dispatch errors (#316)", () => {
+	const REASON = "client session unavailable for aux dispatch: parent thread p has no live session";
+
+	it("ends the run without throwing into the guest's catch block", async () => {
+		let dispatches = 0;
+		const host = fakeHost({
+			dispatchTool: async () => {
+				dispatches++;
+				throw new YardFatalDispatchError(REASON);
+			},
+		});
+		const run = runYardProgram({
+			program: `function* main() {
+				const caught = [];
+				for (let round = 0; round < 3; round++) {
+					try {
+						yield tool("aux", { round });
+					} catch (e) {
+						caught.push(e.message);
+					}
+				}
+				return caught;
+			}`,
+			host,
+		});
+		await expect(run).rejects.toBeInstanceOf(YardFatalDispatchError);
+		await expect(run).rejects.toThrow(REASON);
+		expect(dispatches).toBe(1);
+	});
+
+	it("stops a settled all() at the fatal child and never dispatches later children", async () => {
+		const seen: number[] = [];
+		const host = fakeHost({
+			dispatchTool: async (_name, args) => {
+				const n = (args as { n: number }).n;
+				seen.push(n);
+				if (n === 1) throw new YardFatalDispatchError(REASON);
+				return n;
+			},
+		});
+		const run = runYardProgram({
+			program: `function* main() {
+				try {
+					return yield all([1, 2, 3].map(n => tool("t", { n })), { errors: "settled", concurrency: 1 });
+				} catch (e) {
+					return "caught: " + e.message;
+				}
+			}`,
+			host,
+		});
+		await expect(run).rejects.toThrow(REASON);
+		expect(seen).toEqual([1]);
+	});
+
+	it("stops a sequence() at the fatal child", async () => {
+		const seen: number[] = [];
+		const host = fakeHost({
+			dispatchTool: async (_name, args) => {
+				const n = (args as { n: number }).n;
+				seen.push(n);
+				if (n === 1) throw new YardFatalDispatchError(REASON);
+				return n;
+			},
+		});
+		await expect(
+			runYardProgram({
+				program: `function* main() {
+					try { return yield sequence([tool("t", { n: 1 }), tool("t", { n: 2 })]); }
+					catch (e) { return "caught"; }
+				}`,
+				host,
+			}),
+		).rejects.toThrow(REASON);
+		expect(seen).toEqual([1]);
+	});
+
+	it("still throws an ordinary dispatch error into the guest", async () => {
+		let dispatches = 0;
+		const host = fakeHost({
+			dispatchTool: async () => {
+				dispatches++;
+				throw new Error("auxiliary agent 'impl' completed with error: tests failed");
+			},
+		});
+		const out = await runYardProgram({
+			program: `function* main() {
+				const caught = [];
+				for (let round = 0; round < 2; round++) {
+					try { yield tool("aux", { round }); } catch (e) { caught.push(e.name); }
+				}
+				return caught;
+			}`,
+			host,
+		});
+		expect(out.result).toEqual(["YardEffectError", "YardEffectError"]);
+		expect(dispatches).toBe(2);
 	});
 });

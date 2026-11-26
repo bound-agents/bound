@@ -527,6 +527,20 @@ function validateEffectPayload(value: unknown, depth = 0): YardEffectPayload {
 	}
 }
 
+/**
+ * A dispatch failure that ends the Yard run instead of entering the guest as a
+ * catchable YardEffectError. Hosts throw it when no further effect in the run
+ * can succeed (e.g. an aux() rejected because the parent's client session
+ * cannot be bound). The driver stops `all()` — including `errors: "settled"` —
+ * and `sequence()` at the first one and rejects `runYardProgram` with it.
+ */
+export class YardFatalDispatchError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "YardFatalDispatchError";
+	}
+}
+
 /** Run children with a concurrency cap, preserving input order in the results. */
 async function mapWithConcurrency(
 	items: YardEffectPayload[],
@@ -537,17 +551,28 @@ async function mapWithConcurrency(
 	const results: unknown[] = new Array(items.length);
 	let nextIndex = 0;
 	let failed = false;
+	let fatal = false;
 	let failure: unknown;
 	const workerCount = Math.max(1, Math.min(limit, items.length));
 	const workers = Array.from({ length: workerCount }, async () => {
 		for (;;) {
-			if (failed && !settled) return;
+			if (failed && (!settled || fatal)) return;
 			const i = nextIndex++;
 			if (i >= items.length) return;
 			try {
 				const value = await run(items[i] as YardEffectPayload);
 				results[i] = settled ? { status: "fulfilled", value } : value;
 			} catch (err) {
+				if (err instanceof YardFatalDispatchError) {
+					// Fatal ends the whole run even under errors: "settled" —
+					// no sibling may be folded into a status entry or dispatched.
+					if (!fatal) {
+						fatal = true;
+						failed = true;
+						failure = err;
+					}
+					return;
+				}
 				if (settled) {
 					results[i] = { status: "rejected", reason: errorMessage(err) };
 				} else if (!failed) {
@@ -559,6 +584,7 @@ async function mapWithConcurrency(
 		}
 	});
 	await Promise.all(workers);
+	if (fatal) throw failure;
 	if (failed && !settled) {
 		throw failure instanceof Error ? failure : new Error(String(failure));
 	}
@@ -732,6 +758,9 @@ export async function runYardProgram(options: RunYardProgramOptions): Promise<Ya
 				op = "next";
 				json = serialized;
 			} catch (err) {
+				// A fatal dispatch error ends the run host-side; it is never
+				// handed to the guest, so no try/catch can keep the program going.
+				if (err instanceof YardFatalDispatchError) throw err;
 				op = "throw";
 				json = JSON.stringify({ message: errorMessage(err), name: "YardEffectError" });
 			}

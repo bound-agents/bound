@@ -417,6 +417,17 @@ Two notes that make this shape safe at migration scale:
   a run went to an invented "repo-scout" and the round returned nothing.
   Read the roster inside the program (`tool("aux", { action: "list" })`)
   and constrain the planner to it; define missing roles BEFORE the run.
+- **An unbindable client session is fatal, not a retry.** When the parent
+  thread is attached to a client session that no live host can serve, the
+  first `aux()` is refused with `client session unavailable for aux
+  dispatch` and the whole run ends: in-flight siblings are aborted, later
+  `all()`/`sequence()` children never dispatch (even under
+  `errors: "settled"`), a `try`/`catch` never sees it, and a nested Yard
+  ends its parent. Don't wrap aux() in rework loops hoping to outlast it —
+  reattach the session and re-run. Every other aux failure (an errand that
+  completes with an error, a reviewer rejection, a tool error inside the
+  errand, an unknown identity) stays catchable, so retry and rework remain
+  the program's call.
 - **A missing dependency misclassified.** Two opposite failures, one
   discipline: classify from EVIDENCE, not disposition. One run, asked for
   all major languages, shipped only the family whose parser was already

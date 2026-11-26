@@ -85,7 +85,10 @@ before release.
 
 Time limits, unavailable tools, failed work, missing evidence, or external blockers can leave
 part of a request incomplete. Review catches gaps and triggers targeted correction against the
-available evidence.
+available evidence. One failure ends the run outright instead: an auxiliary agent that cannot
+start because the parent's client session is unavailable. No later effect in that run could
+succeed, so the program cannot catch it and continue (see
+[Auxiliary agents](/bound/concepts/auxiliary-agents/)).
 
 A synthesis step that asks a model for structured output re-asks once by default when the reply
 is not valid JSON or does not match the requested shape. The re-ask carries the error and an

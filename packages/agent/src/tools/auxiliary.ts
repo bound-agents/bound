@@ -17,6 +17,7 @@ import type {
 	ToolContext,
 	ToolResultWithMetadata,
 } from "../types";
+import { AUX_DISPATCH_REASON_KEY, AUX_DISPATCH_REJECTED_KEY } from "./aux-dispatch-rejection";
 import { defineToolSchema } from "./tool-schema";
 
 /**
@@ -443,11 +444,17 @@ async function handleInvoke(
 			// its only door). Metadata, not a content trailer: the LLM-visible
 			// content stays the summary alone.
 			if (result.rejected) {
-				// Starts with "Error:" so a Yard aux() effect fails instead of
-				// resolving with a report that nothing was done (#295).
+				// Starts with "Error:" so a direct call reads as a failure (#295).
+				// The typed metadata marker tells Yard the rejection is fatal for
+				// the whole run, so it never keys on the message text (#316).
+				const reason = result.error ?? result.summary.replace(/^Error:\s*/, "");
 				return {
-					content: `Error: auxiliary agent '${input.name}' was not started: ${result.error ?? result.summary}`,
-					metadata: { aux_thread: threadId },
+					content: `Error: auxiliary agent '${input.name}' was not started: ${reason}`,
+					metadata: {
+						aux_thread: threadId,
+						[AUX_DISPATCH_REJECTED_KEY]: true,
+						[AUX_DISPATCH_REASON_KEY]: reason,
+					},
 				};
 			}
 			if (result.error) {
