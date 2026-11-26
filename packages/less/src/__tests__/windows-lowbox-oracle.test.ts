@@ -1043,6 +1043,15 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const sandboxedGit = `git -c safe.directory=* ${identity.join(" ")}`;
 			const command = [
 				"$env:GIT_CONFIG_GLOBAL = 'NUL'",
+				'Add-Type -TypeDefinition @\'\nusing System; using System.Text; using System.Runtime.InteropServices;\npublic static class P317 {\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFileW(string n, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);\n [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr h, StringBuilder b, uint n, uint f);\n [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetLongPathNameW(string s, StringBuilder b, uint n);\n public static string Final(string p, uint flags) { IntPtr h = CreateFileW(p, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero); if (h == new IntPtr(-1)) return "OPENERR" + Marshal.GetLastWin32Error(); var b = new StringBuilder(1024); uint r = GetFinalPathNameByHandleW(h, b, 1024, flags); int e = Marshal.GetLastWin32Error(); CloseHandle(h); return r == 0 ? "ERR" + e : b.ToString(); }\n public static string Long(string p) { var b = new StringBuilder(1024); uint r = GetLongPathNameW(p, b, 1024); return r == 0 ? "ERR" + Marshal.GetLastWin32Error() : b.ToString(); }\n}\n\'@',
+				"$cd = [Environment]::CurrentDirectory",
+				"'P317-CD=' + $cd",
+				"'P317-FINAL0=' + [P317]::Final($cd, 0)",
+				"'P317-FINAL2=' + [P317]::Final($cd, 2)",
+				"'P317-LONG=' + [P317]::Long($cd)",
+				'$d = $cd; while ($d) { try { $null = [IO.Directory]::GetFileSystemEntries($d); "P317-LIST $d=OK" } catch { "P317-LIST $d=DENIED" }; $d = [IO.Path]::GetDirectoryName($d) }',
+				"git rev-parse --show-toplevel",
+				'"P317-REVPARSE=$LASTEXITCODE"',
 				`Set-Content -LiteralPath ${psLiteral(join(wt, "lowbox-wt.txt"))} -Value 'lowbox'`,
 				`${sandboxedGit} add lowbox-wt.txt`,
 				'"ADD_EXIT=$LASTEXITCODE"',
