@@ -430,3 +430,268 @@ describe("connectConfiguredMcpServers — terminal OAuth rejection (#299)", () =
 		db.close();
 	});
 });
+
+describe("connectConfiguredMcpServers — OAuth failure log fields (#318)", () => {
+	const AS = "https://as.example";
+	const TOKEN_URL = `${AS}/oauth/token`;
+	const MCP_URL = "https://mcp.sentry.dev/mcp";
+	const SEEDED_AT = "seeded-access-7f3a91";
+	const SEEDED_RT = "seeded-refresh-c2d804";
+
+	type Entry = { level: string; msg: string; meta?: Record<string, unknown> };
+	function captureLogger(): Logger & { entries: Entry[] } {
+		const entries: Entry[] = [];
+		const mk = (level: string) => (msg: string, meta?: Record<string, unknown>) =>
+			entries.push({ level, msg, meta });
+		return {
+			debug: () => {},
+			info: mk("info"),
+			warn: mk("warn"),
+			error: mk("error"),
+			entries,
+		} as Logger & { entries: Entry[] };
+	}
+
+	type TokenReply = { status: number; body: string; json?: boolean };
+	function fixtureFetch(token: TokenReply | Error): typeof fetch {
+		return (async (input: string | URL | Request) => {
+			const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const u = new URL(raw);
+			const bare = `${u.origin}${u.pathname}`;
+			if (bare === MCP_URL) {
+				if (token instanceof Error) throw token;
+				return new Response("", { status: 401, headers: { "www-authenticate": "Bearer" } });
+			}
+			if (bare === TOKEN_URL && !(token instanceof Error)) {
+				return new Response(token.body, {
+					status: token.status,
+					headers: { "content-type": token.json === false ? "text/plain" : "application/json" },
+				});
+			}
+			throw new Error(`unexpected fetch ${raw}`);
+		}) as typeof fetch;
+	}
+
+	async function seeded(logger: Logger, fetchFn: typeof fetch) {
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const store = new McpTokenStore(
+			join(tmpdir(), `mcp-auth-${randomBytes(4).toString("hex")}`, "mcp-auth.json"),
+		);
+		await store.saveBundle("sentry", {
+			accessToken: SEEDED_AT,
+			refreshToken: SEEDED_RT,
+			scopes: "read",
+			accessTokenExpiresAt: 0,
+			issuer: AS,
+		});
+		await store.saveDiscoveryState("sentry", {
+			authorizationServerUrl: AS,
+			resourceMetadata: { resource: MCP_URL, authorization_servers: [AS] },
+			authorizationServerMetadata: {
+				issuer: AS,
+				authorization_endpoint: `${AS}/authorize`,
+				// The query must never reach a log line.
+				token_endpoint: `${TOKEN_URL}?tenant=t-secret`,
+				response_types_supported: ["code"],
+				code_challenge_methods_supported: ["S256"],
+			},
+		});
+		const provider = new McpOAuthProvider(
+			db,
+			store,
+			{ name: "sentry", url: MCP_URL, clientId: "cid" },
+			"site-a",
+			new RaiseDebouncer(),
+			logger,
+		);
+		const cfg = {
+			name: "sentry",
+			transport: "http",
+			url: MCP_URL,
+			auth: { type: "oauth" },
+			fetch: fetchFn,
+		} as unknown as MCPServerConfig;
+		const provideAuth = (s: MCPServerConfig): MCPServerConfig =>
+			({ ...s, authProvider: provider }) as unknown as MCPServerConfig;
+		return { db, store, provider, cfg, provideAuth };
+	}
+
+	function expectNoSecrets(logger: { entries: Entry[] }): void {
+		const all = JSON.stringify(logger.entries);
+		expect(all).not.toContain(SEEDED_AT);
+		expect(all).not.toContain(SEEDED_RT);
+		expect(all).not.toContain("t-secret");
+	}
+
+	it("invalid_grant still raises a challenge and logs the OAuth code and token endpoint", async () => {
+		const logger = captureLogger();
+		const fetchFn = fixtureFetch({
+			status: 400,
+			body: JSON.stringify({ error: "invalid_grant", error_description: "Grant not found" }),
+		});
+		const { db, store, cfg, provideAuth } = await seeded(logger, fetchFn);
+
+		const map = await connectConfiguredMcpServers([cfg], logger, undefined, provideAuth);
+
+		// #299 behavior holds: the client is parked pending-auth with a challenge.
+		expect(map.has("sentry")).toBe(true);
+		const info = logger.entries.find(
+			(e) => e.level === "info" && e.msg.includes("needs authorization"),
+		);
+		expect(info?.meta).toEqual({
+			oauthError: "invalid_grant",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		expect(store.getBundle("sentry")?.refreshToken).toBeUndefined();
+		const warn = logger.entries.find(
+			(e) => e.level === "warn" && e.msg.includes("invalidating tokens credentials for sentry"),
+		);
+		expect(warn?.meta).toEqual({
+			server: "sentry",
+			scope: "tokens",
+			oauthError: "invalid_grant",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		expectNoSecrets(logger);
+		db.close();
+	});
+
+	it("503 temporarily_unavailable logs status and code on Failed to connect, credentials untouched", async () => {
+		const logger = captureLogger();
+		const fetchFn = fixtureFetch({
+			status: 503,
+			body: JSON.stringify({ error: "temporarily_unavailable" }),
+		});
+		const { db, store, cfg, provideAuth } = await seeded(logger, fetchFn);
+
+		const map = await connectConfiguredMcpServers([cfg], logger, undefined, provideAuth);
+
+		expect(map.has("sentry")).toBe(false);
+		const warn = logger.entries.find(
+			(e) => e.level === "warn" && e.msg === "[mcp] Failed to connect to sentry",
+		);
+		expect(warn?.meta).toMatchObject({
+			oauthError: "temporarily_unavailable",
+			tokenEndpoint: TOKEN_URL,
+			status: 503,
+		});
+		expect(store.getBundle("sentry")?.refreshToken).toBe(SEEDED_RT);
+		expect(store.getBundle("sentry")?.accessToken).toBe(SEEDED_AT);
+		expectNoSecrets(logger);
+		db.close();
+	});
+
+	it("a non-JSON 503 the SDK turns into a challenge records the status on the needs-authorization line", async () => {
+		// SDK 2.0.0 treats a refresh failure parsed as server_error as
+		// non-terminal and falls through to authorization without invalidating.
+		const logger = captureLogger();
+		const fetchFn = fixtureFetch({ status: 503, body: "Service Unavailable", json: false });
+		const { db, store, cfg, provideAuth } = await seeded(logger, fetchFn);
+
+		const map = await connectConfiguredMcpServers([cfg], logger, undefined, provideAuth);
+
+		expect(map.has("sentry")).toBe(true);
+		const info = logger.entries.find(
+			(e) => e.level === "info" && e.msg.includes("needs authorization"),
+		);
+		expect(info?.meta).toEqual({ tokenEndpoint: TOKEN_URL, status: 503 });
+		expect(logger.entries.some((e) => e.msg.includes("invalidating"))).toBe(false);
+		expect(store.getBundle("sentry")?.refreshToken).toBe(SEEDED_RT);
+		expect(store.getBundle("sentry")?.accessToken).toBe(SEEDED_AT);
+		expectNoSecrets(logger);
+		db.close();
+	});
+
+	it("400 temporarily_unavailable logs status and code and leaves credentials untouched", async () => {
+		const logger = captureLogger();
+		const fetchFn = fixtureFetch({
+			status: 400,
+			body: JSON.stringify({ error: "temporarily_unavailable", error_description: "try later" }),
+		});
+		const { db, store, cfg, provideAuth } = await seeded(logger, fetchFn);
+
+		await connectConfiguredMcpServers([cfg], logger, undefined, provideAuth);
+
+		const warn = logger.entries.find(
+			(e) => e.level === "warn" && e.msg === "[mcp] Failed to connect to sentry",
+		);
+		expect(warn?.meta).toMatchObject({
+			error: "try later",
+			oauthError: "temporarily_unavailable",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		expect(logger.entries.some((e) => e.msg.includes("invalidating"))).toBe(false);
+		expect(store.getBundle("sentry")?.refreshToken).toBe(SEEDED_RT);
+		expectNoSecrets(logger);
+		db.close();
+	});
+
+	it("a network refusal logs { error } only", async () => {
+		const logger = captureLogger();
+		const refused = Object.assign(new TypeError("fetch failed"), { code: "ECONNREFUSED" });
+		const { db, cfg, provideAuth } = await seeded(logger, fixtureFetch(refused));
+
+		await connectConfiguredMcpServers([cfg], logger, undefined, provideAuth);
+
+		const warn = logger.entries.find(
+			(e) => e.level === "warn" && e.msg === "[mcp] Failed to connect to sentry",
+		);
+		expect(warn).toBeDefined();
+		expect(Object.keys(warn?.meta ?? {})).toEqual(["error"]);
+		db.close();
+	});
+
+	it("logs a failed token clear inside raiseIfGrantLost before the ordinary failure", async () => {
+		const logger = captureLogger();
+		// Obtain the SDK's own OAuthError class from a real rejection (the CLI has
+		// no direct SDK dependency), then build the terminal error that escapes.
+		const probe = await seeded(
+			captureLogger(),
+			fixtureFetch({ status: 400, body: JSON.stringify({ error: "temporarily_unavailable" }) }),
+		);
+		const { MCPClient } = await import("@bound/agent");
+		const sdkError = await new MCPClient(probe.provideAuth(probe.cfg)).connect().catch((e) => e);
+		probe.db.close();
+		const OAuthErrorCtor = (sdkError as Error).constructor as new (
+			code: string,
+			message: string,
+		) => Error;
+		const escaped = new OAuthErrorCtor("invalid_grant", "Grant not found");
+
+		const { db, store, provider, cfg, provideAuth } = await seeded(
+			logger,
+			fixtureFetch(new Error("unused")),
+		);
+		store.invalidate = async () => {
+			throw new Error("disk full");
+		};
+		const client = mockClient(provideAuth(cfg), {
+			connect: async () => {
+				throw escaped;
+			},
+		});
+
+		const map = await connectConfiguredMcpServers([cfg], logger, () => client, provideAuth);
+
+		expect(map.has("sentry")).toBe(false);
+		const warns = logger.entries.filter((e) => e.level === "warn");
+		const recovery = warns.findIndex(
+			(e) => e.msg === "[mcp] grant-loss recovery failed for sentry",
+		);
+		const ordinary = warns.findIndex((e) => e.msg === "[mcp] Failed to connect to sentry");
+		expect(recovery).toBeGreaterThanOrEqual(0);
+		expect(ordinary).toBeGreaterThan(recovery);
+		expect(warns[recovery].meta).toMatchObject({
+			error: "disk full",
+			oauthError: "invalid_grant",
+			tokenEndpoint: TOKEN_URL,
+		});
+		expect(provider.lastTokenEndpointFailure()).toBeNull();
+		expectNoSecrets(logger);
+		db.close();
+	});
+});

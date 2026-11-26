@@ -174,6 +174,8 @@ export function createMcpOAuthWiring(
 			// the config lives here, so this host is the challenge's owner.
 			siteId,
 			debouncer,
+			// Invalidation WARNs name the server, scope, and OAuth cause (#318).
+			logger,
 		);
 	};
 

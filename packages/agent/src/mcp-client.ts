@@ -11,6 +11,7 @@ import type {
  * Implements lifecycle management per spec §7.2.
  */
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { McpOAuthProvider } from "./mcp-auth/oauth-provider";
 
 export interface MCPServerConfig {
 	name: string;
@@ -42,6 +43,12 @@ export interface MCPServerConfig {
 	 * transport behavior.
 	 */
 	authProvider?: OAuthClientProvider;
+	/**
+	 * Base fetch for the http transport; defaults to `globalThis.fetch`. Not a
+	 * config-file field: injected programmatically (tests). When `authProvider`
+	 * is a bound `McpOAuthProvider` it is wrapped by `observeFetch` (#318).
+	 */
+	fetch?: typeof fetch;
 }
 
 export type { Tool, Resource, Prompt };
@@ -223,6 +230,12 @@ export class MCPClient {
 				// per v2 header precedence, so a static header is a fallback until a
 				// provider token exists.
 				authProvider: this.serverConfig.authProvider,
+				// The bound provider observes token-endpoint failures on the
+				// transport fetch so invalidation logs can name the cause (#318).
+				fetch:
+					this.serverConfig.authProvider instanceof McpOAuthProvider
+						? this.serverConfig.authProvider.observeFetch(this.serverConfig.fetch)
+						: this.serverConfig.fetch,
 			});
 			await this.client.connect(transport);
 		}

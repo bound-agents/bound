@@ -262,7 +262,11 @@ export {
 	MCP_OAUTH_CALLBACK_PATH,
 	MCP_OAUTH_CALLBACK_URL,
 	type McpOAuthServerConfig,
+	type McpOAuthLogger,
 	type ObservedChallenge,
+	type TokenEndpointFailure,
+	endpointForLog,
+	oauthLogFields,
 } from "./mcp-auth/oauth-provider";
 export {
 	McpTokenStore,

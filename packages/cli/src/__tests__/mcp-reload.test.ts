@@ -728,3 +728,181 @@ describe("reconnectResolvedMcpServer (R-MO13b + §7 smoke 2026-10-10)", () => {
 		cleanup();
 	});
 });
+
+describe("reload and reconnect — OAuth failure log fields (#318)", () => {
+	const AS = "https://as.example";
+	const TOKEN_URL = `${AS}/oauth/token`;
+	const MCP_URL = "https://mcp.sentry.dev/mcp";
+	const SEEDED_AT = "seeded-access-55e0b1";
+	const SEEDED_RT = "seeded-refresh-08f7aa";
+
+	type Entry = { level: string; msg: string; meta?: Record<string, unknown> };
+
+	async function fixture(token: { status: number; body: unknown }) {
+		const { McpOAuthProvider, McpTokenStore, RaiseDebouncer } = await import("@bound/agent");
+		const { randomBytes } = await import("node:crypto");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { appContext, cleanup } = createMockAppContext();
+		const entries: Entry[] = [];
+		const mk = (level: string) => (msg: string, meta?: Record<string, unknown>) =>
+			entries.push({ level, msg, meta });
+		const logger = { debug: () => {}, info: mk("info"), warn: mk("warn"), error: mk("error") };
+		(appContext as { logger: unknown }).logger = logger;
+
+		const store = new McpTokenStore(
+			join(tmpdir(), `mcp-auth-${randomBytes(4).toString("hex")}`, "mcp-auth.json"),
+		);
+		await store.saveBundle("sentry", {
+			accessToken: SEEDED_AT,
+			refreshToken: SEEDED_RT,
+			scopes: "read",
+			accessTokenExpiresAt: 0,
+			issuer: AS,
+		});
+		await store.saveDiscoveryState("sentry", {
+			authorizationServerUrl: AS,
+			resourceMetadata: { resource: MCP_URL, authorization_servers: [AS] },
+			authorizationServerMetadata: {
+				issuer: AS,
+				authorization_endpoint: `${AS}/authorize`,
+				token_endpoint: TOKEN_URL,
+				response_types_supported: ["code"],
+				code_challenge_methods_supported: ["S256"],
+			},
+		});
+		const provider = new McpOAuthProvider(
+			appContext.db as never,
+			store,
+			{ name: "sentry", url: MCP_URL, clientId: "cid" },
+			appContext.siteId,
+			new RaiseDebouncer(),
+			logger,
+		);
+		const fetchFn = (async (input: string | URL | Request) => {
+			const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const u = new URL(raw);
+			if (`${u.origin}${u.pathname}` === MCP_URL) {
+				return new Response("", { status: 401, headers: { "www-authenticate": "Bearer" } });
+			}
+			if (`${u.origin}${u.pathname}` === TOKEN_URL) {
+				return new Response(JSON.stringify(token.body), {
+					status: token.status,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			throw new Error(`unexpected fetch ${raw}`);
+		}) as typeof fetch;
+		const server = {
+			name: "sentry",
+			transport: "http",
+			url: MCP_URL,
+			auth: { type: "oauth" },
+			fetch: fetchFn,
+		} as unknown as MCPServerConfig;
+		const provideAuth = (s: MCPServerConfig): MCPServerConfig =>
+			({ ...s, authProvider: provider }) as unknown as MCPServerConfig;
+		const noSecrets = () => {
+			const all = JSON.stringify(entries);
+			expect(all).not.toContain(SEEDED_AT);
+			expect(all).not.toContain(SEEDED_RT);
+		};
+		return { appContext, cleanup, entries, store, server, provideAuth, noSecrets };
+	}
+
+	const reloadArgs = (appContext: ReturnType<typeof createMockAppContext>["appContext"]) => {
+		const mcpClientsMap = new Map<string, MCPClient>();
+		return {
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames: new Set<string>(),
+			confirmGates: new Map<string, string[]>(),
+			sandbox: null,
+			commandContext: {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				mcpClients: mcpClientsMap,
+			},
+		};
+	};
+
+	it("invalid_grant on reload still raises a challenge and records why", async () => {
+		const f = await fixture({
+			status: 400,
+			body: { error: "invalid_grant", error_description: "Grant not found" },
+		});
+		const result = await reloadMcpServers({
+			...reloadArgs(f.appContext),
+			oldConfig: { servers: [] } as unknown as McpConfig,
+			newConfig: { servers: [f.server] } as unknown as McpConfig,
+			provideAuth: f.provideAuth,
+		});
+
+		expect(result.pendingAuth).toContain("sentry");
+		const info = f.entries.find((e) => e.level === "info" && e.msg.includes("needs authorization"));
+		expect(info?.meta).toEqual({
+			oauthError: "invalid_grant",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		const warn = f.entries.find(
+			(e) => e.msg === "[mcp-oauth] invalidating tokens credentials for sentry",
+		);
+		expect(warn?.meta).toEqual({
+			server: "sentry",
+			scope: "tokens",
+			oauthError: "invalid_grant",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		f.noSecrets();
+		f.cleanup();
+	});
+
+	it("temporarily_unavailable on reload logs status and code and keeps credentials", async () => {
+		const f = await fixture({ status: 400, body: { error: "temporarily_unavailable" } });
+		const result = await reloadMcpServers({
+			...reloadArgs(f.appContext),
+			oldConfig: { servers: [] } as unknown as McpConfig,
+			newConfig: { servers: [f.server] } as unknown as McpConfig,
+			provideAuth: f.provideAuth,
+		});
+
+		expect(result.failed).toContain("sentry");
+		const warn = f.entries.find((e) => e.msg === "[mcp-reload] Failed to connect to sentry");
+		expect(warn?.meta).toMatchObject({
+			oauthError: "temporarily_unavailable",
+			tokenEndpoint: TOKEN_URL,
+			status: 400,
+		});
+		expect(f.store.getBundle("sentry")?.refreshToken).toBe(SEEDED_RT);
+		f.noSecrets();
+		f.cleanup();
+	});
+
+	it("a failed reconnect after a resolved grant carries the OAuth fields", async () => {
+		const f = await fixture({ status: 503, body: { error: "temporarily_unavailable" } });
+		const args = reloadArgs(f.appContext);
+		await reconnectResolvedMcpServer({
+			...args,
+			serverName: "sentry",
+			serverConfigFor: () => f.server,
+			provideAuth: f.provideAuth,
+		});
+
+		const warn = f.entries.find(
+			(e) => e.msg === "[mcp-oauth] reconnect after resolved grant failed",
+		);
+		expect(warn?.meta).toMatchObject({
+			server: "sentry",
+			oauthError: "temporarily_unavailable",
+			tokenEndpoint: TOKEN_URL,
+			status: 503,
+		});
+		expect(f.store.getBundle("sentry")?.accessToken).toBe(SEEDED_AT);
+		f.noSecrets();
+		f.cleanup();
+	});
+});

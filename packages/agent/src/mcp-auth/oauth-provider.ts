@@ -80,9 +80,77 @@ const TERMINAL_GRANT_ERRORS = new Set<string>([
 	OAuthErrorCode.UnauthorizedClient,
 ]);
 
+/** The WARN sink the provider logs invalidations to; `Logger` satisfies it. */
+export interface McpOAuthLogger {
+	warn(message: string, meta?: Record<string, unknown>): void;
+}
+
+/** The last non-2xx response a token-endpoint request got, as observed on the transport fetch. */
+export interface TokenEndpointFailure {
+	status: number;
+	/** The response body's OAuth `error` code, when the body is OAuth JSON. */
+	oauthError?: string;
+	/** origin + pathname of the request URL; the query string is dropped. */
+	tokenEndpoint?: string;
+}
+
+/**
+ * A URL as it may be logged: origin + pathname only. The query string and
+ * fragment are dropped so a credential carried there never reaches a log line.
+ * Returns undefined for anything that does not parse as a URL.
+ */
+export function endpointForLog(url: string | URL | undefined | null): string | undefined {
+	if (url === undefined || url === null) return undefined;
+	try {
+		const u = new URL(String(url));
+		return `${u.origin}${u.pathname}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function requestUrl(input: string | URL | Request): string {
+	return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+}
+
+/** The first OAuthError on an error's cause chain (the transport may wrap it). */
+function findOAuthError(error: unknown): OAuthError | null {
+	let current: unknown = error;
+	for (let depth = 0; depth < 5 && current; depth++) {
+		if (current instanceof OAuthError) return current;
+		current = (current as { cause?: unknown }).cause;
+	}
+	return null;
+}
+
+/**
+ * Structured log fields for an MCP connect failure (#318). An OAuthError yields
+ * `oauthError` (its `.code` — `.message` is only the server's description), the
+ * `tokenEndpoint` (from the observed token request, else cached discovery
+ * metadata; query stripped), and the observed HTTP `status` when the provider
+ * saw the failing response. Anything else yields `{}`, so non-OAuth records
+ * stay exactly `{ error }`. Never includes token, secret, code, or verifier values.
+ */
+export function oauthLogFields(error: unknown, provider?: unknown): Record<string, unknown> {
+	const oauth = findOAuthError(error);
+	if (!oauth) return {};
+	const fields: Record<string, unknown> = { oauthError: oauth.code };
+	if (!(provider instanceof McpOAuthProvider)) return fields;
+	const failure = provider.lastTokenEndpointFailure();
+	const tokenEndpoint = failure?.tokenEndpoint ?? provider.tokenEndpointForLog();
+	if (tokenEndpoint) fields.tokenEndpoint = tokenEndpoint;
+	// The observed status belongs to this error only when the codes agree (a
+	// non-JSON body parses to server_error with no recorded code).
+	if (failure && (failure.oauthError === undefined || failure.oauthError === oauth.code)) {
+		fields.status = failure.status;
+	}
+	return fields;
+}
+
 export class McpOAuthProvider {
 	private observed: ObservedChallenge | null = null;
 	private lastRaise: RaiseOutcome | null = null;
+	private tokenFailure: TokenEndpointFailure | null = null;
 
 	constructor(
 		private readonly db: Database,
@@ -90,7 +158,84 @@ export class McpOAuthProvider {
 		private readonly server: McpOAuthServerConfig,
 		private readonly owningSiteId: string,
 		private readonly debouncer: RaiseDebouncer,
+		private readonly logger?: McpOAuthLogger,
 	) {}
+
+	/**
+	 * Wrap the transport fetch so a failed token-endpoint request is recorded
+	 * (#318): `invalidateCredentials` never receives the SDK's error, so the
+	 * provider captures the rejected response's status and OAuth `error` code
+	 * where it can see it. A token request is a form POST carrying `grant_type`.
+	 * Only the status, the `error` code, and the query-stripped URL are kept;
+	 * request bodies (refresh tokens, codes, verifiers, secrets) are never read.
+	 */
+	observeFetch(base?: typeof fetch): typeof fetch {
+		const observed = async (
+			input: string | URL | Request,
+			init?: RequestInit,
+		): Promise<Response> => {
+			const isTokenRequest = init?.body instanceof URLSearchParams && init.body.has("grant_type");
+			if (isTokenRequest) this.tokenFailure = null;
+			const response = await (base ?? globalThis.fetch)(input, init);
+			if (isTokenRequest && !response.ok) {
+				let oauthError: string | undefined;
+				try {
+					const body = (await response.clone().json()) as { error?: unknown };
+					if (typeof body?.error === "string") oauthError = body.error;
+				} catch {
+					// Not OAuth JSON; the status alone is recorded.
+				}
+				this.tokenFailure = {
+					status: response.status,
+					oauthError,
+					tokenEndpoint: endpointForLog(requestUrl(input)),
+				};
+			}
+			return response;
+		};
+		return observed as typeof fetch;
+	}
+
+	/** The last failed token-endpoint response the observed fetch saw, if any. */
+	lastTokenEndpointFailure(): TokenEndpointFailure | null {
+		return this.tokenFailure;
+	}
+
+	/** The cached discovery token endpoint, query stripped, when known. */
+	tokenEndpointForLog(): string | undefined {
+		return endpointForLog(this.discoveryState()?.authorizationServerMetadata?.token_endpoint);
+	}
+
+	/**
+	 * Log fields for the last failed token-endpoint response, or `{}` when the
+	 * observed fetch saw none. The connect site attaches these to the "needs
+	 * authorization" line so a raised challenge records why (#318).
+	 */
+	tokenFailureLogFields(): Record<string, unknown> {
+		return this.tokenFailure ? this.observedFailureFields() : {};
+	}
+
+	private observedFailureFields(): Record<string, unknown> {
+		const f = this.tokenFailure;
+		const fields: Record<string, unknown> = {};
+		if (f?.oauthError) fields.oauthError = f.oauthError;
+		const tokenEndpoint = f?.tokenEndpoint ?? this.tokenEndpointForLog();
+		if (tokenEndpoint) fields.tokenEndpoint = tokenEndpoint;
+		if (f) fields.status = f.status;
+		return fields;
+	}
+
+	private async invalidateWithReason(
+		scope: "all" | "client" | "tokens" | "verifier" | "discovery",
+		fields: Record<string, unknown>,
+	): Promise<void> {
+		this.logger?.warn(`[mcp-oauth] invalidating ${scope} credentials for ${this.server.name}`, {
+			server: this.server.name,
+			scope,
+			...fields,
+		});
+		await this.store.invalidate(this.server.name, scope, this.issuer());
+	}
 
 	/**
 	 * Record the demand observed on a real 401/403 (parsed WWW-Authenticate),
@@ -218,7 +363,9 @@ export class McpOAuthProvider {
 	async invalidateCredentials(
 		scope: "all" | "client" | "tokens" | "verifier" | "discovery",
 	): Promise<void> {
-		await this.store.invalidate(this.server.name, scope, this.issuer());
+		// The SDK passes only the scope; the reason comes from the token-endpoint
+		// response the observed fetch recorded (#318).
+		await this.invalidateWithReason(scope, this.observedFailureFields());
 	}
 
 	/**
@@ -232,8 +379,10 @@ export class McpOAuthProvider {
 	 */
 	async raiseIfGrantLost(error: unknown): Promise<AuthChallengeRaisedError | null> {
 		if (!(error instanceof OAuthError) || !TERMINAL_GRANT_ERRORS.has(error.code)) return null;
-		if (error.code !== OAuthErrorCode.InvalidGrant) await this.invalidateCredentials("client");
-		await this.invalidateCredentials("tokens");
+		const fields = oauthLogFields(error, this);
+		if (error.code !== OAuthErrorCode.InvalidGrant)
+			await this.invalidateWithReason("client", fields);
+		await this.invalidateWithReason("tokens", fields);
 		try {
 			this.redirectToAuthorization(new URL(this.server.url));
 		} catch (e) {

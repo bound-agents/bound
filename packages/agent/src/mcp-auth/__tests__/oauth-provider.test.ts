@@ -12,7 +12,12 @@ import {
 	raiseChallenge,
 } from "@bound/core";
 import { OAuthError, OAuthErrorCode, auth } from "@modelcontextprotocol/client";
-import { AuthChallengeRaisedError, McpOAuthProvider } from "../oauth-provider";
+import {
+	AuthChallengeRaisedError,
+	McpOAuthProvider,
+	endpointForLog,
+	oauthLogFields,
+} from "../oauth-provider";
 import { RaiseDebouncer } from "../raise";
 import { McpTokenStore } from "../token-store";
 
@@ -316,5 +321,83 @@ describe("McpOAuthProvider terminal refresh rejection (#299)", () => {
 		}
 		expect(store.getBundle("srv")?.refreshToken).toBe("old-rt");
 		expect(findChallengeById(db, challengeId(SITE, "srv"))?.status).toBe("resolved");
+	});
+});
+
+describe("McpOAuthProvider OAuth failure log fields (#318)", () => {
+	it("endpointForLog drops the query string and fragment", () => {
+		expect(endpointForLog("https://as.example/oauth/token?tenant=t-secret&code=abc#frag")).toBe(
+			"https://as.example/oauth/token",
+		);
+		expect(endpointForLog(new URL("https://as.example:8443/token?x=1"))).toBe(
+			"https://as.example:8443/token",
+		);
+		expect(endpointForLog("not a url")).toBeUndefined();
+		expect(endpointForLog(undefined)).toBeUndefined();
+	});
+
+	it("oauthLogFields returns {} for a non-OAuth error and the code for a bare OAuthError", () => {
+		expect(oauthLogFields(new TypeError("fetch failed"))).toEqual({});
+		expect(oauthLogFields(new OAuthError(OAuthErrorCode.InvalidGrant, "Grant not found"))).toEqual({
+			oauthError: "invalid_grant",
+		});
+	});
+
+	it("observeFetch records only status, code, and the stripped URL of a failed token request", async () => {
+		const p = provider();
+		const base = (async () =>
+			new Response(JSON.stringify({ error: "invalid_grant" }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			})) as unknown as typeof fetch;
+		const observed = p.observeFetch(base);
+		await observed("https://as.example/token?tenant=t-secret", {
+			method: "POST",
+			body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "rt-secret" }),
+		});
+		expect(p.lastTokenEndpointFailure()).toEqual({
+			status: 400,
+			oauthError: "invalid_grant",
+			tokenEndpoint: "https://as.example/token",
+		});
+		expect(JSON.stringify(p.tokenFailureLogFields())).not.toContain("secret");
+
+		// A non-token request (no grant_type form body) is not recorded.
+		const q = provider();
+		await q.observeFetch(base)("https://mcp.example/mcp", { method: "POST", body: "{}" });
+		expect(q.lastTokenEndpointFailure()).toBeNull();
+	});
+
+	it("invalidateCredentials WARNs once with server, scope, and the observed cause", async () => {
+		const warns: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+		const p = new McpOAuthProvider(
+			db,
+			store,
+			{ name: "srv", url: "https://mcp.example/mcp" },
+			SITE,
+			new RaiseDebouncer(),
+			{ warn: (msg, meta) => warns.push({ msg, meta }) },
+		);
+		const base = (async () =>
+			new Response(JSON.stringify({ error: "invalid_grant" }), {
+				status: 400,
+			})) as unknown as typeof fetch;
+		await p.observeFetch(base)("https://as.example/token", {
+			method: "POST",
+			body: new URLSearchParams({ grant_type: "refresh_token" }),
+		});
+		await p.invalidateCredentials("tokens");
+		expect(warns).toEqual([
+			{
+				msg: "[mcp-oauth] invalidating tokens credentials for srv",
+				meta: {
+					server: "srv",
+					scope: "tokens",
+					oauthError: "invalid_grant",
+					tokenEndpoint: "https://as.example/token",
+					status: 400,
+				},
+			},
+		]);
 	});
 });

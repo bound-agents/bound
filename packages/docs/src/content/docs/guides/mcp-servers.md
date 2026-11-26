@@ -132,6 +132,25 @@ the server waits for authorization rather than dropping out of the server list, 
 challenge reconnects it without a restart. Network failures, rate limits, and server errors leave
 the stored tokens in place.
 
+### Read OAuth failure logs
+
+When an MCP connect, reload, or reconnect fails because of an OAuth error, the log record carries
+these fields next to `error`:
+
+| Field | Value |
+| --- | --- |
+| `oauthError` | The OAuth error code, such as `invalid_grant` or `temporarily_unavailable`. `error` holds only the server's description, such as `Grant not found`. |
+| `tokenEndpoint` | The token endpoint that returned the error, without its query string. |
+| `status` | The HTTP status of the failed token request, when Bound observed it. |
+
+Bound logs one WARN, `[mcp-oauth] invalidating <scope> credentials for <server>`, each time it
+deletes a rejected grant. The WARN carries `server`, `scope`, and the fields above. When the
+rejection raises a challenge, the `needs authorization` line carries the same fields. If clearing
+the grant itself fails, Bound logs `[mcp] grant-loss recovery failed for <server>` before the
+ordinary `Failed to connect` WARN. Failures that aren't OAuth errors, such as a refused
+connection, log `error` only. No record includes an access token, refresh token, client secret,
+authorization code, or PKCE verifier.
+
 ## Use MCP Apps
 
 Compatible `http` servers can render interactive UI inline for tool results in the web UI,

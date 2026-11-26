@@ -8,6 +8,7 @@ import {
 	McpOAuthProvider,
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
+	oauthLogFields,
 	updateHostMCPInfo,
 } from "@bound/agent";
 import type { MCPServerConfig, Tool } from "@bound/agent";
@@ -65,12 +66,23 @@ interface ConnectedMcpServer {
 interface FailedMcpServer {
 	serverCfg: MCPServerConfig;
 	error: unknown;
+	/** The provider wired for this attempt, so the failure log can name the OAuth cause (#318). */
+	authProvider?: unknown;
 }
 
 interface PendingAuthMcpServer {
 	serverCfg: MCPServerConfig;
 	client: MCPClient;
 	challengeId: string;
+	/** The provider that raised the challenge; its observed token failure is the reason (#318). */
+	authProvider?: unknown;
+}
+
+/** Why a challenge was raised, when the provider observed a failed token request (#318). */
+function pendingAuthLogFields(provider: unknown): Record<string, unknown> | undefined {
+	if (!(provider instanceof McpOAuthProvider)) return undefined;
+	const fields = provider.tokenFailureLogFields();
+	return Object.keys(fields).length > 0 ? fields : undefined;
 }
 
 type McpConnectionAttempt =
@@ -81,6 +93,7 @@ type McpConnectionAttempt =
 async function connectMcpServer(
 	serverCfg: MCPServerConfig,
 	createClient: McpClientFactory,
+	logger: Logger,
 	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
 ): Promise<McpConnectionAttempt> {
 	let client: MCPClient | null = null;
@@ -108,6 +121,7 @@ async function connectMcpServer(
 				serverCfg,
 				client,
 				challengeId: error.challengeId,
+				authProvider: effectiveCfg.authProvider,
 			};
 		}
 		// #299: a terminal OAuth rejection (invalid_grant / invalid_client) that
@@ -117,7 +131,15 @@ async function connectMcpServer(
 		// through to the ordinary failure path with credentials untouched.
 		const provider = effectiveCfg.authProvider;
 		if (client && provider instanceof McpOAuthProvider) {
-			const raised = await provider.raiseIfGrantLost(error).catch(() => null);
+			const raised = await provider.raiseIfGrantLost(error).catch((recoveryError: unknown) => {
+				// #318: a failed token clear or raise is logged, then the connect
+				// falls through to the ordinary failure path below.
+				logger.warn(`[mcp] grant-loss recovery failed for ${serverCfg.name}`, {
+					error: formatError(recoveryError),
+					...oauthLogFields(error, provider),
+				});
+				return null;
+			});
 			if (raised) {
 				return {
 					ok: false,
@@ -125,6 +147,7 @@ async function connectMcpServer(
 					serverCfg,
 					client,
 					challengeId: raised.challengeId,
+					authProvider: provider,
 				};
 			}
 		}
@@ -135,7 +158,7 @@ async function connectMcpServer(
 				// Best-effort cleanup after a partial startup failure.
 			}
 		}
-		return { ok: false, serverCfg, error };
+		return { ok: false, serverCfg, error, authProvider: effectiveCfg.authProvider };
 	}
 }
 
@@ -150,7 +173,9 @@ export async function connectConfiguredMcpServers(
 ): Promise<Map<string, MCPClient>> {
 	const mcpClientsMap = new Map<string, MCPClient>();
 	const attempts = await Promise.all(
-		serverConfigs.map((serverCfg) => connectMcpServer(serverCfg, createClient, provideAuth)),
+		serverConfigs.map((serverCfg) =>
+			connectMcpServer(serverCfg, createClient, logger, provideAuth),
+		),
 	);
 
 	for (const attempt of attempts) {
@@ -166,10 +191,12 @@ export async function connectConfiguredMcpServers(
 			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
 			logger.info(
 				`[mcp] Server ${attempt.serverCfg.name} needs authorization; raised challenge ${attempt.challengeId}. Run \`bound login ${attempt.serverCfg.name}\` or use the Connections consent card.`,
+				pendingAuthLogFields(attempt.authProvider),
 			);
 		} else {
 			logger.warn(`[mcp] Failed to connect to ${attempt.serverCfg.name}`, {
 				error: formatError(attempt.error),
+				...oauthLogFields(attempt.error, attempt.authProvider),
 			});
 		}
 	}
@@ -448,6 +475,7 @@ export async function reconnectResolvedMcpServer(config: McpReconnectConfig): Pr
 		logger.warn("[mcp-oauth] reconnect after resolved grant failed", {
 			server: serverName,
 			error: formatError(error),
+			...oauthLogFields(error, existing.getConfig?.().authProvider),
 		});
 	}
 }
@@ -524,7 +552,7 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 	const reloadCreateClient = config.createClient ?? ((cfg) => new MCPClient(cfg));
 	const connectionAttempts = await Promise.all(
 		serversToConnect.map((serverCfg) =>
-			connectMcpServer(serverCfg, reloadCreateClient, config.provideAuth),
+			connectMcpServer(serverCfg, reloadCreateClient, logger, config.provideAuth),
 		),
 	);
 	for (const attempt of connectionAttempts) {
@@ -559,10 +587,12 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 			result.pendingAuth.push(attempt.serverCfg.name);
 			logger.info(
 				`[mcp-reload] Server ${attempt.serverCfg.name} needs authorization; raised challenge ${attempt.challengeId}. Run \`bound login ${attempt.serverCfg.name}\` or use the Connections consent card.`,
+				pendingAuthLogFields(attempt.authProvider),
 			);
 		} else {
 			logger.warn(`[mcp-reload] Failed to connect to ${attempt.serverCfg.name}`, {
 				error: formatError(attempt.error),
+				...oauthLogFields(attempt.error, attempt.authProvider),
 			});
 			result.failed.push(attempt.serverCfg.name);
 		}
