@@ -9,6 +9,7 @@ import {
 	findRouteDrainIncludingDeleted,
 	getSiteId,
 	insertRow,
+	isHostFresh,
 	listHostSiteIdNameAndModels,
 	listHostsWithLiveness,
 	listModelAliases,
@@ -423,12 +424,6 @@ class PeerHealthCache {
 	}
 }
 
-function isHostLive(onlineAt: string | null, now: number, livenessMs: number): boolean {
-	if (!onlineAt) return false;
-	const t = Date.parse(onlineAt);
-	return Number.isFinite(t) && now - t <= livenessMs;
-}
-
 export function createRoutingRoutes(
 	db: Database,
 	siteId: string,
@@ -460,7 +455,7 @@ export function createRoutingRoutes(
 		}
 		const now = clock();
 		const live = listHostsWithLiveness(db)
-			.filter((h) => advertising.has(h.site_id) && isHostLive(h.online_at, now, hostLivenessMs))
+			.filter((h) => advertising.has(h.site_id) && isHostFresh(h, now, hostLivenessMs))
 			.map((h) => h.site_id);
 		return peerHealth.collect(live);
 	}

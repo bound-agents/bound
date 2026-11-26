@@ -478,7 +478,10 @@ describe("GET /models — cluster-wide route health from peer snapshots", () => 
 	};
 	const MSI_ROUTE = "site-msi:bedrock:opus";
 
-	function seedMsi(onlineAt: string = new Date().toISOString()): void {
+	function seedMsi(
+		onlineAt: string = new Date().toISOString(),
+		modifiedAt: string = onlineAt,
+	): void {
 		db.prepare(
 			"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, ?, 0, 1)",
 		).run(
@@ -486,7 +489,7 @@ describe("GET /models — cluster-wide route health from peer snapshots", () => 
 			"MSI",
 			JSON.stringify([{ id: "opus", route_id: MSI_ROUTE, logical_model: "opus" }]),
 			onlineAt,
-			onlineAt,
+			modifiedAt,
 		);
 	}
 
@@ -558,6 +561,40 @@ describe("GET /models — cluster-wide route health from peer snapshots", () => 
 		});
 		expect((await msiRoute(app))?.health).toBe("unknown");
 		expect(asked).toBe(0);
+	});
+
+	it("asks a peer that started long ago but whose heartbeat is fresh", async () => {
+		// online_at is written once at startup; the heartbeat advances modified_at.
+		seedMsi(new Date(Date.now() - 60 * 60_000).toISOString(), new Date().toISOString());
+		let asked = 0;
+		const app = createRoutingRoutes(db, siteId, null, {
+			relayRouteHealth: async () => {
+				asked++;
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		const route = await msiRoute(app);
+		expect(asked).toBe(1);
+		expect(route?.health).toBe("healthy");
+		expect(route?.health_source).toBe("remote");
+	});
+
+	it("never asks a peer whose startup time and heartbeat are both stale", async () => {
+		seedMsi(
+			new Date(Date.now() - 60 * 60_000).toISOString(),
+			new Date(Date.now() - 10 * 60_000).toISOString(),
+		);
+		let asked = 0;
+		const app = createRoutingRoutes(db, siteId, null, {
+			relayRouteHealth: async () => {
+				asked++;
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		const route = await msiRoute(app);
+		expect(asked).toBe(0);
+		expect(route?.health).toBe("unknown");
+		expect(route?.health_source).toBeNull();
 	});
 
 	it("reuses a fresh snapshot, then ages a failed peer out to unknown", async () => {

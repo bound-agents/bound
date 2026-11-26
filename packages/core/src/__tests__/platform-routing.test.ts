@@ -86,6 +86,12 @@ describe("platform-routing", () => {
 			const ts = new Date(NOW - PLATFORM_HOST_STALE_THRESHOLD_MS).toISOString();
 			expect(isHostFresh({ modified_at: ts, online_at: null }, NOW)).toBe(true);
 		});
+
+		it("honors a caller-supplied threshold over the default", () => {
+			const row = { modified_at: new Date(NOW - 90_000).toISOString(), online_at: null };
+			expect(isHostFresh(row, NOW, 60_000)).toBe(false);
+			expect(isHostFresh(row, NOW, 120_000)).toBe(true);
+		});
 	});
 
 	describe("findFreshPlatformHost", () => {

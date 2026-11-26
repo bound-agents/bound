@@ -18,16 +18,21 @@ interface HostFreshnessRow {
 
 /**
  * True when the host's most recent freshness signal (`modified_at`, falling
- * back to `online_at`) is within `PLATFORM_HOST_STALE_THRESHOLD_MS` of `now`.
+ * back to `online_at`) is within `thresholdMs` (default
+ * `PLATFORM_HOST_STALE_THRESHOLD_MS`) of `now`.
  *
  * `modified_at` is the heartbeat-bumped column and is the canonical signal.
  * `online_at` is the fallback for legacy/upgrade rows that may not yet have a
  * `modified_at`.
  */
-export function isHostFresh(row: HostFreshnessRow, now: number = Date.now()): boolean {
+export function isHostFresh(
+	row: HostFreshnessRow,
+	now: number = Date.now(),
+	thresholdMs: number = PLATFORM_HOST_STALE_THRESHOLD_MS,
+): boolean {
 	const ts = row.modified_at ?? row.online_at;
 	if (!ts) return false;
-	return now - new Date(ts).getTime() <= PLATFORM_HOST_STALE_THRESHOLD_MS;
+	return now - new Date(ts).getTime() <= thresholdMs;
 }
 
 interface PlatformHostRow {
