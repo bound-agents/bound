@@ -14,7 +14,12 @@ review command-specific safety notes and use preview modes where provided.
 | `boundctl` | Perform cluster and data operations |
 | `boundless` | Connect a terminal or Agent Client Protocol (ACP) editor to a running server |
 
-Run any binary with `--help` for the command list built into that version.
+Run any binary with `--help` for the command list built into that version. For `bound` and
+`boundctl`, `COMMAND --help` (for example `boundctl webhook create --help`) lists that
+command's flags, arguments, and defaults; a command family such as `boundctl webhook --help`
+lists its subcommands. Flags may appear before or after positional arguments. An
+unregistered flag, or a value flag such as `--model` given without a value, fails with exit
+code 1 instead of being ignored.
 
 For where these processes and their state run, see
 [System model](/bound/concepts/system-model/). For task and agent-turn semantics, see
@@ -186,7 +191,7 @@ preview, apply the restore with the same timestamp and table selection:
 boundctl restore --before TIMESTAMP
 ```
 
-Use `--tables TABLE...` to limit the operation. Restore reverts synchronized rows using
+Use `--tables TABLE...` to limit the operation; repeating `--tables` also works. Restore reverts synchronized rows using
 change-log history, skips append-only tables such as `messages`, and leaves local-only
 tables unchanged.
 

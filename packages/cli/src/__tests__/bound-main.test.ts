@@ -124,15 +124,15 @@ describe("bound main()", () => {
 });
 
 describe("parseLoginArgs", () => {
-	it("forwards --copilot so the device flow runs instead of the usage error", () => {
-		const parsed = parseLoginArgs(["login", "--copilot"]);
+	it("forwards --copilot so the device flow runs instead of the usage error", async () => {
+		const parsed = await parseLoginArgs(["login", "--copilot"]);
 		expect(parsed.copilot).toBe(true);
 		expect(parsed.chatgpt).toBe(false);
 		expect(parsed.configDir).toBe("config");
 	});
 
-	it("maps every login flag and its value", () => {
-		const parsed = parseLoginArgs([
+	it("maps every login flag and its value", async () => {
+		const parsed = await parseLoginArgs([
 			"login",
 			"--chatgpt",
 			"--config-dir",
@@ -152,5 +152,9 @@ describe("parseLoginArgs", () => {
 			configDir: "/tmp/cfg",
 			daemonUrl: "http://localhost:9",
 		});
+	});
+
+	it("rejects an unregistered login flag with Stricli's diagnostic", async () => {
+		await expect(parseLoginArgs(["login", "--bogus"])).rejects.toThrow("--bogus");
 	});
 });

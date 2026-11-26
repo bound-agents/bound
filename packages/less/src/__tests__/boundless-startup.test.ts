@@ -31,54 +31,54 @@ const mockClient = (): BoundClient => {
 
 describe("boundless startup", () => {
 	describe("argument parsing", () => {
-		it("should parse --attach <threadId> argument", () => {
+		it("should parse --attach <threadId> argument", async () => {
 			const args = ["--attach", "thread-123"];
-			const result = parseArgs(args);
+			const result = await parseArgs(args);
 			expect(result.attachArg).toBe("thread-123");
 		});
 
-		it("should parse --url <url> argument", () => {
+		it("should parse --url <url> argument", async () => {
 			const args = ["--url", "http://localhost:3002"];
-			const result = parseArgs(args);
+			const result = await parseArgs(args);
 			expect(result.urlArg).toBe("http://localhost:3002");
 		});
 
-		it("should parse combined arguments", () => {
+		it("should parse combined arguments", async () => {
 			const args = ["--attach", "thread-123", "--url", "http://example.com"];
-			const result = parseArgs(args);
+			const result = await parseArgs(args);
 			expect(result.attachArg).toBe("thread-123");
 			expect(result.urlArg).toBe("http://example.com");
 		});
 
-		it("should default acp to false", () => {
-			const result = parseArgs([]);
+		it("should default acp to false", async () => {
+			const result = await parseArgs([]);
 			expect(result.acp).toBe(false);
 		});
 
-		it("should parse --acp flag", () => {
-			const result = parseArgs(["--acp"]);
+		it("should parse --acp flag", async () => {
+			const result = await parseArgs(["--acp"]);
 			expect(result.acp).toBe(true);
 		});
 
-		it("should parse --acp combined with --url", () => {
-			const result = parseArgs(["--acp", "--url", "http://example.com"]);
+		it("should parse --acp combined with --url", async () => {
+			const result = await parseArgs(["--acp", "--url", "http://example.com"]);
 			expect(result.acp).toBe(true);
 			expect(result.urlArg).toBe("http://example.com");
 		});
 
-		it("should reject unknown flags", () => {
+		it("should reject unknown flags", async () => {
 			const args = ["--unknown"];
-			expect(() => parseArgs(args)).toThrow("Unknown flag: --unknown");
+			await expect(parseArgs(args)).rejects.toThrow("Unknown flag: --unknown");
 		});
 
-		it("should require value for --attach", () => {
+		it("should require value for --attach", async () => {
 			const args = ["--attach"];
-			expect(() => parseArgs(args)).toThrow("Flag --attach requires a value");
+			await expect(parseArgs(args)).rejects.toThrow("Flag --attach requires a value");
 		});
 
-		it("should require value for --url", () => {
+		it("should require value for --url", async () => {
 			const args = ["--url"];
-			expect(() => parseArgs(args)).toThrow("Flag --url requires a value");
+			await expect(parseArgs(args)).rejects.toThrow("Flag --url requires a value");
 		});
 	});
 

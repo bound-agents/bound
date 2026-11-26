@@ -1,8 +1,11 @@
 #!/usr/bin/env bun
 // Implementation of the `boundctl` command; boundctl.ts is the binary entry
-// point. Handles: boundctl set-hub, boundctl stop, boundctl resume, boundctl restore, boundctl config, boundctl sync-status, boundctl drain
+// point. Arguments are parsed by Stricli: one route per command, nested route
+// maps for the `config`/`skill`/`webhook`/`task`/`db` families.
 
+import type { Database } from "bun:sqlite";
 import { getSiteId } from "@bound/core";
+import { buildApplication, buildCommand, buildRouteMap } from "@stricli/core";
 import { runConfigReload } from "./commands/config-reload.js";
 import { runConsistencyCheck } from "./commands/consistency-check.js";
 import { runDrain } from "./commands/drain.js";
@@ -12,8 +15,10 @@ import { runSetPersona } from "./commands/set-persona.js";
 import { skillDelete, skillImport, skillList, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
-import { taskUpdate } from "./commands/task.js";
+import { type TaskUpdateOptions, taskUpdate } from "./commands/task.js";
 import {
+	type WebhookCreateOptions,
+	type WebhookUpdateOptions,
 	webhookCreate,
 	webhookDelete,
 	webhookList,
@@ -21,49 +26,31 @@ import {
 	webhookSetUnauthenticated,
 	webhookUpdate,
 } from "./commands/webhook.js";
+import {
+	type CliContext,
+	type CliIO,
+	booleanFlag,
+	defaultCliIO,
+	defaultedStringFlag,
+	errorMessage,
+	exitWith,
+	optionalBooleanFlag,
+	optionalPositional,
+	restPositionals,
+	runCliApp,
+	stringFlag,
+	unknownCommandText,
+} from "./lib/cli-app.js";
 import { openBoundDB } from "./lib/db.js";
 
-function getArgValue(args: string[], flag: string): string | undefined {
-	const idx = args.indexOf(flag);
-	return idx !== -1 ? args[idx + 1] : undefined;
-}
+export { type CliIO, defaultCliIO } from "./lib/cli-app.js";
 
-/**
- * Output sinks, injectable for in-process tests. Production wires these to the
- * real `console` via {@link defaultCliIO}. A test passes capturing writers and
- * runs {@link main} with no spawned child, so Bun's coverage instrumentation
- * actually sees the parsing and dispatch.
- */
-export interface CliIO {
-	log: (message: string) => void;
-	error: (message: string) => void;
-}
-
-/** Production IO: the real console. */
-export function defaultCliIO(): CliIO {
-	return {
-		log: (m) => console.log(m),
-		error: (m) => console.error(m),
-	};
-}
-
-/**
- * Real `boundctl` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
- * script path — pass `process.argv.slice(2)`), dispatches to the matching
- * command, and RETURNS an exit code instead of calling `process.exit` inside
- * the tested path. The thin {@link boundctl.ts} launcher maps the return to
- * `process.exit`. Behavior (output text, exit codes, DB handles closed) is
- * identical to the prior inline implementation.
- */
-export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
-	const command = args[0];
-
-	if (!command || command === "--help" || command === "-h") {
-		io.log(`
+const ROOT_HELP = `
 boundctl - Bound orchestrator management CLI
 
 USAGE:
   boundctl <command> [options]
+  boundctl <command> --help  Show the flags for one command or command family
 
 COMMANDS:
   set-hub <host-name>       Set the cluster hub host
@@ -84,6 +71,7 @@ COMMANDS:
   webhook delete <name>      Delete a webhook
   webhook update             Update a webhook (--name, --prompt, --description, --format)
   webhook rotate-secret <name>  Rotate webhook secret
+  task update <id>           Update a task's history, model, or alert threshold
   db vacuum                  Run VACUUM to reclaim disk space
   --help                     Show this help message
 
@@ -133,422 +121,595 @@ EXAMPLES:
   boundctl sync-status
   boundctl drain new-hub --timeout 180
   boundctl db vacuum
-`);
-		return 0;
-	}
+`;
 
-	if (command === "set-hub") {
-		const hostName = args[1];
+interface ConfigDirFlags {
+	readonly configDir: string;
+}
+interface DataDirFlags {
+	readonly dataDir: string;
+}
+
+const configDirFlag = defaultedStringFlag("Config directory", "config", "dir");
+const dataDirFlag = defaultedStringFlag("Data directory holding bound.db", "data", "dir");
+
+/** Runs `body`, mapping a throw to `<label> failed: <message>` and exit 1. */
+async function guarded(
+	io: CliIO,
+	label: string,
+	body: () => Promise<void> | void,
+): Promise<number> {
+	try {
+		await body();
+		return 0;
+	} catch (error) {
+		io.error(`${label} failed: ${errorMessage(error)}`);
+		return 1;
+	}
+}
+
+/**
+ * Opens bound.db under `dataDir`, runs `body`, and always closes the handle. A
+ * throw maps to `<label> failed: <message>` and exit 1.
+ */
+async function withDb(
+	io: CliIO,
+	dataDir: string,
+	label: string,
+	body: (db: Database) => Promise<number> | number,
+): Promise<number> {
+	const db = openBoundDB(dataDir);
+	try {
+		return await body(db);
+	} catch (error) {
+		io.error(`${label} failed: ${errorMessage(error)}`);
+		return 1;
+	} finally {
+		db.close();
+	}
+}
+
+/** Parses an optional `--timeout` value; undefined when absent, null when invalid. */
+function parseTimeout(raw: string | undefined): number | undefined | null {
+	if (!raw) return undefined;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
+}
+
+/**
+ * Catch-all for a command family: registered as the route map's hidden
+ * default command, so an unknown or missing subcommand reaches it (with the
+ * unmatched word as a positional) and prints the family's own usage error.
+ */
+function unknownSubcommand(
+	flags: Record<string, ReturnType<typeof defaultedStringFlag>>,
+	report: (io: CliIO, input: string | undefined) => void,
+) {
+	return buildCommand({
+		docs: { brief: "Unknown subcommand" },
+		parameters: { flags, positional: restPositionals("input", "Unrecognized subcommand") },
+		func(this: CliContext, _flags: Record<string, string>, ...input: string[]) {
+			report(this.io, input[0]);
+			exitWith(this, 1);
+		},
+	});
+}
+
+const UNKNOWN_ROUTE = "unknown-subcommand";
+const HIDE_UNKNOWN = { [UNKNOWN_ROUTE]: true } as const;
+
+// ---------------------------------------------------------------------------
+// Cluster commands
+// ---------------------------------------------------------------------------
+
+const setHubCommand = buildCommand({
+	docs: { brief: "Set the cluster hub host" },
+	parameters: {
+		flags: {
+			wait: booleanFlag("Wait for all peers to confirm the new hub"),
+			timeout: stringFlag("Seconds to wait with --wait", "seconds"),
+			configDir: configDirFlag,
+		},
+		positional: optionalPositional("host-name", "Host to make the hub"),
+	},
+	async func(
+		this: CliContext,
+		flags: { wait: boolean; timeout?: string; configDir: string },
+		hostName?: string,
+	) {
 		if (!hostName) {
-			io.error("Error: host-name is required");
-			return 1;
+			this.io.error("Error: host-name is required");
+			return exitWith(this, 1);
 		}
-
-		const timeoutStr = getArgValue(args, "--timeout");
-		let timeout: number | undefined;
-		if (timeoutStr) {
-			const parsed = Number.parseInt(timeoutStr, 10);
-			if (Number.isNaN(parsed) || parsed <= 0) {
-				io.error("Error: --timeout must be a positive integer");
-				return 1;
-			}
-			timeout = parsed;
+		const timeout = parseTimeout(flags.timeout);
+		if (timeout === null) {
+			this.io.error("Error: --timeout must be a positive integer");
+			return exitWith(this, 1);
 		}
+		const args = { hostName, wait: flags.wait, timeout, configDir: flags.configDir };
+		exitWith(this, await guarded(this.io, "set-hub", () => runSetHub(args)));
+	},
+});
 
-		const setHubArgs = {
-			hostName,
-			wait: args.includes("--wait"),
-			timeout,
-			configDir: getArgValue(args, "--config-dir") || "config",
+const setPersonaCommand = buildCommand({
+	docs: { brief: "Set the cluster-wide operator persona (stdin if no --file)" },
+	parameters: {
+		flags: {
+			file: stringFlag("Read the persona from this file", "path"),
+			configDir: configDirFlag,
+		},
+	},
+	async func(this: CliContext, flags: { file?: string; configDir: string }) {
+		exitWith(this, await guarded(this.io, "set-persona", () => runSetPersona(flags)));
+	},
+});
+
+const stopCommand = buildCommand({
+	docs: { brief: "Emergency stop all hosts" },
+	parameters: { flags: { configDir: configDirFlag } },
+	async func(this: CliContext, flags: ConfigDirFlags) {
+		exitWith(this, await guarded(this.io, "stop", () => runStop(flags)));
+	},
+});
+
+const resumeCommand = buildCommand({
+	docs: { brief: "Resume operations after emergency stop" },
+	parameters: { flags: { configDir: configDirFlag } },
+	async func(this: CliContext, flags: ConfigDirFlags) {
+		exitWith(this, await guarded(this.io, "resume", () => runResume(flags)));
+	},
+});
+
+const restoreCommand = buildCommand({
+	docs: { brief: "Point-in-time recovery" },
+	parameters: {
+		flags: {
+			before: stringFlag("Restore to the state before this timestamp", "timestamp"),
+			preview: booleanFlag("Show the changes without executing"),
+			tables: {
+				kind: "parsed",
+				parse: String,
+				brief: "Limit the restore to these tables",
+				optional: true,
+				variadic: true,
+				placeholder: "table",
+			},
+			configDir: configDirFlag,
+		},
+		positional: restPositionals("table", "Further tables for --tables"),
+	},
+	async func(
+		this: CliContext,
+		flags: { before?: string; preview: boolean; tables?: string[]; configDir: string },
+		...moreTables: string[]
+	) {
+		if (flags.before === undefined) {
+			this.io.error("Error: --before <timestamp> is required");
+			return exitWith(this, 1);
+		}
+		// `--tables a b c`: Stricli binds `a` to the flag and the rest as
+		// positionals; both belong to the table list.
+		const tables = flags.tables ? [...flags.tables, ...moreTables] : [];
+		const args = {
+			before: flags.before,
+			preview: flags.preview,
+			tables,
+			configDir: flags.configDir,
 		};
+		exitWith(this, await guarded(this.io, "restore", () => runRestore(args)));
+	},
+});
 
-		try {
-			await runSetHub(setHubArgs);
-		} catch (error) {
-			io.error(`set-hub failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "set-persona") {
-		const setPersonaArgs = {
-			file: getArgValue(args, "--file"),
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runSetPersona(setPersonaArgs);
-		} catch (error) {
-			io.error(`set-persona failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "stop") {
-		const stopArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runStop(stopArgs);
-		} catch (error) {
-			io.error(`stop failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "resume") {
-		const resumeArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runResume(resumeArgs);
-		} catch (error) {
-			io.error(`resume failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "restore") {
-		const beforeIndex = args.indexOf("--before");
-		if (beforeIndex === -1) {
-			io.error("Error: --before <timestamp> is required");
-			return 1;
-		}
-
-		const restoreArgs: {
-			before: string;
-			preview: boolean;
-			tables: string[];
-			configDir: string;
-		} = {
-			before: args[beforeIndex + 1],
-			preview: args.includes("--preview"),
-			tables: [],
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		// Parse --tables if provided
-		const tablesIndex = args.indexOf("--tables");
-		if (tablesIndex !== -1) {
-			restoreArgs.tables = args.slice(tablesIndex + 1).filter((a) => !a.startsWith("--"));
-		}
-
-		try {
-			await runRestore(restoreArgs);
-		} catch (error) {
-			io.error(`restore failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "config") {
-		const subCommand = args[1];
-		if (subCommand !== "reload") {
-			io.error("Error: unknown config subcommand. Use 'config reload <target>'");
-			return 1;
-		}
-
-		const target = args[2];
-		if (!target) {
-			io.error("Error: target is required. Example: boundctl config reload mcp");
-			return 1;
-		}
-
-		const configReloadArgs = {
-			target,
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runConfigReload(configReloadArgs);
-		} catch (error) {
-			io.error(`config reload failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "sync-status") {
-		const syncStatusArgs = {
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runSyncStatus(syncStatusArgs);
-		} catch (error) {
-			io.error(`sync-status failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "consistency-check") {
-		const consistencyArgs = {
-			spokeUrl: getArgValue(args, "--spoke-url"),
-			tables: getArgValue(args, "--tables"),
-			verbose: args.includes("--verbose"),
-		};
-
-		try {
-			await runConsistencyCheck(consistencyArgs);
-		} catch (error) {
-			io.error(
-				`consistency-check failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "drain") {
-		const newHub = args[1];
-		if (!newHub) {
-			io.error("Error: new-hub is required");
-			return 1;
-		}
-
-		const timeoutStr = getArgValue(args, "--timeout");
-		let timeout: number | undefined;
-		if (timeoutStr) {
-			const parsed = Number.parseInt(timeoutStr, 10);
-			if (Number.isNaN(parsed) || parsed <= 0) {
-				io.error("Error: --timeout must be a positive integer");
-				return 1;
-			}
-			timeout = parsed;
-		}
-
-		const drainArgs = {
-			newHub,
-			timeout,
-			configDir: getArgValue(args, "--config-dir") || "config",
-		};
-
-		try {
-			await runDrain(drainArgs);
-		} catch (error) {
-			io.error(`drain failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "skill") {
-		const subcommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-		const db = openBoundDB(dataDir);
-
-		try {
-			if (subcommand === "list") {
-				const verbose = args.includes("--verbose");
-				skillList(db, { verbose });
-				db.close();
-				return 0;
-			}
-
-			if (subcommand === "view") {
-				const name = args[2];
-				if (!name) {
-					io.error("Error: skill name is required. Usage: boundctl skill view <name>");
-					db.close();
-					return 1;
+const configRoutes = buildRouteMap({
+	docs: { brief: "Hot-reload configuration", hideRoute: HIDE_UNKNOWN },
+	defaultCommand: UNKNOWN_ROUTE,
+	routes: {
+		reload: buildCommand({
+			docs: { brief: "Hot-reload configuration. Supported targets: mcp" },
+			parameters: {
+				flags: { configDir: configDirFlag },
+				positional: optionalPositional("target", "Configuration to reload (mcp)"),
+			},
+			async func(this: CliContext, flags: ConfigDirFlags, target?: string) {
+				if (!target) {
+					this.io.error("Error: target is required. Example: boundctl config reload mcp");
+					return exitWith(this, 1);
 				}
-				skillView(db, name);
-				db.close();
-				return 0;
-			}
+				const args = { target, configDir: flags.configDir };
+				exitWith(this, await guarded(this.io, "config reload", () => runConfigReload(args)));
+			},
+		}),
+		[UNKNOWN_ROUTE]: unknownSubcommand({ configDir: configDirFlag }, (io) => {
+			io.error("Error: unknown config subcommand. Use 'config reload <target>'");
+		}),
+	},
+});
 
-			if (subcommand === "delete") {
-				const name = args[2];
+const syncStatusCommand = buildCommand({
+	docs: { brief: "Show sync status for all peers" },
+	parameters: { flags: { configDir: configDirFlag } },
+	async func(this: CliContext, flags: ConfigDirFlags) {
+		exitWith(this, await guarded(this.io, "sync-status", () => runSyncStatus(flags)));
+	},
+});
+
+const consistencyCheckCommand = buildCommand({
+	docs: { brief: "Compare local DB against hub via sync protocol" },
+	parameters: {
+		flags: {
+			spokeUrl: stringFlag("Spoke URL (default http://localhost:3001)", "url"),
+			tables: stringFlag("Comma-separated tables to compare", "t1,t2"),
+			verbose: booleanFlag("Print per-row differences"),
+		},
+	},
+	async func(this: CliContext, flags: { spokeUrl?: string; tables?: string; verbose: boolean }) {
+		exitWith(this, await guarded(this.io, "consistency-check", () => runConsistencyCheck(flags)));
+	},
+});
+
+const drainCommand = buildCommand({
+	docs: { brief: "Graceful hub decommissioning" },
+	parameters: {
+		flags: {
+			timeout: stringFlag("Seconds to wait for the drain (default 120)", "seconds"),
+			configDir: configDirFlag,
+		},
+		positional: optionalPositional("new-hub", "Host to switch the hub to"),
+	},
+	async func(this: CliContext, flags: { timeout?: string; configDir: string }, newHub?: string) {
+		if (!newHub) {
+			this.io.error("Error: new-hub is required");
+			return exitWith(this, 1);
+		}
+		const timeout = parseTimeout(flags.timeout);
+		if (timeout === null) {
+			this.io.error("Error: --timeout must be a positive integer");
+			return exitWith(this, 1);
+		}
+		const args = { newHub, timeout, configDir: flags.configDir };
+		exitWith(this, await guarded(this.io, "drain", () => runDrain(args)));
+	},
+});
+
+// ---------------------------------------------------------------------------
+// skill
+// ---------------------------------------------------------------------------
+
+const skillRoutes = buildRouteMap({
+	docs: { brief: "Manage skills", hideRoute: HIDE_UNKNOWN },
+	defaultCommand: UNKNOWN_ROUTE,
+	routes: {
+		list: buildCommand({
+			docs: { brief: "List all skills with usage telemetry" },
+			parameters: {
+				flags: { verbose: booleanFlag("Show full telemetry"), dataDir: dataDirFlag },
+			},
+			async func(this: CliContext, flags: { verbose: boolean; dataDir: string }) {
+				const code = await withDb(this.io, flags.dataDir, "skill command", (db) => {
+					skillList(db, { verbose: flags.verbose });
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		view: buildCommand({
+			docs: { brief: "View SKILL.md and file listing for a skill" },
+			parameters: {
+				flags: { dataDir: dataDirFlag },
+				positional: optionalPositional("name", "Skill name"),
+			},
+			async func(this: CliContext, flags: DataDirFlags, name?: string) {
 				if (!name) {
-					io.error(
+					this.io.error("Error: skill name is required. Usage: boundctl skill view <name>");
+					return exitWith(this, 1);
+				}
+				const code = await withDb(this.io, flags.dataDir, "skill command", (db) => {
+					skillView(db, name);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		delete: buildCommand({
+			docs: { brief: "Delete a skill" },
+			parameters: {
+				flags: { reason: stringFlag("Why the skill is deleted", "text"), dataDir: dataDirFlag },
+				positional: optionalPositional("name", "Skill name"),
+			},
+			async func(this: CliContext, flags: { reason?: string; dataDir: string }, name?: string) {
+				if (!name) {
+					this.io.error(
 						'Error: skill name is required. Usage: boundctl skill delete <name> [--reason "..."]',
 					);
-					db.close();
-					return 1;
+					return exitWith(this, 1);
 				}
-				const reason = getArgValue(args, "--reason");
-				const siteId = getSiteId(db);
-				skillDelete(db, siteId, name, reason);
-				db.close();
-				return 0;
-			}
-
-			if (subcommand === "import") {
-				const localPath = args[2];
+				const code = await withDb(this.io, flags.dataDir, "skill command", (db) => {
+					skillDelete(db, getSiteId(db), name, flags.reason);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		import: buildCommand({
+			docs: { brief: "Import a skill from a local directory" },
+			parameters: {
+				flags: { dataDir: dataDirFlag },
+				positional: optionalPositional("path", "Skill directory"),
+			},
+			async func(this: CliContext, flags: DataDirFlags, localPath?: string) {
 				if (!localPath) {
-					io.error("Error: path is required. Usage: boundctl skill import <path>");
-					db.close();
-					return 1;
+					this.io.error("Error: path is required. Usage: boundctl skill import <path>");
+					return exitWith(this, 1);
 				}
-				const siteId = getSiteId(db);
-				await skillImport(db, siteId, localPath);
-				db.close();
-				return 0;
-			}
-
-			// Unknown subcommand
-			io.error(`Error: unknown skill subcommand '${subcommand}'.`);
+				const code = await withDb(this.io, flags.dataDir, "skill command", async (db) => {
+					await skillImport(db, getSiteId(db), localPath);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io, input) => {
+			io.error(`Error: unknown skill subcommand '${input ?? ""}'.`);
 			io.error("Available: list, view, delete, import");
-			db.close();
-			return 1;
-		} catch (error) {
-			io.error(`skill command failed: ${error instanceof Error ? error.message : String(error)}`);
-			db.close();
-			return 1;
-		}
-	}
+		}),
+	},
+});
 
-	if (command === "webhook") {
-		const subcommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-		const db = openBoundDB(dataDir);
-		const siteId = getSiteId(db);
+// ---------------------------------------------------------------------------
+// webhook
+// ---------------------------------------------------------------------------
 
-		try {
-			if (subcommand === "create") {
-				webhookCreate(db, siteId, args.slice(2));
-				db.close();
+const WEBHOOK_USAGE =
+	"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}";
+
+const webhookModelFlag = stringFlag(
+	'Model for the webhook task; --model "" restores the default',
+	"id",
+);
+
+/** A webhook subcommand that only needs the DB and its site id. */
+function webhookDbCommand(brief: string, body: (db: Database, siteId: string) => void) {
+	return buildCommand({
+		docs: { brief },
+		parameters: { flags: { dataDir: dataDirFlag } },
+		async func(this: CliContext, flags: DataDirFlags) {
+			const code = await withDb(this.io, flags.dataDir, "webhook command", (db) => {
+				body(db, getSiteId(db));
 				return 0;
-			}
+			});
+			exitWith(this, code);
+		},
+	});
+}
 
-			if (subcommand === "list") {
-				webhookList(db);
-				db.close();
+/** A webhook subcommand addressed by a positional `<name>`. */
+function webhookNamedCommand(
+	brief: string,
+	usage: string,
+	body: (db: Database, siteId: string, name: string) => void,
+) {
+	return buildCommand({
+		docs: { brief },
+		parameters: {
+			flags: { dataDir: dataDirFlag },
+			positional: optionalPositional("name", "Webhook name"),
+		},
+		async func(this: CliContext, flags: DataDirFlags, name?: string) {
+			if (!name) {
+				this.io.error(usage);
+				return exitWith(this, 1);
+			}
+			const code = await withDb(this.io, flags.dataDir, "webhook command", (db) => {
+				body(db, getSiteId(db), name);
 				return 0;
-			}
+			});
+			exitWith(this, code);
+		},
+	});
+}
 
-			if (subcommand === "delete") {
-				const name = args[2];
-				if (!name) {
-					io.error("Usage: boundctl webhook delete <name>");
-					db.close();
-					return 1;
-				}
-				webhookDelete(db, siteId, name);
-				db.close();
-				return 0;
-			}
+const webhookRoutes = buildRouteMap({
+	docs: { brief: "Manage webhooks", hideRoute: HIDE_UNKNOWN },
+	defaultCommand: UNKNOWN_ROUTE,
+	routes: {
+		create: buildCommand({
+			docs: { brief: "Create a new webhook" },
+			parameters: {
+				flags: {
+					name: stringFlag("Webhook name (lowercase, digits, _ and -)", "name"),
+					format: stringFlag("Signature format: github|stripe|slack|raw|none", "format"),
+					description: stringFlag("Description", "text"),
+					prompt: stringFlag("System prompt addition for the webhook task", "text"),
+					model: webhookModelFlag,
+					noHistory: optionalBooleanFlag("Run each delivery with a clean context window"),
+					dataDir: dataDirFlag,
+				},
+			},
+			async func(this: CliContext, { dataDir, ...options }: WebhookCreateOptions & DataDirFlags) {
+				const code = await withDb(this.io, dataDir, "webhook command", (db) => {
+					webhookCreate(db, getSiteId(db), options);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		list: webhookDbCommand("List all webhooks", (db) => webhookList(db)),
+		delete: webhookNamedCommand(
+			"Delete a webhook",
+			"Usage: boundctl webhook delete <name>",
+			webhookDelete,
+		),
+		update: buildCommand({
+			docs: { brief: "Update a webhook" },
+			parameters: {
+				flags: {
+					name: stringFlag("Webhook to update", "name"),
+					prompt: stringFlag("New system prompt addition", "text"),
+					description: stringFlag('New description; --description "" clears it', "text"),
+					format: stringFlag("New signature format", "format"),
+					model: webhookModelFlag,
+					noHistory: optionalBooleanFlag("Disable history for future deliveries"),
+					history: optionalBooleanFlag("Re-enable history for future deliveries"),
+					dataDir: dataDirFlag,
+				},
+			},
+			async func(this: CliContext, { dataDir, ...options }: WebhookUpdateOptions & DataDirFlags) {
+				const code = await withDb(this.io, dataDir, "webhook command", (db) => {
+					webhookUpdate(db, getSiteId(db), options);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		"rotate-secret": webhookNamedCommand(
+			"Rotate webhook secret",
+			"Usage: boundctl webhook rotate-secret <name>",
+			webhookRotateSecret,
+		),
+		"allow-unauthenticated": webhookDbCommand(
+			"Allow --format none webhooks cluster-wide",
+			(db, siteId) => webhookSetUnauthenticated(db, siteId, true),
+		),
+		"disallow-unauthenticated": webhookDbCommand(
+			"Disallow --format none webhooks cluster-wide (default)",
+			(db, siteId) => webhookSetUnauthenticated(db, siteId, false),
+		),
+		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io) => {
+			io.error(WEBHOOK_USAGE);
+		}),
+	},
+});
 
-			if (subcommand === "update") {
-				webhookUpdate(db, siteId, args.slice(2));
-				db.close();
-				return 0;
-			}
+// ---------------------------------------------------------------------------
+// task
+// ---------------------------------------------------------------------------
 
-			if (subcommand === "rotate-secret") {
-				const name = args[2];
-				if (!name) {
-					io.error("Usage: boundctl webhook rotate-secret <name>");
-					db.close();
-					return 1;
-				}
-				webhookRotateSecret(db, siteId, name);
-				db.close();
-				return 0;
-			}
-
-			if (subcommand === "allow-unauthenticated") {
-				webhookSetUnauthenticated(db, siteId, true);
-				db.close();
-				return 0;
-			}
-
-			if (subcommand === "disallow-unauthenticated") {
-				webhookSetUnauthenticated(db, siteId, false);
-				db.close();
-				return 0;
-			}
-
-			io.error(
-				"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}",
-			);
-			db.close();
-			return 1;
-		} catch (error) {
-			io.error(`webhook command failed: ${error instanceof Error ? error.message : String(error)}`);
-			db.close();
-			return 1;
-		}
-	}
-
-	if (command === "task") {
-		const subcommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-		const db = openBoundDB(dataDir);
-		const siteId = getSiteId(db);
-
-		try {
-			if (subcommand === "update") {
-				taskUpdate(db, siteId, args.slice(2));
-				db.close();
-				return 0;
-			}
-
+const taskRoutes = buildRouteMap({
+	docs: { brief: "Change settings on scheduled tasks", hideRoute: HIDE_UNKNOWN },
+	defaultCommand: UNKNOWN_ROUTE,
+	routes: {
+		update: buildCommand({
+			docs: { brief: "Update a task's history, model, or alert threshold" },
+			parameters: {
+				flags: {
+					id: stringFlag("Task id (alternative to the positional)", "id"),
+					noHistory: optionalBooleanFlag("Disable history"),
+					history: optionalBooleanFlag("Re-enable history"),
+					model: stringFlag('Model hint; --model "" restores the default', "id"),
+					alertThreshold: stringFlag("Consecutive failures before an advisory (> 0)", "n"),
+					dataDir: dataDirFlag,
+				},
+				positional: optionalPositional("id", "Task id"),
+			},
+			async func(
+				this: CliContext,
+				{ dataDir, id, ...options }: TaskUpdateOptions & DataDirFlags,
+				positionalId?: string,
+			) {
+				const code = await withDb(this.io, dataDir, "task command", (db) => {
+					taskUpdate(db, getSiteId(db), { id: id ?? positionalId, ...options });
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io) => {
 			io.error(
 				"Usage: boundctl task update <id> [--no-history|--history] [--model <id>] [--alert-threshold <n>]",
 			);
-			db.close();
-			return 1;
-		} catch (error) {
-			io.error(`task command failed: ${error instanceof Error ? error.message : String(error)}`);
-			db.close();
-			return 1;
-		}
+		}),
+	},
+});
+
+// ---------------------------------------------------------------------------
+// db
+// ---------------------------------------------------------------------------
+
+function vacuum(io: CliIO, db: Database): void {
+	io.log("Running VACUUM...");
+	// Raw read justification: PRAGMA page_count reads SQLite file metadata.
+	const before = db.query("PRAGMA page_count").get() as { page_count: number };
+	// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
+	const freeListBefore = db.query("PRAGMA freelist_count").get() as {
+		freelist_count: number;
+	};
+	db.run("VACUUM");
+	// Raw read justification: PRAGMA page_count reads SQLite file metadata.
+	const after = db.query("PRAGMA page_count").get() as { page_count: number };
+	// Raw read justification: PRAGMA page_size reads SQLite file metadata.
+	const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
+	const reclaimedPages = before.page_count - after.page_count;
+	const reclaimedBytes = reclaimedPages * pageSize;
+	io.log("VACUUM complete.");
+	io.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
+	io.log(`  Pages after:  ${after.page_count}`);
+	io.log(
+		`  Reclaimed:    ${reclaimedPages} pages (${(reclaimedBytes / 1024 / 1024).toFixed(1)}MB)`,
+	);
+}
+
+const dbRoutes = buildRouteMap({
+	docs: { brief: "Database maintenance", hideRoute: HIDE_UNKNOWN },
+	defaultCommand: UNKNOWN_ROUTE,
+	routes: {
+		vacuum: buildCommand({
+			docs: { brief: "Run VACUUM to reclaim disk space" },
+			parameters: { flags: { dataDir: dataDirFlag } },
+			async func(this: CliContext, flags: DataDirFlags) {
+				const code = await withDb(this.io, flags.dataDir, "VACUUM", (db) => {
+					vacuum(this.io, db);
+					return 0;
+				});
+				exitWith(this, code);
+			},
+		}),
+		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io, input) => {
+			io.error(`Unknown db subcommand: ${input}`);
+			io.error("Available: vacuum");
+		}),
+	},
+});
+
+const app = buildApplication<CliContext>(
+	buildRouteMap({
+		docs: { brief: "Bound orchestrator management CLI" },
+		routes: {
+			"set-hub": setHubCommand,
+			"set-persona": setPersonaCommand,
+			stop: stopCommand,
+			resume: resumeCommand,
+			restore: restoreCommand,
+			config: configRoutes,
+			"sync-status": syncStatusCommand,
+			"consistency-check": consistencyCheckCommand,
+			drain: drainCommand,
+			skill: skillRoutes,
+			webhook: webhookRoutes,
+			task: taskRoutes,
+			db: dbRoutes,
+		},
+	}),
+	{
+		name: "boundctl",
+		scanner: { caseStyle: "allow-kebab-for-camel" },
+		documentation: { caseStyle: "convert-camel-to-kebab" },
+		localization: unknownCommandText("boundctl"),
+	},
+);
+
+/**
+ * Real `boundctl` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
+ * script path — pass `process.argv.slice(2)`), dispatches to the matching
+ * command, and RETURNS an exit code instead of calling `process.exit` inside
+ * the tested path. The thin {@link boundctl.ts} launcher maps the return to
+ * `process.exit`. The bare / `--help` / `-h` overview is the curated text
+ * above; `boundctl <command> --help` is generated from the command definition.
+ */
+export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
+	const command = args[0];
+	if (!command || command === "--help" || command === "-h") {
+		io.log(ROOT_HELP);
+		return 0;
 	}
-
-	if (command === "db") {
-		const subCommand = args[1];
-		const dataDir = getArgValue(args, "--data-dir") || "data";
-
-		if (subCommand === "vacuum") {
-			const db = openBoundDB(dataDir);
-			try {
-				io.log("Running VACUUM...");
-				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
-				const before = db.query("PRAGMA page_count").get() as { page_count: number };
-				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
-				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
-				const freeListBefore = db.query("PRAGMA freelist_count").get() as {
-					freelist_count: number;
-				};
-				db.run("VACUUM");
-				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
-				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
-				const after = db.query("PRAGMA page_count").get() as { page_count: number };
-				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
-				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
-				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
-				const reclaimedPages = before.page_count - after.page_count;
-				const reclaimedBytes = reclaimedPages * pageSize;
-				io.log("VACUUM complete.");
-				io.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
-				io.log(`  Pages after:  ${after.page_count}`);
-				io.log(
-					`  Reclaimed:    ${reclaimedPages} pages (${(reclaimedBytes / 1024 / 1024).toFixed(1)}MB)`,
-				);
-			} catch (error) {
-				io.error(`VACUUM failed: ${error instanceof Error ? error.message : String(error)}`);
-				db.close();
-				return 1;
-			}
-			db.close();
-			return 0;
-		}
-
-		io.error(`Unknown db subcommand: ${subCommand}`);
-		io.error("Available: vacuum");
-		return 1;
-	}
-
-	io.error(`Unknown command: ${command}`);
-	io.error('Run "boundctl --help" for usage information');
-	return 1;
+	return runCliApp(app, args, io);
 }

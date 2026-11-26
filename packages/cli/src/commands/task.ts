@@ -2,20 +2,6 @@ import type { Database } from "bun:sqlite";
 import { findTaskExistenceById, updateRow } from "@bound/core";
 
 // ---------------------------------------------------------------------------
-// arg helpers (mirrors the local helpers in webhook.ts)
-// ---------------------------------------------------------------------------
-
-function getArgValue(args: string[], flag: string): string | undefined {
-	const idx = args.indexOf(flag);
-	if (idx === -1) return undefined;
-	return args[idx + 1];
-}
-
-function hasFlag(args: string[], flag: string): boolean {
-	return args.includes(flag);
-}
-
-// ---------------------------------------------------------------------------
 // taskUpdate
 // ---------------------------------------------------------------------------
 
@@ -33,9 +19,17 @@ function hasFlag(args: string[], flag: string): boolean {
  * Lifecycle/scheduling fields are not mutable here — use a cancel path to stop
  * a task.
  */
-export function taskUpdate(db: Database, siteId: string, args: string[]): void {
-	const id = getArgValue(args, "--id") ?? args[0];
-	if (!id || id.startsWith("--")) {
+export interface TaskUpdateOptions {
+	readonly id?: string;
+	readonly noHistory?: boolean;
+	readonly history?: boolean;
+	readonly model?: string;
+	readonly alertThreshold?: string;
+}
+
+export function taskUpdate(db: Database, siteId: string, options: TaskUpdateOptions): void {
+	const { id } = options;
+	if (!id) {
 		throw new Error("--id is required");
 	}
 
@@ -43,8 +37,8 @@ export function taskUpdate(db: Database, siteId: string, args: string[]): void {
 	//   neither flag   → leave alone
 	//   --no-history   → set to 1 (disable history)
 	//   --history      → set to 0 (re-enable history)
-	const wantsNoHistory = hasFlag(args, "--no-history");
-	const wantsHistory = hasFlag(args, "--history");
+	const wantsNoHistory = options.noHistory === true;
+	const wantsHistory = options.history === true;
 	if (wantsNoHistory && wantsHistory) {
 		throw new Error("--no-history and --history are mutually exclusive");
 	}
@@ -53,11 +47,10 @@ export function taskUpdate(db: Database, siteId: string, args: string[]): void {
 	//   flag absent  → leave alone
 	//   --model ""   → clear back to system default (null)
 	//   --model <id> → set
-	const modelIdx = args.indexOf("--model");
-	const modelProvided = modelIdx !== -1;
-	const modelValue = modelProvided ? (args[modelIdx + 1] ?? "") : undefined;
+	const modelProvided = options.model !== undefined;
+	const modelValue = options.model;
 
-	const alertRaw = getArgValue(args, "--alert-threshold");
+	const alertRaw = options.alertThreshold;
 
 	const task = findTaskExistenceById(db, id);
 	if (!task || task.deleted === 1) {

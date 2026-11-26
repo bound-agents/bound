@@ -43,7 +43,7 @@ describe("webhook commands", () => {
 		it("should create a webhook with valid name and generate 64-char secret", () => {
 			const output = collectOutput();
 
-			webhookCreate(db, SITE_ID, ["--name", "my-webhook", "--format", "github"]);
+			webhookCreate(db, SITE_ID, { name: "my-webhook", format: "github" });
 
 			// Verify webhook row exists
 			const webhook = db
@@ -110,7 +110,7 @@ describe("webhook commands", () => {
 			`);
 
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", "persistence-failure"]);
+				webhookCreate(db, SITE_ID, { name: "persistence-failure" });
 			}).toThrow("forced CLI persistence failure");
 			expect(output).toEqual([]);
 			expect(db.prepare("SELECT COUNT(*) AS count FROM threads").get()).toEqual({ count: 1 });
@@ -120,32 +120,29 @@ describe("webhook commands", () => {
 
 		it("should reject webhook name with uppercase letters", () => {
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", "MyWebhook"]);
+				webhookCreate(db, SITE_ID, { name: "MyWebhook" });
 			}).toThrow(/Invalid webhook name/);
 		});
 
 		it("should reject webhook name with special characters", () => {
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", "my webhook!"]);
+				webhookCreate(db, SITE_ID, { name: "my webhook!" });
 			}).toThrow(/Invalid webhook name/);
 		});
 
 		it("should reject webhook name longer than 64 chars", () => {
 			const longName = "a".repeat(65);
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", longName]);
+				webhookCreate(db, SITE_ID, { name: longName });
 			}).toThrow(/Invalid webhook name/);
 		});
 
 		it("should create webhook with custom description and prompt", () => {
-			webhookCreate(db, SITE_ID, [
-				"--name",
-				"my-webhook",
-				"--description",
-				"My test webhook",
-				"--prompt",
-				"Custom system prompt",
-			]);
+			webhookCreate(db, SITE_ID, {
+				name: "my-webhook",
+				description: "My test webhook",
+				prompt: "Custom system prompt",
+			});
 
 			const webhook = db
 				.prepare("SELECT description FROM webhooks WHERE name = ?")
@@ -169,16 +166,16 @@ describe("webhook commands", () => {
 		});
 
 		it("should reject duplicate webhook name", () => {
-			webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
+			webhookCreate(db, SITE_ID, { name: "duplicate" });
 
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
+				webhookCreate(db, SITE_ID, { name: "duplicate" });
 			}).toThrow(/already exists/);
 		});
 
 		it("should allow reusing the name of a previously-deleted webhook", () => {
 			// Create, capture the deterministic id + original secret/task/thread.
-			webhookCreate(db, SITE_ID, ["--name", "recycle"]);
+			webhookCreate(db, SITE_ID, { name: "recycle" });
 			const original = db
 				.prepare(
 					"SELECT id, secret, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0",
@@ -201,7 +198,7 @@ describe("webhook commands", () => {
 			// post-fix it restores the soft-deleted row in place.
 			const output = collectOutput();
 			expect(() => {
-				webhookCreate(db, SITE_ID, ["--name", "recycle"]);
+				webhookCreate(db, SITE_ID, { name: "recycle" });
 			}).not.toThrow();
 
 			// Exactly one row for this id, restored to deleted=0, with a fresh
@@ -239,8 +236,8 @@ describe("webhook commands", () => {
 	// Task 2: webhookList
 	describe("webhookList", () => {
 		it("should list webhooks without secrets", () => {
-			webhookCreate(db, SITE_ID, ["--name", "webhook1", "--description", "First"]);
-			webhookCreate(db, SITE_ID, ["--name", "webhook2", "--description", "Second"]);
+			webhookCreate(db, SITE_ID, { name: "webhook1", description: "First" });
+			webhookCreate(db, SITE_ID, { name: "webhook2", description: "Second" });
 
 			const output = collectOutput();
 
@@ -266,7 +263,7 @@ describe("webhook commands", () => {
 	// Task 2: webhookDelete
 	describe("webhookDelete", () => {
 		it("should soft-delete webhook and cancel task", () => {
-			webhookCreate(db, SITE_ID, ["--name", "to-delete"]);
+			webhookCreate(db, SITE_ID, { name: "to-delete" });
 
 			const webhook = db
 				.prepare("SELECT id, task_id FROM webhooks WHERE name = ?")
@@ -303,7 +300,7 @@ describe("webhook commands", () => {
 	// Task 2: webhookUpdate
 	describe("webhookUpdate", () => {
 		it("should update webhook prompt via system_prompt_addition", () => {
-			webhookCreate(db, SITE_ID, ["--name", "update-test"]);
+			webhookCreate(db, SITE_ID, { name: "update-test" });
 
 			const webhook = db
 				.prepare("SELECT task_id FROM webhooks WHERE name = ?")
@@ -311,7 +308,7 @@ describe("webhook commands", () => {
 
 			const output = collectOutput();
 
-			webhookUpdate(db, SITE_ID, ["--name", "update-test", "--prompt", "New prompt"]);
+			webhookUpdate(db, SITE_ID, { name: "update-test", prompt: "New prompt" });
 
 			const task = db
 				.prepare("SELECT system_prompt_addition FROM tasks WHERE id = ?")
@@ -322,9 +319,9 @@ describe("webhook commands", () => {
 		});
 
 		it("should update webhook description", () => {
-			webhookCreate(db, SITE_ID, ["--name", "desc-test"]);
+			webhookCreate(db, SITE_ID, { name: "desc-test" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "desc-test", "--description", "New description"]);
+			webhookUpdate(db, SITE_ID, { name: "desc-test", description: "New description" });
 
 			const webhook = db
 				.prepare("SELECT description FROM webhooks WHERE name = ?")
@@ -334,9 +331,9 @@ describe("webhook commands", () => {
 		});
 
 		it("should update webhook signature format", () => {
-			webhookCreate(db, SITE_ID, ["--name", "format-test", "--format", "github"]);
+			webhookCreate(db, SITE_ID, { name: "format-test", format: "github" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "format-test", "--format", "stripe"]);
+			webhookUpdate(db, SITE_ID, { name: "format-test", format: "stripe" });
 
 			const webhook = db
 				.prepare("SELECT signature_format FROM webhooks WHERE name = ?")
@@ -346,21 +343,21 @@ describe("webhook commands", () => {
 		});
 
 		it("should reject unsupported webhook signature formats", () => {
-			expect(() =>
-				webhookCreate(db, SITE_ID, ["--name", "invalid-format", "--format", "bogus"]),
-			).toThrow(/Unsupported signature format/);
+			expect(() => webhookCreate(db, SITE_ID, { name: "invalid-format", format: "bogus" })).toThrow(
+				/Unsupported signature format/,
+			);
 
-			webhookCreate(db, SITE_ID, ["--name", "format-test", "--format", "github"]);
-			expect(() =>
-				webhookUpdate(db, SITE_ID, ["--name", "format-test", "--format", "bogus"]),
-			).toThrow(/Unsupported signature format/);
+			webhookCreate(db, SITE_ID, { name: "format-test", format: "github" });
+			expect(() => webhookUpdate(db, SITE_ID, { name: "format-test", format: "bogus" })).toThrow(
+				/Unsupported signature format/,
+			);
 		});
 	});
 
 	// Task 2: webhookRotateSecret
 	describe("webhookRotateSecret", () => {
 		it("should generate new secret and update webhook row", () => {
-			webhookCreate(db, SITE_ID, ["--name", "rotate-test"]);
+			webhookCreate(db, SITE_ID, { name: "rotate-test" });
 
 			const originalWebhook = db
 				.prepare("SELECT secret FROM webhooks WHERE name = ?")
@@ -415,7 +412,7 @@ describe("webhook commands", () => {
 		};
 
 		it("webhookCreate without --model leaves model_hint null on the task and thread", () => {
-			webhookCreate(db, SITE_ID, ["--name", "no-model"]);
+			webhookCreate(db, SITE_ID, { name: "no-model" });
 
 			const hints = taskAndThreadModelFor("no-model");
 			expect(hints.task).toBeNull();
@@ -423,7 +420,7 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookCreate with --model sets model_hint on the task and thread", () => {
-			webhookCreate(db, SITE_ID, ["--name", "kimi-hook", "--model", "kimi-k2"]);
+			webhookCreate(db, SITE_ID, { name: "kimi-hook", model: "kimi-k2" });
 
 			const hints = taskAndThreadModelFor("kimi-hook");
 			expect(hints.task).toBe("kimi-k2");
@@ -431,7 +428,7 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookCreate with --model '' is equivalent to omitting the flag", () => {
-			webhookCreate(db, SITE_ID, ["--name", "empty-model", "--model", ""]);
+			webhookCreate(db, SITE_ID, { name: "empty-model", model: "" });
 
 			const hints = taskAndThreadModelFor("empty-model");
 			expect(hints.task).toBeNull();
@@ -441,14 +438,14 @@ describe("webhook commands", () => {
 		it("webhookCreate prints the configured model in the create output", () => {
 			const output = collectOutput();
 
-			webhookCreate(db, SITE_ID, ["--name", "print-model", "--model", "kimi-k2"]);
+			webhookCreate(db, SITE_ID, { name: "print-model", model: "kimi-k2" });
 
 			expect(output.join("\n")).toContain("Model: kimi-k2");
 		});
 
 		it("webhookList surfaces the configured model column", () => {
-			webhookCreate(db, SITE_ID, ["--name", "listed-default"]);
-			webhookCreate(db, SITE_ID, ["--name", "listed-kimi", "--model", "kimi-k2"]);
+			webhookCreate(db, SITE_ID, { name: "listed-default" });
+			webhookCreate(db, SITE_ID, { name: "listed-kimi", model: "kimi-k2" });
 
 			const output = collectOutput();
 			webhookList(db);
@@ -460,9 +457,9 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --model sets model_hint on the task and thread", () => {
-			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
+			webhookCreate(db, SITE_ID, { name: "set-via-update" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--model", "kimi-k2"]);
+			webhookUpdate(db, SITE_ID, { name: "set-via-update", model: "kimi-k2" });
 
 			const hints = taskAndThreadModelFor("set-via-update");
 			expect(hints.task).toBe("kimi-k2");
@@ -470,9 +467,9 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --model '' clears model_hint back to default", () => {
-			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--model", "kimi-k2"]);
+			webhookCreate(db, SITE_ID, { name: "clear-via-update", model: "kimi-k2" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "clear-via-update", "--model", ""]);
+			webhookUpdate(db, SITE_ID, { name: "clear-via-update", model: "" });
 
 			const hints = taskAndThreadModelFor("clear-via-update");
 			expect(hints.task).toBeNull();
@@ -480,9 +477,9 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate without --model leaves existing model_hint alone", () => {
-			webhookCreate(db, SITE_ID, ["--name", "leave-alone", "--model", "kimi-k2"]);
+			webhookCreate(db, SITE_ID, { name: "leave-alone", model: "kimi-k2" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "leave-alone", "--description", "still kimi"]);
+			webhookUpdate(db, SITE_ID, { name: "leave-alone", description: "still kimi" });
 
 			const hints = taskAndThreadModelFor("leave-alone");
 			expect(hints.task).toBe("kimi-k2");
@@ -503,13 +500,13 @@ describe("webhook commands", () => {
 		};
 
 		it("webhookCreate without --no-history leaves no_history=0 on the task", () => {
-			webhookCreate(db, SITE_ID, ["--name", "default-history"]);
+			webhookCreate(db, SITE_ID, { name: "default-history" });
 
 			expect(noHistoryFor("default-history")).toBe(0);
 		});
 
 		it("webhookCreate with --no-history sets no_history=1 on the task", () => {
-			webhookCreate(db, SITE_ID, ["--name", "no-history-hook", "--no-history"]);
+			webhookCreate(db, SITE_ID, { name: "no-history-hook", noHistory: true });
 
 			expect(noHistoryFor("no-history-hook")).toBe(1);
 		});
@@ -517,14 +514,14 @@ describe("webhook commands", () => {
 		it("webhookCreate prints History line in the create output", () => {
 			const output = collectOutput();
 
-			webhookCreate(db, SITE_ID, ["--name", "history-output", "--no-history"]);
+			webhookCreate(db, SITE_ID, { name: "history-output", noHistory: true });
 
 			expect(output.join("\n")).toContain("History: disabled");
 		});
 
 		it("webhookList shows H column reflecting per-webhook no_history", () => {
-			webhookCreate(db, SITE_ID, ["--name", "with-history"]);
-			webhookCreate(db, SITE_ID, ["--name", "without-history", "--no-history"]);
+			webhookCreate(db, SITE_ID, { name: "with-history" });
+			webhookCreate(db, SITE_ID, { name: "without-history", noHistory: true });
 
 			const output = collectOutput();
 			webhookList(db);
@@ -540,40 +537,35 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --no-history sets no_history=1 on the task", () => {
-			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
+			webhookCreate(db, SITE_ID, { name: "set-via-update" });
 
-			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--no-history"]);
+			webhookUpdate(db, SITE_ID, { name: "set-via-update", noHistory: true });
 
 			expect(noHistoryFor("set-via-update")).toBe(1);
 		});
 
 		it("webhookUpdate with --history clears no_history back to 0", () => {
-			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--no-history"]);
+			webhookCreate(db, SITE_ID, { name: "clear-via-update", noHistory: true });
 			expect(noHistoryFor("clear-via-update")).toBe(1);
 
-			webhookUpdate(db, SITE_ID, ["--name", "clear-via-update", "--history"]);
+			webhookUpdate(db, SITE_ID, { name: "clear-via-update", history: true });
 
 			expect(noHistoryFor("clear-via-update")).toBe(0);
 		});
 
 		it("webhookUpdate without history flags leaves existing no_history alone", () => {
-			webhookCreate(db, SITE_ID, ["--name", "leave-alone-history", "--no-history"]);
+			webhookCreate(db, SITE_ID, { name: "leave-alone-history", noHistory: true });
 
-			webhookUpdate(db, SITE_ID, [
-				"--name",
-				"leave-alone-history",
-				"--description",
-				"still no history",
-			]);
+			webhookUpdate(db, SITE_ID, { name: "leave-alone-history", description: "still no history" });
 
 			expect(noHistoryFor("leave-alone-history")).toBe(1);
 		});
 
 		it("webhookUpdate with both --no-history and --history throws", () => {
-			webhookCreate(db, SITE_ID, ["--name", "ambiguous"]);
+			webhookCreate(db, SITE_ID, { name: "ambiguous" });
 
 			expect(() => {
-				webhookUpdate(db, SITE_ID, ["--name", "ambiguous", "--no-history", "--history"]);
+				webhookUpdate(db, SITE_ID, { name: "ambiguous", noHistory: true, history: true });
 			}).toThrow(/mutually exclusive/);
 		});
 	});
@@ -603,7 +595,7 @@ describe("webhook unauthenticated gate (#195)", () => {
 
 	it("refuses --format none when the cluster gate is off (default)", () => {
 		expect(() => {
-			webhookCreate(db, SITE_ID, ["--name", "unauth-hook", "--format", "none"]);
+			webhookCreate(db, SITE_ID, { name: "unauth-hook", format: "none" });
 		}).toThrow(/Unauthenticated webhooks \(--format none\) are disabled/);
 		// Nothing persisted.
 		expect(db.prepare("SELECT COUNT(*) AS n FROM webhooks").get()).toEqual({ n: 0 });
@@ -638,7 +630,7 @@ describe("webhook unauthenticated gate (#195)", () => {
 	it("allows creating a --format none webhook once the gate is enabled", () => {
 		webhookSetUnauthenticated(db, SITE_ID, true);
 		expect(() => {
-			webhookCreate(db, SITE_ID, ["--name", "now-allowed", "--format", "none"]);
+			webhookCreate(db, SITE_ID, { name: "now-allowed", format: "none" });
 		}).not.toThrow();
 		const wh = db
 			.prepare("SELECT signature_format FROM webhooks WHERE name = ?")
@@ -647,9 +639,9 @@ describe("webhook unauthenticated gate (#195)", () => {
 	});
 
 	it("refuses webhookUpdate --format none when the gate is off", () => {
-		webhookCreate(db, SITE_ID, ["--name", "to-none", "--format", "github"]);
+		webhookCreate(db, SITE_ID, { name: "to-none", format: "github" });
 		expect(() => {
-			webhookUpdate(db, SITE_ID, ["--name", "to-none", "--format", "none"]);
+			webhookUpdate(db, SITE_ID, { name: "to-none", format: "none" });
 		}).toThrow(/Unauthenticated webhooks \(--format none\) are disabled/);
 	});
 });

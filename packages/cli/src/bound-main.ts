@@ -8,64 +8,34 @@
 // stream has not yet been "ready" and pino throws "sonic boom is not ready
 // yet" on shutdown. Dynamic import keeps init entirely logger-free.
 
-import { runInit } from "./commands/init.js";
+import { buildApplication, buildCommand, buildRouteMap } from "@stricli/core";
+import { type InitArgs, runInit } from "./commands/init.js";
 import type { LoginArgs } from "./commands/login.js";
+import {
+	type CliContext,
+	type CliIO,
+	booleanFlag,
+	defaultCliIO,
+	defaultedStringFlag,
+	errorMessage,
+	exitWith,
+	runCliApp,
+	stringFlag,
+	unknownCommandText,
+} from "./lib/cli-app.js";
 
-/**
- * Output sinks + environment, injectable for in-process tests. Production wires
- * these to the real `console` and `process.env` via {@link defaultCliIO}. A
- * test passes capturing writers and runs {@link main} with no spawned child, so
- * Bun's coverage instrumentation actually sees the parsing and dispatch.
- */
-export interface CliIO {
-	log: (message: string) => void;
-	error: (message: string) => void;
-}
+export { type CliIO, defaultCliIO } from "./lib/cli-app.js";
 
-/** Production IO: the real console. */
-export function defaultCliIO(): CliIO {
-	return {
-		log: (m) => console.log(m),
-		error: (m) => console.error(m),
-	};
-}
-
-/** Maps `bound login ...` argv (command word included) onto {@link LoginArgs}. */
-export function parseLoginArgs(args: string[]): LoginArgs {
-	const flagValue = (flag: string): string | undefined => {
-		const idx = args.indexOf(flag);
-		return idx !== -1 ? args[idx + 1] : undefined;
-	};
-	return {
-		chatgpt: args.includes("--chatgpt"),
-		copilot: args.includes("--copilot"),
-		challenge: flagValue("--challenge"),
-		mcp: flagValue("--mcp"),
-		configDir: flagValue("--config-dir") ?? "config",
-		daemonUrl: flagValue("--url"),
-	};
-}
-
-/**
- * Real `bound` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
- * script path — pass `process.argv.slice(2)`), dispatches to the matching
- * command, and RETURNS an exit code instead of calling `process.exit` inside
- * the tested path. The thin {@link bound.ts} launcher maps the return to
- * `process.exit`. Behavior (output text, exit codes) is identical to the prior
- * inline implementation.
- */
-export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
-	const command = args[0];
-
-	if (!command || command === "--help" || command === "-h") {
-		io.log(`
+const ROOT_HELP = `
 bound - Bound agent system CLI
 
 USAGE:
   bound <command> [options]
+  bound <command> --help           Show the flags for one command
 
 COMMANDS:
   init        Initialize config files (bound init --ollama)
+  login       Sign in to a provider or resolve an MCP OAuth challenge
   start       Start the Bound orchestrator
   --help      Show this help message
 
@@ -96,59 +66,111 @@ EXAMPLES:
   bound init --ollama --with-sync --with-mcp
   bound init --opencode-go
   bound init --hub --name hub-node  # Initialize relay hub
-`);
-		return 0;
-	}
+`;
 
-	if (command === "init") {
-		// Parse init args
-		const configDirIdx = args.indexOf("--config-dir");
-		const regionIdx = args.indexOf("--region");
-		const nameIdx = args.indexOf("--name");
-		const initArgs = {
-			hub: args.includes("--hub"),
-			ollama: args.includes("--ollama"),
-			bedrock: args.includes("--bedrock"),
-			cerebras: args.includes("--cerebras"),
-			zai: args.includes("--zai"),
-			opencodeGo: args.includes("--opencode-go"),
-			umans: args.includes("--umans"),
-			region: regionIdx !== -1 ? args[regionIdx + 1] : undefined,
-			name: nameIdx !== -1 ? args[nameIdx + 1] : undefined,
-			withSync: args.includes("--with-sync"),
-			withMcp: args.includes("--with-mcp"),
-			force: args.includes("--force"),
-			configDir: configDirIdx !== -1 ? args[configDirIdx + 1] : "config",
-		};
+const configDirFlag = defaultedStringFlag("Config directory", "config", "dir");
 
+/** `bound init` flags: every preset/switch is a presence flag, values stay optional. */
+type InitFlags = Required<Omit<InitArgs, "anthropic" | "region" | "name">> &
+	Pick<InitArgs, "region" | "name">;
+
+const initCommand = buildCommand({
+	docs: { brief: "Initialize config files" },
+	parameters: {
+		flags: {
+			hub: booleanFlag("Initialize as relay hub (no local inference; proxies to spokes)"),
+			ollama: booleanFlag("Initialize with Ollama preset"),
+			bedrock: booleanFlag("Initialize with AWS Bedrock (use with --region)"),
+			cerebras: booleanFlag("Initialize with Cerebras Cloud preset"),
+			zai: booleanFlag("Initialize with z.AI (GLM) preset"),
+			opencodeGo: booleanFlag("Initialize with OpenCode Go preset"),
+			umans: booleanFlag("Initialize with umans.ai preset (needs UMANS_API_KEY)"),
+			region: stringFlag("AWS region for --bedrock", "region"),
+			name: stringFlag("Operator name", "name"),
+			withSync: booleanFlag("Also create sync.json template"),
+			withMcp: booleanFlag("Also create mcp.json template"),
+			force: booleanFlag("Overwrite existing config"),
+			configDir: configDirFlag,
+		},
+	},
+	async func(this: CliContext, flags: InitFlags) {
 		try {
-			await runInit(initArgs);
+			await runInit(flags);
+			exitWith(this, 0);
 		} catch (error) {
-			io.error(`Init failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
+			this.io.error(`Init failed: ${errorMessage(error)}`);
+			exitWith(this, 1);
 		}
+	},
+});
+
+interface LoginFlags {
+	readonly chatgpt: boolean;
+	readonly copilot: boolean;
+	readonly challenge?: string;
+	readonly mcp?: string;
+	readonly configDir: string;
+	readonly url?: string;
+}
+
+/** Maps parsed `bound login` flags onto {@link LoginArgs}. */
+function toLoginArgs(flags: LoginFlags): LoginArgs {
+	return {
+		chatgpt: flags.chatgpt,
+		copilot: flags.copilot,
+		challenge: flags.challenge,
+		mcp: flags.mcp,
+		configDir: flags.configDir,
+		daemonUrl: flags.url,
+	};
+}
+
+/** `bound login`, with the action injectable so the flag mapping is testable. */
+function buildLoginCommand(action: (ctx: CliContext, args: LoginArgs) => Promise<number>) {
+	return buildCommand({
+		docs: { brief: "Sign in to a provider or resolve an MCP OAuth challenge" },
+		parameters: {
+			flags: {
+				chatgpt: booleanFlag("Sign in with ChatGPT (OAuth) for the chatgpt-oauth provider"),
+				copilot: booleanFlag("Sign in with GitHub (device flow) for the github-copilot provider"),
+				challenge: stringFlag(
+					"Resolve a raised MCP OAuth challenge (needs a running daemon)",
+					"id",
+				),
+				mcp: stringFlag(
+					"Warm up an MCP server: raise-and-resolve its OAuth challenge now",
+					"server",
+				),
+				configDir: configDirFlag,
+				url: stringFlag("Local daemon URL", "url"),
+			},
+		},
+		async func(this: CliContext, flags: LoginFlags) {
+			exitWith(this, await action(this, toLoginArgs(flags)));
+		},
+	});
+}
+
+const loginCommand = buildLoginCommand(async (ctx, loginArgs) => {
+	const { runLogin } = await import("./commands/login.js");
+	try {
+		await runLogin(loginArgs);
 		return 0;
+	} catch (error) {
+		ctx.io.error(`Login failed: ${errorMessage(error)}`);
+		return 1;
 	}
+});
 
-	if (command === "login") {
-		const { runLogin } = await import("./commands/login.js");
-		try {
-			await runLogin(parseLoginArgs(args));
-		} catch (error) {
-			io.error(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
-			return 1;
-		}
-		return 0;
-	}
-
-	if (command === "start") {
-		// Parse start args
-		const startConfigIdx = args.indexOf("--config-dir");
-		const startArgs = {
-			configDir: startConfigIdx !== -1 ? args[startConfigIdx + 1] : "config",
-			reseed: args.includes("--reseed"),
-		};
-
+const startCommand = buildCommand({
+	docs: { brief: "Start the Bound orchestrator" },
+	parameters: {
+		flags: {
+			configDir: configDirFlag,
+			reseed: booleanFlag("Wipe local DB, request full hub snapshot, then catch up via changelog"),
+		},
+	},
+	async func(this: CliContext, flags: { configDir: string; reseed: boolean }) {
 		// Lazy import: keeps `bound init` off the start-subtree load path, which
 		// avoids materializing the pino logger (sonic-boom) before we need it.
 		const [{ runStart }, { createLogger }] = await Promise.all([
@@ -157,20 +179,73 @@ EXAMPLES:
 		]);
 
 		try {
-			await runStart(startArgs);
-			return 0;
+			await runStart(flags);
+			exitWith(this, 0);
 		} catch (error) {
 			// createLogger is idempotent; bootstrap may or may not have already
 			// materialized the pino root, either way we reuse it here.
 			createLogger("@bound/cli", "bound").error("Start failed", {
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMessage(error),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
-			return 1;
+			exitWith(this, 1);
 		}
-	}
+	},
+});
 
-	io.error(`Unknown command: ${command}`);
-	io.error('Run "bound --help" for usage information');
-	return 1;
+const APP_CONFIG = {
+	name: "bound",
+	scanner: { caseStyle: "allow-kebab-for-camel" },
+	documentation: { caseStyle: "convert-camel-to-kebab" },
+	localization: unknownCommandText("bound"),
+} as const;
+
+const app = buildApplication<CliContext>(
+	buildRouteMap({
+		routes: { init: initCommand, login: loginCommand, start: startCommand },
+		docs: { brief: "Bound agent system CLI" },
+	}),
+	APP_CONFIG,
+);
+
+/**
+ * Parses `bound login ...` argv (command word included) with the real login
+ * command definition and returns the mapped {@link LoginArgs} without running
+ * the login. Throws with Stricli's diagnostic when the flags do not parse.
+ */
+export async function parseLoginArgs(args: string[]): Promise<LoginArgs> {
+	let parsed: LoginArgs | undefined;
+	const errors: string[] = [];
+	const probe = buildApplication<CliContext>(
+		buildRouteMap({
+			routes: {
+				login: buildLoginCommand(async (_ctx, loginArgs) => {
+					parsed = loginArgs;
+					return 0;
+				}),
+			},
+			docs: { brief: "bound login parser" },
+		}),
+		APP_CONFIG,
+	);
+	await runCliApp(probe, args, { log: () => {}, error: (m) => errors.push(m) });
+	if (!parsed) throw new Error(errors.join("\n") || "login arguments did not parse");
+	return parsed;
+}
+
+/**
+ * Real `bound` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
+ * script path — pass `process.argv.slice(2)`), dispatches to the matching
+ * command, and RETURNS an exit code instead of calling `process.exit` inside
+ * the tested path. The thin {@link bound.ts} launcher maps the return to
+ * `process.exit`. The bare / `--help` / `-h` overview is the curated text
+ * above; `bound <command> --help` is generated from the command definition.
+ */
+export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
+	const command = args[0];
+	if (!command || command === "--help" || command === "-h") {
+		io.log(ROOT_HELP);
+		return 0;
+	}
+	return runCliApp(app, args, io);
 }

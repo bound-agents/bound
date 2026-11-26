@@ -13,6 +13,16 @@ import {
 	prewarmHighlighter,
 	shutdownTelemetry,
 } from "@bound/shared";
+import {
+	ArgumentScannerError,
+	type CommandContext,
+	type StricliProcess,
+	buildApplication,
+	buildCommand,
+	formatMessageForArgumentScannerError,
+	run,
+	text_en,
+} from "@stricli/core";
 import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
@@ -50,32 +60,86 @@ export interface ParsedArgs {
 	acp: boolean;
 }
 
-export function parseArgs(args: string[]): ParsedArgs {
-	let attachArg: string | null = null;
-	let urlArg: string | null = null;
-	let acp = false;
+const parseArgsCommand = buildCommand({
+	docs: { brief: "Terminal coding agent for a Bound server" },
+	parameters: {
+		flags: {
+			attach: {
+				kind: "parsed",
+				parse: String,
+				brief: "Resume an existing thread",
+				optional: true,
+				placeholder: "thread-id",
+			},
+			url: {
+				kind: "parsed",
+				parse: String,
+				brief: "Bound server URL (default from config)",
+				optional: true,
+				placeholder: "url",
+			},
+			acp: {
+				kind: "boolean",
+				brief: "Run as an ACP agent server over stdio",
+				default: false,
+				withNegated: false,
+			},
+		},
+		positional: { kind: "array", parameter: { brief: "Ignored", parse: String } },
+	},
+	func(
+		this: ParseArgsContext,
+		flags: { attach?: string; url?: string; acp: boolean },
+		..._ignored: string[]
+	): void {
+		this.parsed = { attachArg: flags.attach ?? null, urlArg: flags.url ?? null, acp: flags.acp };
+	},
+});
 
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i];
+interface ParseArgsContext extends CommandContext {
+	readonly process: StricliProcess;
+	parsed: ParsedArgs | null;
+}
 
-		if (arg === "--attach") {
-			if (i + 1 >= args.length) {
-				throw new Error("Flag --attach requires a value");
-			}
-			attachArg = args[++i];
-		} else if (arg === "--url") {
-			if (i + 1 >= args.length) {
-				throw new Error("Flag --url requires a value");
-			}
-			urlArg = args[++i];
-		} else if (arg === "--acp") {
-			acp = true;
-		} else if (arg.startsWith("--")) {
-			throw new Error(`Unknown flag: ${arg}`);
-		}
-	}
+const parseArgsApp = buildApplication<ParseArgsContext>(parseArgsCommand, {
+	name: "boundless",
+	scanner: { caseStyle: "allow-kebab-for-camel" },
+	localization: {
+		loadText: () => ({
+			...text_en,
+			exceptionWhileParsingArguments: (exc: unknown) =>
+				exc instanceof ArgumentScannerError
+					? formatMessageForArgumentScannerError(exc, {
+							FlagNotFoundError: (e) => `Unknown flag: --${e.input}`,
+							UnsatisfiedFlagError: (e) => `Flag --${e.externalFlagName} requires a value`,
+						})
+					: String(exc),
+		}),
+	},
+});
 
-	return { attachArg, urlArg, acp };
+/**
+ * Parses boundless argv with Stricli. Resolves to the parsed flags, or to
+ * `null` when the input was `--help` (the help text has already been written
+ * to `stdout`). Rejects with the scanner diagnostic on bad input.
+ */
+export async function parseArgs(
+	args: string[],
+	stdout: (text: string) => void = (text) => process.stdout.write(text),
+): Promise<ParsedArgs | null> {
+	const errors: string[] = [];
+	const context: ParseArgsContext = {
+		process: {
+			stdout: { write: stdout },
+			stderr: { write: (text) => errors.push(text.replace(/\n$/, "")) },
+			env: { STRICLI_NO_COLOR: "1", STRICLI_SKIP_VERSION_CHECK: "1" },
+			exitCode: undefined,
+		},
+		parsed: null,
+	};
+	await run(parseArgsApp, args, context);
+	if (errors.length > 0) throw new Error(errors.join("\n"));
+	return context.parsed;
 }
 
 export async function resolveThread(
@@ -162,15 +226,15 @@ async function main(): Promise<void> {
 
 		// Parse arguments. Done before any stdout-touching work because
 		// in --acp mode stdout is the JSON-RPC channel and must stay pristine.
-		let attachArg: string | null = null;
-		let urlArg: string | null = null;
-		let acp = false;
+		let parsed: ParsedArgs | null;
 		try {
-			({ attachArg, urlArg, acp } = parseArgs(process.argv.slice(2)));
+			parsed = await parseArgs(process.argv.slice(2));
 		} catch (error) {
 			process.stderr.write(`Error: ${(error as Error).message}\n`);
 			process.exit(1);
 		}
+		if (!parsed) process.exit(0);
+		const { attachArg, urlArg, acp } = parsed;
 
 		// ACP mode: run as an ACP agent server over stdio. Branch BEFORE the
 		// highlighter prewarm / build-info / TUI render — none of which may run

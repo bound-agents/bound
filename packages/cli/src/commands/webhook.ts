@@ -60,18 +60,24 @@ export function webhookSetUnauthenticated(db: Database, siteId: string, allow: b
 // webhookCreate
 // ---------------------------------------------------------------------------
 
-export function webhookCreate(db: Database, siteId: string, args: string[]): void {
-	// Parse args: --name, --format, --description, --prompt, --model, --no-history
-	const name = getArgValue(args, "--name");
-	const format = parseSignatureFormat(getArgValue(args, "--format") || "github");
-	const description = getArgValue(args, "--description");
-	const prompt = getArgValue(args, "--prompt");
-	const modelHint = getArgValue(args, "--model");
-	// Normalise: undefined or empty string both mean "use system default"
-	const modelHintValue = modelHint && modelHint.length > 0 ? modelHint : null;
-	// --no-history is a presence flag: when set, the webhook's event task runs
-	// with no_history=1 so each delivery starts from a clean context window.
-	const noHistory = hasFlag(args, "--no-history") ? 1 : 0;
+/** Parsed `boundctl webhook create` flags. */
+export interface WebhookCreateOptions {
+	readonly name?: string;
+	/** Signature format; defaults to `github`. */
+	readonly format?: string;
+	readonly description?: string;
+	readonly prompt?: string;
+	/** Model hint; undefined or empty both mean the system default. */
+	readonly model?: string;
+	/** Run the webhook's event task with no_history=1 (clean context per delivery). */
+	readonly noHistory?: boolean;
+}
+
+export function webhookCreate(db: Database, siteId: string, options: WebhookCreateOptions): void {
+	const { name, description, prompt } = options;
+	const format = parseSignatureFormat(options.format || "github");
+	const modelHintValue = options.model && options.model.length > 0 ? options.model : null;
+	const noHistory = options.noHistory ? 1 : 0;
 
 	if (format === "none") {
 		assertUnauthenticatedWebhooksAllowed(db);
@@ -176,28 +182,34 @@ export function webhookDelete(db: Database, siteId: string, name: string): void 
 // webhookUpdate
 // ---------------------------------------------------------------------------
 
-export function webhookUpdate(db: Database, siteId: string, args: string[]): void {
-	const name = getArgValue(args, "--name");
-	const prompt = getArgValue(args, "--prompt");
-	const description = getArgValue(args, "--description");
-	const formatRaw = getArgValue(args, "--format");
-	const format = formatRaw === undefined ? undefined : parseSignatureFormat(formatRaw);
-	// Three-state semantics for --model:
-	//   flag absent           → leave existing model_hint alone
-	//   --model ""            → clear back to system default (null)
-	//   --model <id>          → set to <id>
-	const modelIdx = args.indexOf("--model");
-	const modelProvided = modelIdx !== -1;
-	const modelValue = modelProvided ? (args[modelIdx + 1] ?? "") : undefined;
+/**
+ * Parsed `boundctl webhook update` flags. `model` and the history pair are
+ * three-state: absent leaves the field alone.
+ */
+export interface WebhookUpdateOptions {
+	readonly name?: string;
+	readonly prompt?: string;
+	/** `""` clears the description. */
+	readonly description?: string;
+	readonly format?: string;
+	/** `""` clears back to the system default; absent leaves it alone. */
+	readonly model?: string;
+	/** Set no_history=1. Mutually exclusive with `history`. */
+	readonly noHistory?: boolean;
+	/** Set no_history=0. Mutually exclusive with `noHistory`. */
+	readonly history?: boolean;
+}
 
-	// Three-state semantics for no_history (mirroring --model):
-	//   neither flag        → leave alone
-	//   --no-history        → set to 1 (disable history)
-	//   --history           → set to 0 (re-enable history)
-	// Both flags being passed together is rejected; the operator should pick
-	// one to avoid ambiguity about which one wins.
-	const wantsNoHistory = hasFlag(args, "--no-history");
-	const wantsHistory = hasFlag(args, "--history");
+export function webhookUpdate(db: Database, siteId: string, options: WebhookUpdateOptions): void {
+	const { name, prompt, description } = options;
+	const format = options.format === undefined ? undefined : parseSignatureFormat(options.format);
+	const modelProvided = options.model !== undefined;
+	const modelValue = options.model;
+
+	// Both history flags together is rejected; the operator should pick one to
+	// avoid ambiguity about which one wins.
+	const wantsNoHistory = options.noHistory === true;
+	const wantsHistory = options.history === true;
 	if (wantsNoHistory && wantsHistory) {
 		throw new Error("--no-history and --history are mutually exclusive");
 	}
@@ -295,17 +307,4 @@ export function webhookRotateSecret(db: Database, siteId: string, name: string):
 
 	console.log(`New secret for '${name}': ${newSecret}`);
 	console.log("⚠ Save the secret now — it will not be shown again.");
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-function getArgValue(args: string[], flag: string): string | undefined {
-	const idx = args.indexOf(flag);
-	return idx !== -1 ? args[idx + 1] : undefined;
-}
-
-function hasFlag(args: string[], flag: string): boolean {
-	return args.indexOf(flag) !== -1;
 }

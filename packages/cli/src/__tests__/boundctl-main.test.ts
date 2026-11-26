@@ -154,11 +154,9 @@ describe("boundctl main() — DB-backed command dispatch", () => {
 		expect(errors.join("\n")).toContain("Unknown db subcommand");
 	});
 
-	// These guards read the skill/webhook name positionally from args[2]; passing
-	// `--data-dir <dir>` would be consumed AS that positional name (mixed
-	// positional+flag parsing, see docs/gotchas.md), defeating the missing-name
-	// branch. Instead chdir into the fixture tmp so the default `data` dataDir
-	// resolves against the seeded DB, and leave the positional slot genuinely empty.
+	// These guards fire before the DB opens, so the default `data` dataDir is
+	// never touched; running from the fixture tmp keeps any stray open from
+	// landing in the repo checkout.
 	function inFixtureCwd<T>(fn: () => T): T {
 		const origCwd = process.cwd();
 		process.chdir(tmp);

@@ -75,7 +75,7 @@ describe("task commands", () => {
 			console.log = () => {};
 			const id = seedTask();
 
-			taskUpdate(db, SITE_ID, [id, "--no-history"]);
+			taskUpdate(db, SITE_ID, { id: id, noHistory: true });
 
 			const task = db.prepare("SELECT no_history FROM tasks WHERE id = ?").get(id) as {
 				no_history: number;
@@ -88,7 +88,7 @@ describe("task commands", () => {
 			console.log = () => {};
 			const id = seedTask({ no_history: 1 });
 
-			taskUpdate(db, SITE_ID, [id, "--history"]);
+			taskUpdate(db, SITE_ID, { id: id, history: true });
 
 			const task = db.prepare("SELECT no_history FROM tasks WHERE id = ?").get(id) as {
 				no_history: number;
@@ -99,7 +99,7 @@ describe("task commands", () => {
 		it("should reject --no-history and --history together", () => {
 			setup();
 			const id = seedTask();
-			expect(() => taskUpdate(db, SITE_ID, [id, "--no-history", "--history"])).toThrow(
+			expect(() => taskUpdate(db, SITE_ID, { id: id, noHistory: true, history: true })).toThrow(
 				/mutually exclusive/,
 			);
 		});
@@ -109,13 +109,13 @@ describe("task commands", () => {
 			console.log = () => {};
 			const id = seedTask();
 
-			taskUpdate(db, SITE_ID, [id, "--model", "opus"]);
+			taskUpdate(db, SITE_ID, { id: id, model: "opus" });
 			let task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get(id) as {
 				model_hint: string | null;
 			};
 			expect(task.model_hint).toBe("opus");
 
-			taskUpdate(db, SITE_ID, [id, "--model", ""]);
+			taskUpdate(db, SITE_ID, { id: id, model: "" });
 			task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get(id) as {
 				model_hint: string | null;
 			};
@@ -127,7 +127,7 @@ describe("task commands", () => {
 			console.log = () => {};
 			const id = seedTask();
 
-			taskUpdate(db, SITE_ID, [id, "--alert-threshold", "7"]);
+			taskUpdate(db, SITE_ID, { id: id, alertThreshold: "7" });
 
 			const task = db.prepare("SELECT alert_threshold FROM tasks WHERE id = ?").get(id) as {
 				alert_threshold: number;
@@ -138,7 +138,7 @@ describe("task commands", () => {
 		it("should reject alert_threshold <= 0", () => {
 			setup();
 			const id = seedTask();
-			expect(() => taskUpdate(db, SITE_ID, [id, "--alert-threshold", "0"])).toThrow(
+			expect(() => taskUpdate(db, SITE_ID, { id: id, alertThreshold: "0" })).toThrow(
 				/greater than 0/,
 			);
 		});
@@ -148,7 +148,7 @@ describe("task commands", () => {
 			const id = seedTask();
 
 			for (const value of ["7.5", "7x"]) {
-				expect(() => taskUpdate(db, SITE_ID, [id, "--alert-threshold", value])).toThrow(
+				expect(() => taskUpdate(db, SITE_ID, { id: id, alertThreshold: value })).toThrow(
 					/integer greater than 0/,
 				);
 			}
@@ -156,18 +156,20 @@ describe("task commands", () => {
 
 		it("should throw when no id is provided", () => {
 			setup();
-			expect(() => taskUpdate(db, SITE_ID, ["--no-history"])).toThrow(/--id is required/);
+			expect(() => taskUpdate(db, SITE_ID, { noHistory: true })).toThrow(/--id is required/);
 		});
 
 		it("should throw when the task does not exist", () => {
 			setup();
-			expect(() => taskUpdate(db, SITE_ID, ["missing-id", "--no-history"])).toThrow(/not found/);
+			expect(() => taskUpdate(db, SITE_ID, { id: "missing-id", noHistory: true })).toThrow(
+				/not found/,
+			);
 		});
 
 		it("should throw when no mutable fields are provided", () => {
 			setup();
 			const id = seedTask();
-			expect(() => taskUpdate(db, SITE_ID, [id])).toThrow(/at least one/);
+			expect(() => taskUpdate(db, SITE_ID, { id: id })).toThrow(/at least one/);
 		});
 	});
 });
