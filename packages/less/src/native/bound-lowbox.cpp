@@ -1956,6 +1956,67 @@ int inspectCleanupFatal(const wchar_t* phase, unsigned long status) {
 
 }  // namespace
 
+// The null device's DACL grants Everyone read/write but carries no ALL APPLICATION PACKAGES ACE,
+// so the AppContainer half of the lowbox access check refuses every open of NUL. Git opens
+// /dev/null (NUL) unconditionally at startup, so without this no git command runs in the lowbox.
+// Grant ALL APPLICATION PACKAGES the read/write the DACL already gives Everyone. NUL stores
+// nothing and reads as EOF, so the ACE adds no filesystem authority. It lives on the in-memory
+// device object until reboot, which makes the grant idempotent and shared by concurrent helpers;
+// a DACL that already carries it is left untouched. Changing the DACL needs WRITE_DAC, which the
+// device's BUILTIN\Administrators owner holds only in an elevated token: an unelevated helper
+// leaves the platform default in place and the child sees NUL refused as before.
+constexpr DWORD nullDeviceAppContainerAccess = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+
+bool daclGrantsSid(PACL dacl, PSID sid, DWORD mask) {
+	if (!dacl) return true;
+	for (DWORD index = 0; index < dacl->AceCount; ++index) {
+		LPVOID ace = nullptr;
+		if (!GetAce(dacl, index, &ace)) continue;
+		const auto* header = static_cast<ACE_HEADER*>(ace);
+		if (header->AceType != ACCESS_ALLOWED_ACE_TYPE || (header->AceFlags & INHERIT_ONLY_ACE)) continue;
+		auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
+		if (EqualSid(reinterpret_cast<PSID>(&allowed->SidStart), sid) &&
+			(allowed->Mask & mask) == mask) return true;
+	}
+	return false;
+}
+
+void ensureNullDeviceAppContainerAccess() {
+	std::vector<unsigned char> allApplicationPackagesStorage;
+	PSID allApplicationPackages = nullptr;
+	if (!createWellKnownSidBuffer(WinBuiltinAnyPackageSid, allApplicationPackagesStorage,
+		allApplicationPackages)) return;
+	const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+	Handle device;
+	device.value = CreateFileW(L"\\\\.\\NUL", READ_CONTROL | WRITE_DAC, share, nullptr, OPEN_EXISTING,
+		0, nullptr);
+	const bool canWriteDacl = device.value != INVALID_HANDLE_VALUE;
+	if (!canWriteDacl) {
+		device.value = CreateFileW(L"\\\\.\\NUL", READ_CONTROL, share, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (device.value == INVALID_HANDLE_VALUE) return;
+	}
+	PACL dacl = nullptr;
+	PSECURITY_DESCRIPTOR descriptor = nullptr;
+	if (GetSecurityInfo(device, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+		nullptr, &descriptor) != ERROR_SUCCESS) return;
+	if (canWriteDacl && !daclGrantsSid(dacl, allApplicationPackages, nullDeviceAppContainerAccess)) {
+		EXPLICIT_ACCESS_W access{};
+		access.grfAccessPermissions = nullDeviceAppContainerAccess;
+		access.grfAccessMode = GRANT_ACCESS;
+		access.grfInheritance = NO_INHERITANCE;
+		access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+		access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+		access.Trustee.ptstrName = static_cast<LPWSTR>(allApplicationPackages);
+		PACL next = nullptr;
+		if (SetEntriesInAclW(1, &access, dacl, &next) == ERROR_SUCCESS) {
+			SetSecurityInfo(device, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, next,
+				nullptr);
+			LocalFree(next);
+		}
+	}
+	LocalFree(descriptor);
+}
+
 int wmain(int argc, wchar_t** argv) {
 	// Test-only descendant used by the mandatory Windows oracle. Keeping this in
 	// the already-built native helper removes nested PowerShell / Start-Process
@@ -2089,6 +2150,8 @@ int wmain(int argc, wchar_t** argv) {
 	if (!recoverStaleAuthority(testNamespace)) {
 		return fail("LOWBOX_STALE_AUTHORITY", L"recoverAuthorityJournal");
 	}
+
+	ensureNullDeviceAppContainerAccess();
 
 	Profile profile;
 	if (!createProfile(profile)) return fail("LOWBOX_PROFILE", L"CreateAppContainerProfile");
