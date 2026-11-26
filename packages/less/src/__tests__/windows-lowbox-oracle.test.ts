@@ -1082,4 +1082,76 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			await removeFixtureAfterHandlesClose(cwd);
 		}
 	});
+	it("PROBE331 null device", async () => {
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
+		const cs = [
+			"using System; using System.Runtime.InteropServices;",
+			"public static class P331 {",
+			' [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateFileW(string n, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);',
+			' [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);',
+			' [DllImport("advapi32.dll", SetLastError=true)] public static extern uint GetSecurityInfo(IntPtr h, int t, uint si, IntPtr o, IntPtr g, IntPtr d, IntPtr s, out IntPtr sd);',
+			' [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr sd, uint r, uint si, out IntPtr str, out uint len);',
+			" public static string Sddl(string n, int t) {",
+			"  IntPtr h = CreateFileW(n, 0x00020000, 7, IntPtr.Zero, 3, 0, IntPtr.Zero);",
+			'  if (h == new IntPtr(-1)) return "OPENFAIL " + Marshal.GetLastWin32Error();',
+			"  IntPtr sd; uint e = GetSecurityInfo(h, t, 0x1F, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd);",
+			"  if (e != 0) { e = GetSecurityInfo(h, t, 0x7, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd); }",
+			'  CloseHandle(h); if (e != 0) return "GSIFAIL " + e;',
+			"  IntPtr str; uint len; ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 0x1F, out str, out len);",
+			"  return Marshal.PtrToStringUni(str); }",
+			' public static string Open(string n, uint a) { IntPtr h = CreateFileW(n, a, 7, IntPtr.Zero, 3, 0, IntPtr.Zero); if (h == new IntPtr(-1)) return "ERR" + Marshal.GetLastWin32Error(); CloseHandle(h); return "OK"; }',
+			"}",
+		].join("\n");
+		const outside = [
+			`Add-Type -TypeDefinition @'\n${cs}\n'@`,
+			"'P331-FILE=' + [P331]::Sddl('\\\\.\\NUL', 1)",
+			"'P331-KOBJ=' + [P331]::Sddl('\\\\.\\NUL', 6)",
+			"'P331-WDAC=' + [P331]::Open('\\\\.\\NUL', 0x00040000)",
+			"'P331-OS=' + [Environment]::OSVersion.VersionString",
+			"whoami /groups /fo csv | Select-String -Pattern 'Label'",
+		].join("\n");
+		const out = spawnSync("powershell.exe", ["-NoProfile", "-Command", outside], {
+			encoding: "utf8",
+		});
+		console.log(`PROBE331-OUTSIDE\n${out.stdout}\n${out.stderr}`);
+		const cwd = join(
+			realpathSync.native(tmpdir()),
+			`bound-lowbox-p331-${randomBytes(4).toString("hex")}`,
+		);
+		mkdirSync(cwd, { recursive: true });
+		const sandbox = resolveSandboxConfig(
+			{ writablePaths: [], network: "blocked", onUnavailable: "error" },
+			cwd,
+		);
+		const inside = [
+			`Add-Type -TypeDefinition @'\n${cs}\n'@`,
+			"'P331-IN-R=' + [P331]::Open('\\\\.\\NUL', 0x80000000)",
+			"'P331-IN-W=' + [P331]::Open('\\\\.\\NUL', 0x40000000)",
+			"'P331-IN-RD=' + [P331]::Open('\\\\.\\NUL', 0x1)",
+			"'P331-IN-WD=' + [P331]::Open('\\\\.\\NUL', 0x2)",
+			"'P331-IN-SYNC=' + [P331]::Open('\\\\.\\NUL', 0x00100000)",
+			"'P331-IN-ZERO=' + [P331]::Open('\\\\.\\NUL', 0)",
+			"'P331-IN-GR=' + [P331]::Open('\\\\?\\GLOBALROOT\\Device\\Null', 0x80000000)",
+			"'P331-IN-RAW=' + [P331]::Open('\\\\.\\GLOBALROOT\\Device\\Null', 0x1)",
+			"'P331-IN-CON=' + [P331]::Open('CONOUT$', 0x40000000)",
+			"whoami /groups /fo csv | Select-String -Pattern 'Label|APPLICATION|S-1-15'",
+		].join("\n");
+		const tool = createBashTool(
+			"windows-latest",
+			resolveShell(undefined),
+			sandbox,
+			undefined,
+			"p331",
+		);
+		const result = await tool(
+			{ command: inside, timeout: 60_000 },
+			new AbortController().signal,
+			cwd,
+		);
+		console.log(
+			`PROBE331-INSIDE\n${result.content.map((c) => ("text" in c ? c.text : "")).join("\n")}`,
+		);
+		await removeFixtureAfterHandlesClose(cwd);
+	});
 });
