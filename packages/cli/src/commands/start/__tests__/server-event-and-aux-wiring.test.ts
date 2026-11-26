@@ -40,6 +40,7 @@ import {
 	applySchema,
 	createDatabase,
 	enqueueMessage,
+	findBackgroundAuxSeed,
 	findBackgroundPlaceholderDeliveryState,
 	hasPending,
 	insertRow,
@@ -439,6 +440,187 @@ describe("initServer — background aux dispatch (#76/#220)", () => {
 			)
 			.get(parentThreadId, callId) as { content: string } | null;
 		expect(parentRow?.content).toBe("retried result");
+	});
+
+	it("resolves the parent once and stops dispatching after repeated aux timeouts", async () => {
+		const parentThreadId = randomUUID();
+		const auxThreadId = randomUUID();
+		const agentId = randomUUID();
+		const callId = `call_${randomUUID().slice(0, 8)}`;
+		seedThread(db, siteId, parentThreadId, "web", "operator");
+		seedThread(db, siteId, auxThreadId, "web", "operator", agentId);
+		seedAgent(db, siteId, agentId);
+
+		let runnerCalls = 0;
+		let activeRunners = 0;
+		let maxActiveRunners = 0;
+		let completionEvents = 0;
+		let timeoutReports = 0;
+		const agentLoopFactory = {
+			createAuxLoopRunner:
+				({ abortSignal }: { abortSignal: AbortSignal }) =>
+				async () => {
+					runnerCalls++;
+					activeRunners++;
+					maxActiveRunners = Math.max(maxActiveRunners, activeRunners);
+					try {
+						await new Promise<void>((resolve) => {
+							if (abortSignal.aborted) resolve();
+							else abortSignal.addEventListener("abort", resolve, { once: true });
+						});
+						return { summary: "late result", error: undefined };
+					} finally {
+						activeRunners--;
+					}
+				},
+		};
+
+		const appContext = makeAppContext(db, siteId);
+		appContext.logger.error = (message: string) => {
+			if (message.includes("Background auxiliary invocation timed out")) timeoutReports++;
+		};
+		appContext.eventBus.on("aux:completed", () => completionEvents++);
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+		(result.threadExecutor as unknown as { runTimeoutMs: number }).runTimeoutMs = 25;
+		seedBackgroundAux(db, siteId, { parentThreadId, auxThreadId, callId, agentId });
+		appContext.eventBus.emit("notify:enqueued", { thread_id: auxThreadId });
+
+		let placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		for (
+			let i = 0;
+			i < 200 && (!placeholder?.delivered || result.threadExecutor.isActive(auxThreadId));
+			i++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		}
+
+		expect(runnerCalls).toBe(2);
+		expect(maxActiveRunners).toBe(1);
+		expect(timeoutReports).toBe(2);
+		expect(completionEvents).toBe(1);
+		expect(placeholder?.delivered).toBe(true);
+		const parentRow = db
+			.query(
+				"SELECT content, exit_code FROM messages WHERE thread_id = ? AND tool_name = ? AND role = 'tool_result'",
+			)
+			.get(parentThreadId, callId) as { content: string; exit_code: number } | null;
+		expect(parentRow?.content).toBe(
+			"Error: background auxiliary invocation timed out after 2 attempts",
+		);
+		expect(parentRow?.exit_code).toBe(1);
+		expect(findBackgroundAuxSeed(db, auxThreadId)?.timeoutAttempts).toBe(2);
+		expect(hasPending(db, auxThreadId)).toBe(false);
+
+		await new Promise((resolve) => setTimeout(resolve, 75));
+		expect(runnerCalls).toBe(2);
+		expect(result.threadExecutor.isActive(auxThreadId)).toBe(false);
+	});
+
+	it("reports a stuck background aux owner while retaining its thread lock", async () => {
+		const parentThreadId = randomUUID();
+		const auxThreadId = randomUUID();
+		const agentId = randomUUID();
+		const callId = `call_${randomUUID().slice(0, 8)}`;
+		seedThread(db, siteId, parentThreadId, "web", "operator");
+		seedThread(db, siteId, auxThreadId, "web", "operator", agentId);
+		seedAgent(db, siteId, agentId);
+
+		let runnerCalls = 0;
+		let activeRunners = 0;
+		let maxActiveRunners = 0;
+		let completionEvents = 0;
+		let started!: () => void;
+		const startedPromise = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		let releaseCallback!: () => void;
+		const reportedTimeouts: Array<{
+			message: string;
+			context?: Record<string, unknown>;
+		}> = [];
+		const agentLoopFactory = {
+			createAuxLoopRunner: () => async () => {
+				runnerCalls++;
+				activeRunners++;
+				maxActiveRunners = Math.max(maxActiveRunners, activeRunners);
+				try {
+					if (runnerCalls === 1) {
+						await new Promise<void>((resolve) => {
+							releaseCallback = resolve;
+							started();
+						});
+						return { summary: "late result", error: undefined };
+					}
+					return { summary: "recovered result", error: undefined };
+				} finally {
+					activeRunners--;
+				}
+			},
+		};
+
+		const appContext = makeAppContext(db, siteId);
+		appContext.logger.error = (...args: unknown[]) => {
+			const [message, context] = args;
+			if (
+				typeof message === "string" &&
+				message.includes("Background auxiliary invocation timed out")
+			) {
+				reportedTimeouts.push({
+					message,
+					context:
+						typeof context === "object" && context !== null
+							? (context as Record<string, unknown>)
+							: undefined,
+				});
+			}
+		};
+		appContext.eventBus.on("aux:completed", () => completionEvents++);
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+		(result.threadExecutor as unknown as { runTimeoutMs: number }).runTimeoutMs = 25;
+		seedBackgroundAux(db, siteId, { parentThreadId, auxThreadId, callId, agentId });
+		appContext.eventBus.emit("notify:enqueued", { thread_id: auxThreadId });
+
+		await startedPromise;
+		for (let i = 0; i < 100 && reportedTimeouts.length === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		expect(reportedTimeouts).toHaveLength(1);
+		expect(reportedTimeouts[0]?.context).toMatchObject({
+			threadId: auxThreadId,
+			agentId,
+			parentThreadId,
+			parentCallId: callId,
+			timeoutAttempts: 1,
+			maxTimeoutAttempts: 2,
+		});
+		expect(String(reportedTimeouts[0]?.context?.recovery)).toContain("Restart the host");
+		expect(result.threadExecutor.isActive(auxThreadId)).toBe(true);
+		expect(result.threadExecutor.activeThreads.has(auxThreadId)).toBe(true);
+
+		appContext.eventBus.emit("notify:enqueued", { thread_id: auxThreadId });
+		await new Promise((resolve) => setTimeout(resolve, 75));
+		expect(runnerCalls).toBe(1);
+		expect(activeRunners).toBe(1);
+		expect(maxActiveRunners).toBe(1);
+
+		releaseCallback();
+		let placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		for (
+			let i = 0;
+			i < 100 && (!placeholder?.delivered || result.threadExecutor.isActive(auxThreadId));
+			i++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		}
+
+		expect(runnerCalls).toBe(2);
+		expect(maxActiveRunners).toBe(1);
+		expect(completionEvents).toBe(1);
+		expect(placeholder?.delivered).toBe(true);
+		expect(result.threadExecutor.isActive(auxThreadId)).toBe(false);
 	});
 
 	/**

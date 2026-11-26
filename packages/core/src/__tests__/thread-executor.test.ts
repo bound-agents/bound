@@ -349,6 +349,14 @@ describe("ThreadExecutor", () => {
 			const threadId = randomUUID();
 			enqueueMessage(db, randomUUID(), threadId);
 
+			let timeoutLogged = false;
+			const timeoutLogger: Logger = {
+				...noopLogger,
+				error(message: string) {
+					if (message.includes("cancellation requested, lock retained")) timeoutLogged = true;
+				},
+			};
+
 			let started!: () => void;
 			const startedPromise = new Promise<void>((resolve) => {
 				started = resolve;
@@ -356,7 +364,7 @@ describe("ThreadExecutor", () => {
 			let releaseCallback!: () => void;
 			let abortObserved = false;
 			let replacementRan = false;
-			const timeoutExecutor = new ThreadExecutor(db, noopLogger, { runTimeoutMs: 25 });
+			const timeoutExecutor = new ThreadExecutor(db, timeoutLogger, { runTimeoutMs: 25 });
 
 			const firstRun = timeoutExecutor.execute(threadId, async (_shouldYield, abortSignal) => {
 				claimPending(db, threadId, siteId);
@@ -377,7 +385,9 @@ describe("ThreadExecutor", () => {
 			await startedPromise;
 			await new Promise((resolve) => setTimeout(resolve, 60));
 			expect(abortObserved).toBe(true);
+			expect(timeoutLogged).toBe(true);
 			expect(timeoutExecutor.isActive(threadId)).toBe(true);
+			expect(timeoutExecutor.activeThreads.has(threadId)).toBe(true);
 
 			const replacementResult = await timeoutExecutor.execute(threadId, async () => {
 				replacementRan = true;

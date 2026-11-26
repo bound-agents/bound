@@ -969,10 +969,38 @@ describe("messages repository finders", () => {
 					}),
 				});
 				expect(findBackgroundAuxSeed(db, THREAD)).toEqual({
+					seedMessageId: "seed",
 					parentThreadId: "parent-t",
 					parentCallId: "call-9",
 					instructions: "do the thing",
+					timeoutAttempts: 0,
 				});
+			});
+
+			it("reads persisted timeout attempts from the seed metadata", () => {
+				seed(db, {
+					id: "seed",
+					role: "user",
+					content: "do the thing",
+					metadata: JSON.stringify({
+						background_parent: { thread_id: "parent-t", call_id: "call-9" },
+						background_timeout_attempts: 2,
+					}),
+				});
+				expect(findBackgroundAuxSeed(db, THREAD)?.timeoutAttempts).toBe(2);
+			});
+
+			it("ignores non-numeric timeout attempts in seed metadata", () => {
+				seed(db, {
+					id: "seed",
+					role: "user",
+					content: "do the thing",
+					metadata: JSON.stringify({
+						background_parent: { thread_id: "parent-t", call_id: "call-9" },
+						background_timeout_attempts: "2",
+					}),
+				});
+				expect(findBackgroundAuxSeed(db, THREAD)?.timeoutAttempts).toBe(0);
 			});
 
 			it("returns null for a foreground thread whose user message has no background_parent", () => {

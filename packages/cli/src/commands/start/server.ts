@@ -88,6 +88,7 @@ import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { createWsTransportHolderStubs } from "./wire-ws-transport-holder.js";
 export type { AgentLoopFactory } from "./agent-factory.js";
 const getTracer = () => trace.getTracer("bound.web");
+const MAX_BACKGROUND_AUX_TIMEOUT_ATTEMPTS = 2;
 
 function injectRelayTraceCarrier(): Record<string, string> | null {
 	const injected = injectTraceContext();
@@ -712,196 +713,230 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		const runBackgroundAuxThread = async (
 			thread_id: string,
 			agentId: string,
-			seed: { parentThreadId: string; parentCallId: string; instructions: string },
+			seed: {
+				seedMessageId: string;
+				parentThreadId: string;
+				parentCallId: string;
+				instructions: string;
+				timeoutAttempts: number;
+			},
 		): Promise<boolean> => {
-			return threadExecutor.execute(thread_id, async (_shouldYield, abortSignal) => {
-				const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
-				if (claimed.length === 0) return {};
-				const claimedIds = claimed.map((e) => e.message_id);
-
-				// Guard on proof-of-delivery, not on the in-flight marker: a spurious
-				// re-wake after the placeholder already RESOLVED must not clobber a
-				// delivered result — but a placeholder that missed its `background`
-				// stamp (#220 defect 1, observed twice more on 2026-08-24) must still
-				// receive its only delivery. resolveDeferredToolResult stamps
-				// `background_delivered` when it lands a result, so "delivered" is
-				// provable from the row itself; anything else fails safe toward
-				// delivering. A missing row entirely is the placeholder-not-yet-
-				// persisted race, which resolveDeferredToolResult already handles
-				// (enqueue-only no-op).
-				const finishParent = (content: string, isError: boolean): void => {
-					const placeholder = findBackgroundPlaceholderDeliveryState(
-						appContext.db,
-						seed.parentThreadId,
-						seed.parentCallId,
-					);
-					if (!placeholder?.delivered) {
-						if (
-							placeholder &&
-							!findUnresolvedBackgroundPlaceholder(
-								appContext.db,
-								seed.parentThreadId,
-								seed.parentCallId,
-							)
-						) {
-							// The in-flight stamp is missing but the result is deliverable —
-							// keep the loud log so the stamp defect stays visible while the
-							// consequence (lost delivery) no longer occurs.
-							appContext.logger.error(
-								"[agent] Background placeholder missing its background stamp — delivering anyway (#220)",
-								{
-									parentThreadId: seed.parentThreadId,
-									parentCallId: seed.parentCallId,
-									auxThreadId: thread_id,
-									placeholderId: placeholder.id,
-								},
-							);
-						}
-						resolveDeferredToolResult(
+			let claimed: DispatchEntry[] = [];
+			const finishParent = (content: string, isError: boolean): void => {
+				const placeholder = findBackgroundPlaceholderDeliveryState(
+					appContext.db,
+					seed.parentThreadId,
+					seed.parentCallId,
+				);
+				if (!placeholder?.delivered) {
+					if (
+						placeholder &&
+						!findUnresolvedBackgroundPlaceholder(
 							appContext.db,
 							seed.parentThreadId,
 							seed.parentCallId,
-							content,
-							isError,
-							appContext.siteId,
-							appContext.eventBus,
-						);
-						appContext.eventBus.emit("aux:completed", {
-							thread_id,
-							parent_thread_id: seed.parentThreadId,
-						});
-					} else {
-						// Already delivered — this is the spurious re-wake the guard exists
-						// for. Push the recomputed count so a stale client indicator
-						// converges, and leave the delivered result untouched.
-						appContext.logger.warn(
-							"[agent] Background aux re-wake after delivery — skipping duplicate resolution",
+						)
+					) {
+						// The in-flight stamp is missing but the result is deliverable —
+						// keep the loud log so the stamp defect stays visible while the
+						// consequence (lost delivery) no longer occurs.
+						appContext.logger.error(
+							"[agent] Background placeholder missing its background stamp — delivering anyway (#220)",
 							{
 								parentThreadId: seed.parentThreadId,
 								parentCallId: seed.parentCallId,
 								auxThreadId: thread_id,
+								placeholderId: placeholder.id,
 							},
 						);
-						appContext.eventBus.emit("background:count", {
-							thread_id: seed.parentThreadId,
-							count: countBackgroundToolCallsByThread(appContext.db, seed.parentThreadId),
-						});
 					}
-					// #220: re-drive the parent loop unconditionally. resolveDeferredToolResult
-					// only ENQUEUES the tool_result wakeup — its updateRow fires no
-					// message:created, and this dispatcher never called handleThread for
-					// the parent — so a resolution landing while the parent loop was idle
-					// stranded the pending entry until an unrelated message arrived
-					// (observed live: two entries pending for 10h). notify:enqueued is
-					// the existing wake channel; enqueueToolResult's (thread, call_id)
-					// dedup makes the re-drive idempotent, and handleThread with nothing
-					// pending is a no-op.
-					appContext.eventBus.emit("notify:enqueued", { thread_id: seed.parentThreadId });
-				};
-
-				try {
-					const agent = findAgentById(appContext.db, agentId);
-					if (!agent) {
-						finishParent(
-							`Error: auxiliary agent identity ${agentId} not found for background invocation`,
-							true,
-						);
-						acknowledgeBatch(appContext.db, claimed);
-						return { claimedIds };
-					}
-					const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
-					const parentThreadInfo = findThreadUserAndInterfaceById(
+					resolveDeferredToolResult(
 						appContext.db,
 						seed.parentThreadId,
+						seed.parentCallId,
+						content,
+						isError,
+						appContext.siteId,
+						appContext.eventBus,
 					);
-					const modelHint =
-						findThreadModelHintById(appContext.db, thread_id)?.model_hint ??
-						agent.model_hint ??
-						null;
-
-					// Inherit the complete dispatching surface context, not only its
-					// client tool registry. For boundless this includes the frozen cwd,
-					// git context, and injected context-file bodies. For connector/event
-					// surfaces it includes their platform-authored instructions.
-					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(seed.parentThreadId);
-					const clientTools =
-						clientToolsFromRegistry && clientToolsFromRegistry.size > 0
-							? clientToolsFromRegistry
-							: undefined;
-					const firstToolName = clientTools?.keys().next().value;
-					const connectionId = firstToolName
-						? wsRegistry?.getConnectionForTool(seed.parentThreadId, firstToolName)
-						: undefined;
-					const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(
-						seed.parentThreadId,
-					);
-					const platformInstructions = platformMcpRegistry?.getInstructionsForThread(
-						seed.parentThreadId,
-					);
-					const parentInterface = parentThreadInfo?.interface;
-					const platform =
-						parentInterface && isUserFacingInterface(parentInterface) ? parentInterface : undefined;
-
-					const runner = agentLoopFactory.createAuxLoopRunner?.({
-						clientTools,
-						connectionId,
-						platform,
-						systemPromptAddition,
-						platformInstructions,
-						abortSignal,
+					appContext.eventBus.emit("aux:completed", {
+						thread_id,
+						parent_thread_id: seed.parentThreadId,
 					});
-					if (!runner) {
+				} else {
+					// Already delivered — this is the spurious re-wake the guard exists
+					// for. Push the recomputed count so a stale client indicator
+					// converges, and leave the delivered result untouched.
+					appContext.logger.warn(
+						"[agent] Background aux re-wake after delivery — skipping duplicate resolution",
+						{
+							parentThreadId: seed.parentThreadId,
+							parentCallId: seed.parentCallId,
+							auxThreadId: thread_id,
+						},
+					);
+					appContext.eventBus.emit("background:count", {
+						thread_id: seed.parentThreadId,
+						count: countBackgroundToolCallsByThread(appContext.db, seed.parentThreadId),
+					});
+				}
+				// #220: re-drive the parent loop unconditionally. resolveDeferredToolResult
+				// only ENQUEUES the tool_result wakeup — its updateRow fires no
+				// message:created, and this dispatcher never called handleThread for
+				// the parent — so a resolution landing while the parent loop was idle
+				// stranded the pending entry until an unrelated message arrived.
+				appContext.eventBus.emit("notify:enqueued", { thread_id: seed.parentThreadId });
+			};
+
+			return threadExecutor.execute(
+				thread_id,
+				async (_shouldYield, abortSignal) => {
+					claimed = claimPending(appContext.db, thread_id, appContext.siteId);
+					if (claimed.length === 0) return {};
+					const claimedIds = claimed.map((e) => e.message_id);
+
+					try {
+						const agent = findAgentById(appContext.db, agentId);
+						if (!agent) {
+							finishParent(
+								`Error: auxiliary agent identity ${agentId} not found for background invocation`,
+								true,
+							);
+							acknowledgeBatch(appContext.db, claimed);
+							return { claimedIds };
+						}
+						const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
+						const parentThreadInfo = findThreadUserAndInterfaceById(
+							appContext.db,
+							seed.parentThreadId,
+						);
+						const modelHint =
+							findThreadModelHintById(appContext.db, thread_id)?.model_hint ??
+							agent.model_hint ??
+							null;
+
+						// Inherit the complete dispatching surface context, not only its
+						// client tool registry. For boundless this includes the frozen cwd,
+						// git context, and injected context-file bodies. For connector/event
+						// surfaces it includes their platform-authored instructions.
+						const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(
+							seed.parentThreadId,
+						);
+						const clientTools =
+							clientToolsFromRegistry && clientToolsFromRegistry.size > 0
+								? clientToolsFromRegistry
+								: undefined;
+						const firstToolName = clientTools?.keys().next().value;
+						const connectionId = firstToolName
+							? wsRegistry?.getConnectionForTool(seed.parentThreadId, firstToolName)
+							: undefined;
+						const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(
+							seed.parentThreadId,
+						);
+						const platformInstructions = platformMcpRegistry?.getInstructionsForThread(
+							seed.parentThreadId,
+						);
+						const parentInterface = parentThreadInfo?.interface;
+						const platform =
+							parentInterface && isUserFacingInterface(parentInterface)
+								? parentInterface
+								: undefined;
+
+						const runner = agentLoopFactory.createAuxLoopRunner?.({
+							clientTools,
+							connectionId,
+							platform,
+							systemPromptAddition,
+							platformInstructions,
+							abortSignal,
+						});
+						if (!runner) {
+							finishParent(
+								"Error: this host's agent loop factory cannot construct auxiliary loops",
+								true,
+							);
+							acknowledgeBatch(appContext.db, claimed);
+							return { claimedIds };
+						}
+
+						appContext.logger.info("[agent] Running background aux thread", {
+							threadId: thread_id,
+							agentId,
+							parentThreadId: seed.parentThreadId,
+							parentCallId: seed.parentCallId,
+						});
+						const result = await runner({
+							threadId: thread_id,
+							agentId: agent.id,
+							persona: agent.persona,
+							modelHint,
+							allowlistedTools: agent.tools ? (JSON.parse(agent.tools) as string[]) : null,
+							instructions: seed.instructions,
+							userId: threadInfo?.user_id ?? operatorUserId,
+							parentThreadId: seed.parentThreadId,
+						});
+						if (abortSignal.aborted) return {};
+						// The child-thread link rides the placeholder row's metadata
+						// (aux_thread, stamped by the loop's persist seam from the
+						// DeferredToolResult) — resolveDeferredToolResult preserves
+						// sibling metadata keys, so the web card keeps its link after
+						// resolution without a content trailer.
 						finishParent(
-							"Error: this host's agent loop factory cannot construct auxiliary loops",
-							true,
+							result.error ? `Auxiliary agent errand failed: ${result.error}` : result.summary,
+							!!result.error,
 						);
 						acknowledgeBatch(appContext.db, claimed);
 						return { claimedIds };
+					} catch (error) {
+						if (!abortSignal.aborted) {
+							finishParent(
+								`Error: background auxiliary invocation failed: ${formatError(error)}`,
+								true,
+							);
+							try {
+								acknowledgeBatch(appContext.db, claimed);
+							} catch {
+								// claimed entries reset via executor error path
+							}
+						}
+						return {};
 					}
-
-					appContext.logger.info("[agent] Running background aux thread", {
-						threadId: thread_id,
-						agentId,
-						parentThreadId: seed.parentThreadId,
-						parentCallId: seed.parentCallId,
-					});
-					const result = await runner({
-						threadId: thread_id,
-						agentId: agent.id,
-						persona: agent.persona,
-						modelHint,
-						allowlistedTools: agent.tools ? (JSON.parse(agent.tools) as string[]) : null,
-						instructions: seed.instructions,
-						userId: threadInfo?.user_id ?? operatorUserId,
-						parentThreadId: seed.parentThreadId,
-					});
-					if (abortSignal.aborted) return {};
-					// The child-thread link rides the placeholder row's metadata
-					// (aux_thread, stamped by the loop's persist seam from the
-					// DeferredToolResult) — resolveDeferredToolResult preserves
-					// sibling metadata keys, so the web card keeps its link after
-					// resolution without a content trailer.
-					finishParent(
-						result.error ? `Auxiliary agent errand failed: ${result.error}` : result.summary,
-						!!result.error,
+				},
+				undefined,
+				(error) => {
+					const timeoutAttempts = seed.timeoutAttempts + 1;
+					writeMessageMetadata(
+						appContext.db,
+						seed.seedMessageId,
+						{ background_timeout_attempts: timeoutAttempts },
+						appContext.siteId,
 					);
-					acknowledgeBatch(appContext.db, claimed);
-					return { claimedIds };
-				} catch (error) {
-					if (!abortSignal.aborted) {
+					const exhausted = timeoutAttempts >= MAX_BACKGROUND_AUX_TIMEOUT_ATTEMPTS;
+					appContext.logger.error(
+						"[agent] Background auxiliary invocation timed out; the thread remains locked until its runner settles",
+						{
+							threadId: thread_id,
+							agentId,
+							parentThreadId: seed.parentThreadId,
+							parentCallId: seed.parentCallId,
+							timeoutAttempts,
+							maxTimeoutAttempts: MAX_BACKGROUND_AUX_TIMEOUT_ATTEMPTS,
+							error: formatError(error),
+							recovery:
+								"Restart the host after confirming the runner is stuck; startup recovery will retry the durable dispatch.",
+						},
+					);
+					if (exhausted) {
 						finishParent(
-							`Error: background auxiliary invocation failed: ${formatError(error)}`,
+							`Error: background auxiliary invocation timed out after ${timeoutAttempts} attempts`,
 							true,
 						);
-						try {
-							acknowledgeBatch(appContext.db, claimed);
-						} catch {
-							// claimed entries reset via executor error path
-						}
+						acknowledgeBatch(appContext.db, claimed);
+						return false;
 					}
-					return {};
-				}
-			});
+					return true;
+				},
+			);
 		};
 
 		// handleThread delegates to the shared ThreadExecutor.

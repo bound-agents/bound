@@ -552,27 +552,44 @@ export function findToolResultByThreadAndCallId(
 export function findBackgroundAuxSeed(
 	db: Database,
 	threadId: string,
-): { parentThreadId: string; parentCallId: string; instructions: string } | null {
+): {
+	seedMessageId: string;
+	parentThreadId: string;
+	parentCallId: string;
+	instructions: string;
+	timeoutAttempts: number;
+} | null {
 	const row = db
 		.query(
-			`SELECT content,
+			`SELECT id, content,
 				json_extract(metadata, '$.background_parent.thread_id') AS parent_thread_id,
-				json_extract(metadata, '$.background_parent.call_id') AS parent_call_id
+				json_extract(metadata, '$.background_parent.call_id') AS parent_call_id,
+				json_extract(metadata, '$.background_timeout_attempts') AS timeout_attempts
 			 FROM messages
 			 WHERE thread_id = ? AND role = 'user' AND deleted = 0
 				AND json_extract(metadata, '$.background_parent.call_id') IS NOT NULL
 			 ORDER BY created_at ASC LIMIT 1`,
 		)
 		.get(threadId) as {
+		id: string;
 		content: string;
 		parent_thread_id: string;
 		parent_call_id: string;
+		timeout_attempts: unknown;
 	} | null;
 	if (!row) return null;
+	const timeoutAttempts = row.timeout_attempts;
 	return {
+		seedMessageId: row.id,
 		parentThreadId: row.parent_thread_id,
 		parentCallId: row.parent_call_id,
 		instructions: row.content,
+		timeoutAttempts:
+			typeof timeoutAttempts === "number" &&
+			Number.isSafeInteger(timeoutAttempts) &&
+			timeoutAttempts > 0
+				? timeoutAttempts
+				: 0,
 	};
 }
 

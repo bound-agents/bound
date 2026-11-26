@@ -79,6 +79,7 @@ export class ThreadExecutor {
 		threadId: string,
 		runFn: (shouldYield: () => boolean, abortSignal: AbortSignal) => Promise<ExecutorRunResult>,
 		onComplete?: (result: ExecutorRunResult) => Promise<void>,
+		onTimeout?: (error: Error) => boolean | undefined,
 	): Promise<boolean> {
 		if (this.activeLocks.has(threadId)) return false;
 		this.activeLocks.add(threadId);
@@ -88,9 +89,22 @@ export class ThreadExecutor {
 				const shouldYield = () => hasPending(this.db, threadId);
 				const abortController = new AbortController();
 				const runPromise = Promise.resolve().then(() => runFn(shouldYield, abortController.signal));
+				let retryAfterTimeout = true;
 
 				try {
-					const result = await this.withTimeout(runPromise, threadId, abortController);
+					const result = await this.withTimeout(runPromise, threadId, abortController, (error) => {
+						this.logger.error(
+							`[thread-executor] ${threadId}: ${formatError(error)}; cancellation requested, lock retained until runFn settles`,
+							{ threadId, runTimeoutMs: this.runTimeoutMs },
+						);
+						try {
+							retryAfterTimeout = onTimeout?.(error) !== false;
+						} catch (handlerError) {
+							this.logger.error(
+								`[thread-executor] ${threadId}: timeout handler failed: ${formatError(handlerError)}`,
+							);
+						}
+					});
 
 					if (result.yielded) {
 						resetProcessingForThread(this.db, threadId);
@@ -106,8 +120,10 @@ export class ThreadExecutor {
 					// run or acknowledge work claimed by that replacement.
 					if (error instanceof ExecutorTimeoutError) {
 						await runPromise.catch(() => undefined);
+						if (!retryAfterTimeout) break;
+					} else {
+						this.logger.error(`[thread-executor] ${threadId}: ${formatError(error)}`);
 					}
-					this.logger.error(`[thread-executor] ${threadId}: ${formatError(error)}`);
 					// Reset any processing entries so they can be re-claimed on next attempt
 					resetProcessingForThread(this.db, threadId);
 					resetProcessingDurableDispatchForThread(this.db, threadId);
@@ -132,6 +148,7 @@ export class ThreadExecutor {
 		promise: Promise<ExecutorRunResult>,
 		threadId: string,
 		abortController: AbortController,
+		onTimeout: (error: ExecutorTimeoutError) => void,
 	): Promise<ExecutorRunResult> {
 		if (this.runTimeoutMs <= 0) return promise;
 
@@ -141,6 +158,7 @@ export class ThreadExecutor {
 					`runFn timeout after ${this.runTimeoutMs}ms for thread ${threadId}`,
 				);
 				abortController.abort(error);
+				onTimeout(error);
 				reject(error);
 			}, this.runTimeoutMs);
 
