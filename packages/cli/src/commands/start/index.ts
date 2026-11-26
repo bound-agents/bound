@@ -61,8 +61,9 @@ export interface StartNodeOptions {
  * A running Bound node. `startNode` resolves this once every subsystem is wired
  * and both servers are listening; `stop()` tears the whole node down (servers,
  * scheduler, heartbeat, pruning, relay processor, sync/ws transport, MCP
- * clients, span tracker, telemetry, PID lockfile) so the host process can exit
- * cleanly with no dangling timers, sockets, or listeners.
+ * clients, span tracker, telemetry, DB handle, PID lockfile) in reverse boot
+ * order so the host process can exit cleanly with no dangling timers, sockets,
+ * or listeners. Idempotent: a second or concurrent `stop()` is a no-op.
  */
 export interface NodeHandle {
 	appContext: AppContext;
@@ -98,15 +99,68 @@ export async function startNode(
 	args: StartArgs,
 	options: StartNodeOptions = {},
 ): Promise<NodeHandle> {
+	// Every phase registers its teardown on this stack as it comes up, so a throw
+	// in a later phase unwinds exactly the phases that already initialized, in
+	// reverse order. On success the stack moves into the handle and `stop()` runs
+	// the same unwind. Disposers registered later run first: the DB close and PID
+	// removal are registered right after bootstrap, so they run last.
+	const stack = new AsyncDisposableStack();
+	try {
+		const handle = await bootNode(args, options, stack);
+		const owned = stack.move();
+		return { ...handle, stop: () => owned.disposeAsync() };
+	} catch (startupError) {
+		try {
+			await stack.disposeAsync();
+		} catch (teardownError) {
+			console.error("[start] Teardown after failed startup also failed", teardownError);
+		}
+		throw startupError;
+	}
+}
+
+async function bootNode(
+	args: StartArgs,
+	options: StartNodeOptions,
+	stack: AsyncDisposableStack,
+): Promise<Omit<NodeHandle, "stop">> {
 	const installSignalHandlers = options.installSignalHandlers ?? false;
 
 	// Phase 0: Telemetry (must be first so all subsequent operations are traced)
 	initTelemetry("bound");
 
 	// Phase 1: Bootstrap (config, DB, keypair, users, host, crash recovery)
-	const { appContext, keypair, configDir, removePidFile } = await initBootstrap(args, {
-		installSignalHandlers,
+	let bootstrap: Awaited<ReturnType<typeof initBootstrap>>;
+	try {
+		bootstrap = await initBootstrap(args, { installSignalHandlers });
+	} catch (error) {
+		await shutdownTelemetry();
+		throw error;
+	}
+	const { appContext, keypair, configDir, removePidFile } = bootstrap;
+
+	// Remove the PID lockfile last. Under runStart the process.on("exit") handler
+	// also calls this (idempotent by PID guard); under startNode this is the only
+	// caller.
+	stack.defer(removePidFile);
+	// The default close() is graceful: it marks the Database closed but defers
+	// releasing the underlying sqlite connection until every prepared statement is
+	// finalized, and bun:sqlite caches the statements the repositories compile via
+	// db.query(sql) on the Database itself. Those cached Statement objects are only
+	// finalized when GC collects them, so after a bare close() the data dir still
+	// has bound.db, -wal and -shm (plus the mmap_size=256MiB mappings) held open —
+	// confirmed on macOS via `lsof -p`. On Windows those are mandatory file locks,
+	// so a retry-less recursive rm of the data dir fails EBUSY, which under the
+	// serial Windows CI lane cascades into later start tests. Forcing a synchronous
+	// GC right after close collects the cached statements so every fd + mapping is
+	// released now. close(true) is not enough on its own: it still leans on GC.
+	stack.defer(() => {
+		appContext.db.close(false);
+		Bun.gc(true);
 	});
+	// Telemetry flushes after every span producer below has stopped, and before
+	// the DB closes.
+	stack.defer(() => shutdownTelemetry());
 
 	// Now that bootstrap has derived the site ID from the host keypair, stamp it
 	// onto every subsequently-traced span (issue #152). initTelemetry ran at Phase 0
@@ -132,6 +186,17 @@ export async function startNode(
 		appContext,
 		provideMcpAuth,
 	);
+	// Reads the live map at teardown, so clients added by a SIGHUP reload or a
+	// resolved OAuth grant are disconnected too.
+	stack.defer(async () => {
+		for (const [, client] of mcpClientsMap) {
+			try {
+				await client.disconnect();
+			} catch {
+				// Ignore disconnect errors during shutdown
+			}
+		}
+	});
 	// A resolved grant re-runs connect for the one server so the next call rides an
 	// authenticated session, then refreshes the capability surface in place so the
 	// web UI Connections view, the sandbox MCP commands, and hosts.mcp_capabilities
@@ -179,6 +244,13 @@ export async function startNode(
 		appContext,
 		commandContext,
 	);
+	// Await the detached models.dev background refresh (R-MC6) and any expanded-
+	// backend catalog pass before closing the DB they re-advertise off of. Neither
+	// rejects.
+	stack.defer(async () => {
+		await modelsDevRefresh;
+		if (modelRouter) await settleExpandedBackendPasses(modelRouter);
+	});
 
 	// Phase 5: Relay processor, KeyManager
 	const { relayProcessor, relayProcessorHandle, keyManager, hubSiteId, keyring } = await initRelay(
@@ -189,6 +261,7 @@ export async function startNode(
 		clusterFsObj,
 		confirmGates,
 	);
+	stack.defer(() => relayProcessorHandle?.stop());
 
 	// MCP OAuth (slice 3.5): wire the owner-exchange handoff consumer so incoming
 	// mcp_auth_handoff durable_work rows are consumed (R-MO19/R-MO20) — both
@@ -255,6 +328,23 @@ export async function startNode(
 					// like POST /consistency stay working instead of 500ing on a throw.
 					wsTransportHolder: createWsTransportHolderStubs(appContext.logger, { unwired: "benign" }),
 				};
+	// Span tracker first registered so it unwinds after the servers stop taking
+	// requests; it must end open spans before the telemetry flush.
+	stack.defer(() => {
+		serverResult.handleMessageTracker?.stopWatchdog();
+		serverResult.handleMessageTracker?.endAllOpenSpans("shutdown");
+	});
+	stack.defer(async () => {
+		if (serverResult.syncServer) await serverResult.syncServer.stop();
+	});
+	stack.defer(async () => {
+		if (serverResult.webServer) await serverResult.webServer.stop();
+	});
+	// Leader-election and scan intervals query the DB.
+	stack.defer(() => {
+		serverResult.stopLeaderElections();
+		serverResult.stopScanIntervals();
+	});
 
 	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
 	const unregisterSighup = registerSighupHandler({
@@ -336,11 +426,23 @@ export async function startNode(
 			}
 		},
 	});
+	// Unregistered before the MCP disconnect so a late reload cannot reconnect.
+	stack.defer(unregisterSighup);
 
 	// Phase 8: Sync loop, pruning
 	const syncResult = await initSync(appContext, keypair, keyManager, args.reseed);
 	wsClient = syncResult.wsClient;
 	const { pruningHandle, wsTransport } = syncResult;
+	stack.defer(() => pruningHandle?.stop());
+	if (wsTransport) {
+		stack.defer(async () => {
+			wsTransport.stop();
+			const { setChangelogEventBus, setDurableWorkEventBus } = await import("@bound/core");
+			setChangelogEventBus(null);
+			setDurableWorkEventBus(null);
+		});
+	}
+	stack.defer(() => wsClient?.close());
 
 	// Wire WsTransport into the sync server's deferred holder (for hub-side frame
 	// dispatch). `wireWsTransportHolder` copies the real instance's methods on and
@@ -355,6 +457,7 @@ export async function startNode(
 	const heartbeatHandle = startHostHeartbeat(appContext.db, appContext.siteId, {
 		logger: appContext.logger,
 	});
+	stack.defer(() => heartbeatHandle?.stop());
 	const { schedulerHandle } = agentLoopFactory
 		? initScheduler(
 				appContext,
@@ -364,6 +467,10 @@ export async function startNode(
 				serverResult.platformMcpRegistry,
 			)
 		: { schedulerHandle: null };
+	stack.defer(() => schedulerHandle?.stop());
+	// Registered a second time (process.off is idempotent) so normal stop()
+	// detaches SIGHUP first before tearing down wsClient / router / MCP.
+	stack.defer(unregisterSighup);
 
 	const webServer = serverResult.webServer;
 	const syncServer = serverResult.syncServer;
@@ -379,95 +486,11 @@ ${webUrl ? `\nOpen ${webUrl} in your browser to start chatting.\n` : ""}
 Press Ctrl+C to stop.
 `);
 
-	// The single teardown path: everything that holds the process open (servers, scheduler,
-	// heartbeat, pruning, relay processor, ws transport + changelog bus, ws client, MCP
-	// clients, span tracker, telemetry) is stopped here, plus the PID lockfile.
-	// runStart drives it from a signal; startNode callers (tests) drive it from
-	// NodeHandle.stop(). Idempotent via the `stopped` latch so a double stop() or
-	// a stop() racing a signal does not double-free.
-	let stopped = false;
-	const stop = async (): Promise<void> => {
-		if (stopped) return;
-		stopped = true;
-		// Everything that touches the node-owned DB (workers, clients, servers,
-		// telemetry) must stop before we close the handle. The close itself and the
-		// PID-file removal run in a finally so a mid-teardown throw above cannot leak
-		// the open bun:sqlite handle — a leaked handle holds a Windows mandatory lock
-		// on bound.db/-wal/-shm and makes a recursive rm of the data dir fail EBUSY,
-		// which under the serial Windows CI lane cascades into later start tests.
-		try {
-			unregisterSighup();
-			// Await the detached models.dev background refresh (slice 6, R-MC6) before
-			// closing the DB it re-advertises off of. Its continuation guards against a
-			// closed handle, but awaiting it here keeps teardown orderly and avoids a
-			// post-close no-op warning. Never rejects.
-			await modelsDevRefresh;
-			// Same for any post-registration catalog pass of expanded backends.
-			if (modelRouter) await settleExpandedBackendPasses(modelRouter);
-			heartbeatHandle?.stop();
-			schedulerHandle?.stop();
-			pruningHandle?.stop();
-			relayProcessorHandle?.stop();
-			// Leader-election intervals query the DB; stop them before it closes.
-			serverResult.stopLeaderElections();
-			serverResult.stopScanIntervals();
-			if (wsTransport) {
-				wsTransport.stop();
-				const { setChangelogEventBus, setDurableWorkEventBus } = await import("@bound/core");
-				setChangelogEventBus(null);
-				setDurableWorkEventBus(null);
-			}
-			wsClient?.close();
-			for (const [, client] of mcpClientsMap) {
-				try {
-					await client.disconnect();
-				} catch {
-					// Ignore disconnect errors during shutdown
-				}
-			}
-			if (webServer) await webServer.stop();
-			if (syncServer) await syncServer.stop();
-			// Stop the watchdog and end any still-open turn / dispatch spans so
-			// BatchSpanProcessor exports them on final flush. Must run BEFORE
-			// shutdownTelemetry.
-			serverResult.handleMessageTracker?.stopWatchdog();
-			serverResult.handleMessageTracker?.endAllOpenSpans("shutdown");
-			await shutdownTelemetry();
-		} finally {
-			// Close the node-owned DB handle after all DB users, clients, servers and
-			// telemetry have stopped, and before removing the PID lockfile. In the
-			// finally so a stop-side failure above cannot leak the handle.
-			//
-			// The default close() is graceful: it marks the Database closed but defers
-			// releasing the underlying sqlite connection until every prepared statement
-			// is finalized, and bun:sqlite caches the statements the repositories compile
-			// via db.query(sql) (keyed by SQL text) on the Database itself. Those cached
-			// Statement objects are only finalized when GC collects them, which does not
-			// happen synchronously at stop() — so after a bare close() the data dir still
-			// has bound.db, bound.db-wal and bound.db-shm (plus the mmap_size=256MiB
-			// mappings) held open. Confirmed on macOS via `lsof -p` after stop(): five fds
-			// still held. On Windows those are mandatory file locks, so a retry-less
-			// recursive rm of the data dir fails EBUSY, which under the serial Windows CI
-			// lane cascades into later start tests. Closing then forcing a synchronous GC
-			// collects the cached Statement objects now, so every fd + mapping is released
-			// before teardown continues and nothing under the data dir survives the close
-			// (lsof then shows zero). close(true) is not enough on its own: it still leans
-			// on GC to reclaim the cached statements, so the release stays racy.
-			appContext.db.close(false);
-			Bun.gc(true);
-			// Remove the PID lockfile last. Under runStart the process.on("exit")
-			// handler also calls this (idempotent by PID guard); under startNode this is
-			// the only caller.
-			removePidFile();
-		}
-	};
-
 	return {
 		appContext,
 		webPort: realWebPort,
 		syncPort: realSyncPort,
 		webUrl,
-		stop,
 		__test: {
 			mcpClients: mcpClientsMap,
 			reloadMcpForReconnect: (serverName: string): Promise<void> =>
