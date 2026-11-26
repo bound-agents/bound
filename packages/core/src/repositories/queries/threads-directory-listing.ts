@@ -3,7 +3,7 @@ import type { Thread } from "@bound/shared";
 import { type ExpressionBuilder, sql } from "kysely";
 import type { BoundDatabase } from "../../db-types";
 import { getAll, getOne, queryBuilder } from "../../query-builder";
-import { attachedSessionLabelsSql } from "./sql-fragments";
+import { attachedSessionLabelsQuery } from "./sql-fragments";
 
 /**
  * One row of the threads directory listing. Extends the base `threads` row
@@ -98,7 +98,7 @@ export function listThreadsDirectory(
 				.as("lastModel"),
 			sql<string | null>`(
 				SELECT COALESCE(json_group_array(label), '[]')
-				FROM (${sql.raw(attachedSessionLabelsSql("t.id"))})
+				FROM (${attachedSessionLabelsQuery(sql.ref("t.id"))})
 			)`.as("attachedSessionHostsJson"),
 			eb
 				.exists(

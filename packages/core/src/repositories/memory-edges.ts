@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getAll, getOne, queryBuilder } from "../query-builder";
+import { getAll, getAllUncached, getOne, queryBuilder } from "../query-builder";
 
 /** Includes soft-deleted tombstones. */
 export function findEdgeDeletedStateById(
@@ -67,7 +67,7 @@ export function listSummarizesParentsByChildKeys(
 	db: Database,
 	targetKeys: readonly string[],
 ): Array<{ child: string; parent: string }> {
-	return getAll(
+	return getAllUncached(
 		db,
 		queryBuilder
 			.selectFrom("memory_edges as e")

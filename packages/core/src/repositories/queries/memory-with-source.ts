@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getAll, queryBuilder } from "../../query-builder";
+import { getAll, getAllUncached, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads that resolve a `semantic_memory` entry's source pointer
@@ -127,7 +127,7 @@ export function listMemorySourceInfoByKeys(
 	keys: string[],
 ): Array<Pick<MemoryWithSourceRow, "key" | "task_name" | "thread_id" | "thread_title">> {
 	if (keys.length === 0) return [];
-	return getAll(
+	return getAllUncached(
 		db,
 		memoryWithSourceJoins()
 			.select(["m.key", ...MEMORY_SOURCE_COLUMNS])

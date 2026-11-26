@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getAll, queryBuilder } from "../../query-builder";
+import { getAll, getAllUncached, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table reads over `memory_edges` JOIN `semantic_memory` that compute the
@@ -48,7 +48,7 @@ export function listSummaryChildrenForStaleness(
 	summaryKeys: string[],
 ): SummaryChildRow[] {
 	if (summaryKeys.length === 0) return [];
-	return getAll(
+	return getAllUncached(
 		db,
 		summarizesChildren()
 			.select([

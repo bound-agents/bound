@@ -1,30 +1,25 @@
 /**
- * SQL fragments shared by more than one repository module. Not re-exported from
- * the repository barrel.
+ * Query fragments shared by more than one repository module. Not re-exported
+ * from the repository barrel.
  */
+
+import { type Expression, sql } from "kysely";
+import { queryBuilder } from "../../query-builder";
 
 /**
  * Distinct holding-host labels (`host_name`, falling back to `site_id`) for the
  * live client sessions on `threadRef`, one per holding host, ordered `label ASC`.
- * `threadRef` is either a bind placeholder (`?`) or a correlated column (`t.id`).
+ * `threadRef` is a bound value or a correlated column reference (`sql.ref("t.id")`).
  */
-export function attachedSessionLabelsSql(threadRef: "?" | "t.id"): string {
-	return `SELECT COALESCE(h.host_name, cs.site_id) as label
-					FROM client_sessions cs
-					LEFT JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
-					WHERE cs.thread_id = ${threadRef} AND cs.deleted = 0
-					GROUP BY cs.site_id, label
-					ORDER BY label ASC`;
-}
-
-/**
- * Memory namespace predicate for an `agent_id` column: the main agent's
- * namespace is `agent_id IS NULL`; an aux agent's is `agent_id = ?`. Append
- * `params` once per use of `sql`.
- */
-export function agentNamespace(agentId: string | null): {
-	sql: "IS NULL" | "= ?";
-	params: string[];
-} {
-	return agentId === null ? { sql: "IS NULL", params: [] } : { sql: "= ?", params: [agentId] };
+export function attachedSessionLabelsQuery(threadRef: Expression<string>) {
+	return queryBuilder
+		.selectFrom("client_sessions as cs")
+		.leftJoin("hosts as h", (join) =>
+			join.onRef("h.site_id", "=", "cs.site_id").on("h.deleted", "=", 0),
+		)
+		.select(sql<string>`COALESCE(h.host_name, cs.site_id)`.as("label"))
+		.where("cs.thread_id", "=", threadRef)
+		.where("cs.deleted", "=", 0)
+		.groupBy(["cs.site_id", sql`label`])
+		.orderBy("label", "asc");
 }

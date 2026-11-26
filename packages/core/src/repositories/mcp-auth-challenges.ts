@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { BOUND_NAMESPACE, type Result, deterministicUUID, err, ok } from "@bound/shared";
 import { insertRow, updateRow } from "../change-log";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /**
  * Repository for the synced `mcp_auth_challenges` table — an unmet OAuth
@@ -23,6 +24,14 @@ import { insertRow, updateRow } from "../change-log";
  */
 
 export type ChallengeStatus = "pending" | "resolved" | "failed";
+
+/** `SELECT *` over `mcp_auth_challenges`, with `status` narrowed to {@link ChallengeStatus}. */
+function selectChallenges() {
+	return queryBuilder
+		.selectFrom("mcp_auth_challenges")
+		.selectAll()
+		.$narrowType<{ status: ChallengeStatus }>();
+}
 
 export interface McpAuthChallenge {
 	id: string;
@@ -70,9 +79,7 @@ export function challengeId(owningSiteId: string, serverName: string): string {
 
 /** Fetch a challenge row by its deterministic id (live rows only). */
 export function findChallengeById(db: Database, id: string): McpAuthChallenge | null {
-	return db
-		.query("SELECT * FROM mcp_auth_challenges WHERE id = ? AND deleted = 0")
-		.get(id) as McpAuthChallenge | null;
+	return getOne(db, selectChallenges().where("id", "=", id).where("deleted", "=", 0));
 }
 
 /**
@@ -89,9 +96,7 @@ export function findChallengeByServer(
 
 /** All `pending` challenges (live rows), for surfaces enumerating unmet demands. */
 export function findPendingChallenges(db: Database): McpAuthChallenge[] {
-	return db
-		.query("SELECT * FROM mcp_auth_challenges WHERE status = 'pending' AND deleted = 0")
-		.all() as McpAuthChallenge[];
+	return getAll(db, selectChallenges().where("status", "=", "pending").where("deleted", "=", 0));
 }
 
 /**
@@ -102,11 +107,13 @@ export function findPendingChallenges(db: Database): McpAuthChallenge[] {
  * disambiguation list.
  */
 export function findChallengesByServerName(db: Database, serverName: string): McpAuthChallenge[] {
-	return db
-		.query(
-			"SELECT * FROM mcp_auth_challenges WHERE server_name = ? AND deleted = 0 ORDER BY owning_site_id",
-		)
-		.all(serverName) as McpAuthChallenge[];
+	return getAll(
+		db,
+		selectChallenges()
+			.where("server_name", "=", serverName)
+			.where("deleted", "=", 0)
+			.orderBy("owning_site_id"),
+	);
 }
 
 /**
@@ -115,11 +122,10 @@ export function findChallengesByServerName(db: Database, serverName: string): Mc
  * both: a pending demand is actionable, a failed one shows the last reason).
  */
 export function findActionableChallenges(db: Database): McpAuthChallenge[] {
-	return db
-		.query(
-			"SELECT * FROM mcp_auth_challenges WHERE status IN ('pending', 'failed') AND deleted = 0",
-		)
-		.all() as McpAuthChallenge[];
+	return getAll(
+		db,
+		selectChallenges().where("status", "in", ["pending", "failed"]).where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -130,9 +136,7 @@ export function findChallengeByIdIncludingDeleted(
 	db: Database,
 	id: string,
 ): McpAuthChallenge | null {
-	return db
-		.query("SELECT * FROM mcp_auth_challenges WHERE id = ?")
-		.get(id) as McpAuthChallenge | null;
+	return getOne(db, selectChallenges().where("id", "=", id));
 }
 
 export type TransitionError =

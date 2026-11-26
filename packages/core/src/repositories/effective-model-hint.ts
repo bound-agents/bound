@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { sql } from "kysely";
+import { getOne, queryBuilder } from "../query-builder";
 
 /**
  * The symbolic model hint for "no task or thread hint". Model resolution maps
@@ -28,17 +30,26 @@ export function resolveEffectiveModelHint(
 	nodeDefault: string,
 	taskId?: string,
 ): string {
-	const row = db
-		.query(
-			`SELECT
-				(SELECT task.model_hint FROM tasks AS task
-				 WHERE task.id = ? AND task.thread_id = ? AND task.deleted = 0) AS task_model_hint,
-				(SELECT thread.model_hint FROM threads AS thread
-				 WHERE thread.id = ? AND thread.deleted = 0) AS thread_model_hint`,
-		)
-		.get(taskId ?? null, threadId, threadId) as {
-		task_model_hint: string | null;
-		thread_model_hint: string | null;
-	} | null;
+	const row = getOne(
+		db,
+		queryBuilder.selectNoFrom((eb) => [
+			eb
+				.selectFrom("tasks as task")
+				.select("task.model_hint")
+				// An absent taskId binds NULL, which matches no task.
+				.where("task.id", "=", sql<string>`${taskId ?? null}`)
+				.where("task.thread_id", "=", threadId)
+				.where("task.deleted", "=", 0)
+				.$asScalar()
+				.as("task_model_hint"),
+			eb
+				.selectFrom("threads as thread")
+				.select("thread.model_hint")
+				.where("thread.id", "=", threadId)
+				.where("thread.deleted", "=", 0)
+				.$asScalar()
+				.as("thread_model_hint"),
+		]),
+	);
 	return row?.task_model_hint ?? row?.thread_model_hint ?? nodeDefault;
 }

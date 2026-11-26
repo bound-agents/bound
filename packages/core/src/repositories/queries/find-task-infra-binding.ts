@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getOne, queryBuilder } from "../../query-builder";
 
 /**
  * A live infrastructure binding that references a task: either a `webhooks` row
@@ -30,16 +31,24 @@ export type TaskInfraBinding =
  * replay ordering is not a concern.)
  */
 export function findTaskInfraBinding(db: Database, taskId: string): TaskInfraBinding | null {
-	const webhook = db
-		.query("SELECT name FROM webhooks WHERE task_id = ? AND deleted = 0")
-		.get(taskId) as { name: string } | null;
+	const webhook = getOne(
+		db,
+		queryBuilder
+			.selectFrom("webhooks")
+			.select("name")
+			.where("task_id", "=", taskId)
+			.where("deleted", "=", 0),
+	);
 	if (webhook) return { kind: "webhook", label: webhook.name };
 
-	const handle = db
-		.query(
-			"SELECT server_name, event_name FROM connector_handles WHERE task_id = ? AND deleted = 0",
-		)
-		.get(taskId) as { server_name: string; event_name: string } | null;
+	const handle = getOne(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles")
+			.select(["server_name", "event_name"])
+			.where("task_id", "=", taskId)
+			.where("deleted", "=", 0),
+	);
 	if (handle) return { kind: "connector", label: `${handle.server_name}:${handle.event_name}` };
 
 	return null;

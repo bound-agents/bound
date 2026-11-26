@@ -43,3 +43,13 @@ export function getAll<O>(db: Database, query: Compilable<O>): O[] {
 	const { sql, params } = compileForBun(query);
 	return db.query<O, SQLQueryBindings[]>(sql).all(...params);
 }
+
+/**
+ * Like {@link getAll}, but through `db.prepare` so the statement is not cached.
+ * Use for queries whose SQL text varies per call (a variable-length `IN` list),
+ * where each distinct arity would otherwise add a `db.query` cache entry.
+ */
+export function getAllUncached<O>(db: Database, query: Compilable<O>): O[] {
+	const { sql, params } = compileForBun(query);
+	return db.prepare<O, SQLQueryBindings[]>(sql).all(...params);
+}

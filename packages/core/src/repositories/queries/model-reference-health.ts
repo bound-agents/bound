@@ -8,6 +8,7 @@ import {
 	ROUTING_MODEL_ROLES_KEY,
 	hintMatchesAnyLogicalModel,
 } from "@bound/shared";
+import { getAll, queryBuilder } from "../../query-builder";
 import { findClusterConfigValueByKey } from "../cluster-config";
 import { listAllHostModels } from "../hosts";
 import { listDrainedRouteIds } from "../model-routing";
@@ -173,9 +174,13 @@ export function analyzeModelReferences(
 	// Stale route_order entries: a RouteId listed in a live rule but advertised
 	// by no host. One logical model's rule can carry several; each is reported.
 	const staleRouteOrderEntries: StaleRouteOrderEntry[] = [];
-	const ruleRows = db
-		.query("SELECT logical_model, route_order FROM model_routing_rules WHERE deleted = 0")
-		.all() as Array<{ logical_model: string; route_order: string | null }>;
+	const ruleRows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("model_routing_rules")
+			.select(["logical_model", "route_order"])
+			.where("deleted", "=", 0),
+	);
 	for (const rule of ruleRows) {
 		if (!rule.route_order) continue;
 		let parsed: unknown;
@@ -202,9 +207,13 @@ export function analyzeModelReferences(
 	// Stale aliases: a live alias mapping to a logical model advertised nowhere.
 	// A null logical_model is a deliberate "keep ungrouped" mapping, not stale.
 	const staleModelAliases: StaleModelAlias[] = [];
-	const aliasRows = db
-		.query("SELECT provider_key, logical_model FROM model_aliases WHERE deleted = 0")
-		.all() as Array<{ provider_key: string; logical_model: string | null }>;
+	const aliasRows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("model_aliases")
+			.select(["provider_key", "logical_model"])
+			.where("deleted", "=", 0),
+	);
 	for (const alias of aliasRows) {
 		if (alias.logical_model === null) continue;
 		if (!liveModels.has(alias.logical_model)) {
@@ -274,11 +283,15 @@ export function analyzeModelReferences(
 	// alias follows the mapping's current assignment, so it is never dangling by
 	// itself — the dangling role/alias, if any, is reported above.
 	const danglingAgents: DanglingAgent[] = [];
-	const agentRows = db
-		.query(
-			"SELECT name, model_hint FROM agents WHERE deleted = 0 AND retired_at IS NULL AND model_hint IS NOT NULL",
-		)
-		.all() as Array<{ name: string; model_hint: string | null }>;
+	const agentRows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("agents")
+			.select(["name", "model_hint"])
+			.where("deleted", "=", 0)
+			.where("retired_at", "is", null)
+			.where("model_hint", "is not", null),
+	);
 	for (const agent of agentRows) {
 		if (!agent.model_hint) continue;
 		const logical = hintLogicalModel(agent.model_hint);
@@ -298,11 +311,15 @@ export function analyzeModelReferences(
 	// dangling by itself. Finished tasks (completed/failed/cancelled) never re-run,
 	// so a dead hint on them is inert and not surfaced.
 	const danglingTasks: DanglingTask[] = [];
-	const taskRows = db
-		.query(
-			"SELECT id, model_hint FROM tasks WHERE deleted = 0 AND model_hint IS NOT NULL AND status IN ('pending', 'claimed', 'running')",
-		)
-		.all() as Array<{ id: string; model_hint: string | null }>;
+	const taskRows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("tasks")
+			.select(["id", "model_hint"])
+			.where("deleted", "=", 0)
+			.where("model_hint", "is not", null)
+			.where("status", "in", ["pending", "claimed", "running"]),
+	);
 	for (const task of taskRows) {
 		if (!task.model_hint) continue;
 		const logical = hintLogicalModel(task.model_hint);

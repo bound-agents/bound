@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { sql } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 /**
  * Latest OK turn for a thread, projecting the columns thread-sticky routing
@@ -16,22 +18,18 @@ export function findLatestOkTurnRouteByThread(
 	substituted_from: string | null;
 	created_at: string;
 } | null {
-	return db
-		.query(
-			`SELECT model_id, route_id, substituted_from, created_at
-			 FROM turns
-			 WHERE thread_id = ?
-			   AND deleted = 0
-			   AND (status IS NULL OR status = 'ok')
-			 ORDER BY created_at DESC, rowid DESC
-			 LIMIT 1`,
-		)
-		.get(threadId) as {
-		model_id: string;
-		route_id: string | null;
-		substituted_from: string | null;
-		created_at: string;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select(["model_id", "route_id", "substituted_from", "created_at"])
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.where((eb) => eb.or([eb("status", "is", null), eb("status", "=", "ok")]))
+			.orderBy("created_at", "desc")
+			.orderBy(sql`rowid`, "desc")
+			.limit(1),
+	);
 }
 
 /** A turn row projected to the columns the per-turn provenance footer needs. */
@@ -54,15 +52,25 @@ export interface TurnProvenanceRow {
  * (§7.4) that the expanded footer renders; a single-attempt turn omits it.
  */
 export function listTurnsByThread(db: Database, threadId: string): TurnProvenanceRow[] {
-	return db
-		.query(
-			`SELECT id, created_at, model_id, route_id, substituted_from, status, cost_usd, cost_breakdown
-			 FROM turns
-			 WHERE thread_id = ?
-			   AND deleted = 0
-			 ORDER BY created_at ASC, rowid ASC`,
-		)
-		.all(threadId) as TurnProvenanceRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select([
+				"id",
+				"created_at",
+				"model_id",
+				"route_id",
+				"substituted_from",
+				"status",
+				"cost_usd",
+				"cost_breakdown",
+			])
+			.where("thread_id", "=", threadId)
+			.where("deleted", "=", 0)
+			.orderBy("created_at", "asc")
+			.orderBy(sql`rowid`, "asc"),
+	);
 }
 
 /**
@@ -77,19 +85,15 @@ export function findLatestTurnCacheStateByThread(
 	tokens_cache_read: number | null;
 	tokens_cache_write: number | null;
 } | null {
-	return db
-		.query(
-			`SELECT created_at, tokens_cache_read, tokens_cache_write
-			 FROM turns
-			 WHERE thread_id = ?
-			 ORDER BY created_at DESC
-			 LIMIT 1`,
-		)
-		.get(threadId) as {
-		created_at: string;
-		tokens_cache_read: number | null;
-		tokens_cache_write: number | null;
-	} | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select(["created_at", "tokens_cache_read", "tokens_cache_write"])
+			.where("thread_id", "=", threadId)
+			.orderBy("created_at", "desc")
+			.limit(1),
+	);
 }
 
 /**
@@ -119,20 +123,18 @@ export function computeEffectiveCacheWindowMs(
 ): number | null {
 	const LOOKBACK_MS = 24 * 60 * 60 * 1000;
 	const sinceIso = new Date(new Date(opts.nowIso).getTime() - LOOKBACK_MS).toISOString();
-	const rows = db
-		.query(
-			`SELECT thread_id, created_at, tokens_cache_read
-			 FROM turns
-			 WHERE route_id = ?
-			   AND deleted = 0
-			   AND created_at >= ?
-			 ORDER BY thread_id ASC, created_at ASC, rowid ASC`,
-		)
-		.all(routeId, sinceIso) as Array<{
-		thread_id: string | null;
-		created_at: string;
-		tokens_cache_read: number | null;
-	}>;
+	const rows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select(["thread_id", "created_at", "tokens_cache_read"])
+			.where("route_id", "=", routeId)
+			.where("deleted", "=", 0)
+			.where("created_at", ">=", sinceIso)
+			.orderBy("thread_id", "asc")
+			.orderBy("created_at", "asc")
+			.orderBy(sql`rowid`, "asc"),
+	);
 
 	let longest: number | null = null;
 	for (let i = 1; i < rows.length; i++) {
@@ -158,7 +160,7 @@ export function listContextDebugTurnsByThread(
 	db: Database,
 	threadId: string,
 ): Array<{
-	id: number;
+	id: string;
 	model_id: string;
 	tokens_in: number;
 	tokens_out: number;
@@ -167,24 +169,24 @@ export function listContextDebugTurnsByThread(
 	context_debug: string | null;
 	created_at: string;
 }> {
-	return db
-		.query(
-			`SELECT id, model_id, tokens_in, tokens_out, tokens_cache_read,
-			        tokens_cache_write, context_debug, created_at
-			 FROM turns
-			 WHERE thread_id = ? AND context_debug IS NOT NULL
-			 ORDER BY created_at ASC`,
-		)
-		.all(threadId) as Array<{
-		id: number;
-		model_id: string;
-		tokens_in: number;
-		tokens_out: number;
-		tokens_cache_read: number | null;
-		tokens_cache_write: number | null;
-		context_debug: string | null;
-		created_at: string;
-	}>;
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select([
+				"id",
+				"model_id",
+				"tokens_in",
+				"tokens_out",
+				"tokens_cache_read",
+				"tokens_cache_write",
+				"context_debug",
+				"created_at",
+			])
+			.where("thread_id", "=", threadId)
+			.where("context_debug", "is not", null)
+			.orderBy("created_at", "asc"),
+	);
 }
 
 /** Timestamp of the latest turn for a thread+task pair. */
@@ -193,7 +195,12 @@ export function findMaxTurnCreatedAtByThreadAndTask(
 	threadId: string,
 	taskId: string,
 ): { last_turn_at: string | null } | null {
-	return db
-		.query("SELECT MAX(created_at) as last_turn_at FROM turns WHERE thread_id = ? AND task_id = ?")
-		.get(threadId, taskId) as { last_turn_at: string | null } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("turns")
+			.select((eb) => eb.fn.max<string | null>("created_at").as("last_turn_at"))
+			.where("thread_id", "=", threadId)
+			.where("task_id", "=", taskId),
+	);
 }

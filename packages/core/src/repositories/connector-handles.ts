@@ -1,10 +1,17 @@
 import type { Database } from "bun:sqlite";
 import type { ConnectorHandleRow } from "@bound/shared";
+import { type NotNull, sql } from "kysely";
+import { getAll, getOne, queryBuilder } from "../query-builder";
 
 export function findConnectorHandleById(db: Database, handleId: string): ConnectorHandleRow | null {
-	return db
-		.query("SELECT * FROM connector_handles WHERE id = ? AND deleted = 0")
-		.get(handleId) as ConnectorHandleRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles")
+			.selectAll()
+			.where("id", "=", handleId)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -17,9 +24,10 @@ export function findConnectorHandleIncludingDeleted(
 	db: Database,
 	handleId: string,
 ): ConnectorHandleRow | null {
-	return db
-		.query("SELECT * FROM connector_handles WHERE id = ?")
-		.get(handleId) as ConnectorHandleRow | null;
+	return getOne(
+		db,
+		queryBuilder.selectFrom("connector_handles").selectAll().where("id", "=", handleId),
+	);
 }
 
 /** All active handles bound to `serverName` — e.g. every Discord subscription, when reconnecting a platform's subscriptions after a leader failover. */
@@ -27,9 +35,14 @@ export function listConnectorHandlesByServer(
 	db: Database,
 	serverName: string,
 ): ConnectorHandleRow[] {
-	return db
-		.query("SELECT * FROM connector_handles WHERE server_name = ? AND deleted = 0")
-		.all(serverName) as ConnectorHandleRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles")
+			.selectAll()
+			.where("server_name", "=", serverName)
+			.where("deleted", "=", 0),
+	);
 }
 
 /**
@@ -44,17 +57,18 @@ export function findActiveConnectorHandleByThreadId(
 	db: Database,
 	threadId: string,
 ): { id: string; name: string; task_id: string } | null {
-	return db
-		.query(
-			`SELECT h.id, h.server_name || ':' || h.event_name AS name, h.task_id
-			 FROM connector_handles h
-			 JOIN tasks t ON t.id = h.task_id
-			 WHERE t.thread_id = ?
-			   AND h.deleted = 0
-			   AND t.deleted = 0
-			   AND t.status <> 'cancelled'`,
-		)
-		.get(threadId) as { id: string; name: string; task_id: string } | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles as h")
+			.innerJoin("tasks as t", "t.id", "h.task_id")
+			.select(["h.id", sql<string>`h.server_name || ':' || h.event_name`.as("name"), "h.task_id"])
+			.where("t.thread_id", "=", threadId)
+			.where("h.deleted", "=", 0)
+			.where("t.deleted", "=", 0)
+			.where("t.status", "<>", "cancelled")
+			.$narrowType<{ task_id: NotNull }>(),
+	);
 }
 
 export interface ConnectorHandleSyncNotificationRow {
@@ -68,7 +82,11 @@ export function findConnectorHandleForSyncNotification(
 	db: Database,
 	id: string,
 ): ConnectorHandleSyncNotificationRow | null {
-	return db
-		.query("SELECT id, server_name, deleted FROM connector_handles WHERE id = ?")
-		.get(id) as ConnectorHandleSyncNotificationRow | null;
+	return getOne(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles")
+			.select(["id", "server_name", "deleted"])
+			.where("id", "=", id),
+	);
 }

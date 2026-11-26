@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import type { NotNull } from "kysely";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Why a connector handle counts as "dark".
@@ -51,38 +53,29 @@ export function findDarkConnectorHandles(
 	db: Database,
 	staleBeforeIso: string,
 ): DarkConnectorHandle[] {
-	const rows = db
-		.query(
-			`SELECT
-			   h.id          AS handle_id,
-			   h.server_name AS server_name,
-			   h.event_name  AS event_name,
-			   h.task_id     AS task_id,
-			   t.id          AS task_found,
-			   t.status      AS task_status,
-			   t.deleted     AS task_deleted,
-			   t.thread_id   AS thread_id
-			 FROM connector_handles h
-			 LEFT JOIN tasks t ON t.id = h.task_id
-			 WHERE h.deleted = 0
-			   AND h.task_id IS NOT NULL
-			   AND h.modified_at < ?
-			   AND (
-			     t.id IS NULL
-			     OR t.deleted = 1
-			     OR t.status = 'cancelled'
-			   )`,
-		)
-		.all(staleBeforeIso) as Array<{
-		handle_id: string;
-		server_name: string;
-		event_name: string;
-		task_id: string;
-		task_found: string | null;
-		task_status: string | null;
-		task_deleted: number | null;
-		thread_id: string | null;
-	}>;
+	const rows = getAll(
+		db,
+		queryBuilder
+			.selectFrom("connector_handles as h")
+			.leftJoin("tasks as t", "t.id", "h.task_id")
+			.select([
+				"h.id as handle_id",
+				"h.server_name as server_name",
+				"h.event_name as event_name",
+				"h.task_id as task_id",
+				"t.id as task_found",
+				"t.status as task_status",
+				"t.deleted as task_deleted",
+				"t.thread_id as thread_id",
+			])
+			.where("h.deleted", "=", 0)
+			.where("h.task_id", "is not", null)
+			.where("h.modified_at", "<", staleBeforeIso)
+			.where((eb) =>
+				eb.or([eb("t.id", "is", null), eb("t.deleted", "=", 1), eb("t.status", "=", "cancelled")]),
+			)
+			.$narrowType<{ task_id: NotNull }>(),
+	);
 
 	return rows.map((r) => {
 		let reason: DarkConnectorHandleReason;

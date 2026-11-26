@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getOne, queryBuilder } from "../../query-builder";
 
 /**
  * Whole-life spend for a user-facing thread and the aux-agent threads directly
@@ -10,15 +11,24 @@ export function sumTurnCostByThreadAndDirectChildren(
 	db: Database,
 	threadId: string,
 ): { total: number | null } {
-	return db
-		.query(
-			`SELECT SUM(cost_usd) AS total
-			 FROM turns
-			 WHERE deleted = 0
-			   AND (
-				thread_id = ?
-				OR thread_id IN (SELECT id FROM threads WHERE parent_thread_id = ?)
-			   )`,
-		)
-		.get(threadId, threadId) as { total: number | null };
+	// An aggregate without GROUP BY always yields exactly one row.
+	return (
+		getOne(
+			db,
+			queryBuilder
+				.selectFrom("turns")
+				.select((eb) => eb.fn.sum<number | null>("cost_usd").as("total"))
+				.where("deleted", "=", 0)
+				.where((eb) =>
+					eb.or([
+						eb("thread_id", "=", threadId),
+						eb(
+							"thread_id",
+							"in",
+							eb.selectFrom("threads").select("id").where("parent_thread_id", "=", threadId),
+						),
+					]),
+				),
+		) ?? { total: null }
+	);
 }

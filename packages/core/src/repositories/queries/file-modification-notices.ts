@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getAll, queryBuilder } from "../../query-builder";
 
 /**
  * Cross-table read joining the `_internal.file_thread.*` `semantic_memory`
@@ -49,23 +50,35 @@ export function listFileModificationNotices(
 		limit: number;
 	},
 ): FileModificationNoticeRow[] {
-	return db
-		.query(
-			`SELECT sm.key AS key, sm.value AS thread_id, t.title AS thread_title,
-			        t.host_origin AS host_origin, h.host_name AS host_name
-			 FROM semantic_memory sm
-			 LEFT JOIN threads t ON t.id = sm.value
-			 LEFT JOIN hosts h ON h.site_id = t.host_origin AND h.deleted = 0
-			 WHERE sm.key LIKE '_internal.file_thread.%' AND sm.deleted = 0
-			   AND sm.value != ?
-			 ORDER BY (CASE WHEN t.host_origin IN (?, ?) THEN 0 ELSE 1 END) ASC,
-			          sm.modified_at DESC
-			 LIMIT ?`,
-		)
-		.all(
-			args.currentThreadId,
-			args.localSite,
-			args.localHost,
-			args.limit,
-		) as FileModificationNoticeRow[];
+	return getAll(
+		db,
+		queryBuilder
+			.selectFrom("semantic_memory as sm")
+			.leftJoin("threads as t", "t.id", "sm.value")
+			.leftJoin("hosts as h", (join) =>
+				join.onRef("h.site_id", "=", "t.host_origin").on("h.deleted", "=", 0),
+			)
+			.select([
+				"sm.key as key",
+				"sm.value as thread_id",
+				"t.title as thread_title",
+				"t.host_origin as host_origin",
+				"h.host_name as host_name",
+			])
+			.where("sm.key", "like", "_internal.file_thread.%")
+			.where("sm.deleted", "=", 0)
+			.where("sm.value", "!=", args.currentThreadId)
+			.orderBy(
+				(eb) =>
+					eb
+						.case()
+						.when("t.host_origin", "in", [args.localSite, args.localHost])
+						.then(0)
+						.else(1)
+						.end(),
+				"asc",
+			)
+			.orderBy("sm.modified_at", "desc")
+			.limit(args.limit),
+	);
 }
