@@ -8,8 +8,19 @@
  * ToModelMessagesOptions — see the individual drivers.
  */
 
-import type { ModelMessage } from "ai";
+import { type Logger, createLogger } from "@bound/shared";
+import { type ModelMessage, modelMessageSchema } from "ai";
 import type { ContentBlock, LLMMessage } from "../types";
+
+// Lazily created for the same reason as stream.ts: createLogger() opens the
+// log file synchronously, and this module is reachable by importing @bound/llm.
+let promptGuardLogger: Pick<Logger, "warn"> | null = null;
+function getPromptGuardLogger(): Pick<Logger, "warn"> {
+	if (promptGuardLogger === null) {
+		promptGuardLogger = createLogger("llm", "ai-sdk-bridge");
+	}
+	return promptGuardLogger;
+}
 
 export interface ToModelMessagesOptions {
 	/**
@@ -123,6 +134,11 @@ export interface ToModelMessagesOptions {
 	 *   on every later turn.
 	 */
 	toolResultMedia?: "file" | "text-only";
+	/**
+	 * Sink for the prompt-schema guard's per-replacement warnings. Defaults to
+	 * the bridge logger; tests inject a recorder.
+	 */
+	logger?: Pick<Logger, "warn">;
 }
 
 /**
@@ -859,7 +875,171 @@ export function toModelMessages(
 		result.unshift({ role: "user", content: "<system-notification />" });
 	}
 
-	return result;
+	return guardPromptSchema(result, opts.logger ?? getPromptGuardLogger());
+}
+
+/**
+ * Text substituted for a content part (or tool-result output item) that fails
+ * ai's ModelMessage[] schema. Deterministic in the item's `type` alone so the
+ * same persisted history yields the same prompt bytes every turn (prompt-cache
+ * prefix stability). Never echoes the item's payload.
+ */
+function invalidPromptItemPlaceholder(type: string): string {
+	return `[Unsupported ${type} content omitted: it does not match the model prompt schema]`;
+}
+
+function describeItemType(item: unknown): string {
+	if (item && typeof item === "object" && typeof (item as { type?: unknown }).type === "string") {
+		const t = (item as { type: string }).type;
+		// Bound the label: a pathological persisted type string must not bloat
+		// the prompt or the log.
+		return /^[A-Za-z0-9_.:-]{1,64}$/.test(t) ? t : "unknown";
+	}
+	return "unknown";
+}
+
+function isValidModelMessage(message: unknown): boolean {
+	return modelMessageSchema.safeParse(message).success;
+}
+
+/**
+ * Last line of defense before streamText's validatePrompt. Each message is
+ * checked against ai's `modelMessageSchema`; a valid message is returned as
+ * the same object. In an invalid message, each content part (and, for
+ * tool-result parts, each `output.value` item) that fails on its own is
+ * replaced with a deterministic text placeholder naming its type, keeping
+ * tool-call ids and tool-call/tool-result pairing. One warning per replacement
+ * (message index, role, item type — never content). If the message still fails,
+ * it is rebuilt from placeholders so the returned array always validates:
+ * a single drifted persisted item must degrade one item, not wedge the thread.
+ */
+export function guardPromptSchema(
+	messages: ModelMessage[],
+	logger: Pick<Logger, "warn">,
+): ModelMessage[] {
+	let out: ModelMessage[] | null = null;
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		if (isValidModelMessage(message)) continue;
+		const repaired = repairModelMessage(message, i, logger);
+		if (out === null) out = messages.slice();
+		out[i] = repaired;
+	}
+	return out ?? messages;
+}
+
+function repairModelMessage(
+	message: ModelMessage,
+	index: number,
+	logger: Pick<Logger, "warn">,
+): ModelMessage {
+	const raw = message as unknown as { role?: unknown; content?: unknown };
+	const role = typeof raw.role === "string" ? raw.role : "unknown";
+	const warn = (itemType: string) =>
+		logger.warn("replaced prompt item that fails the ModelMessage schema", {
+			messageIndex: index,
+			role,
+			itemType,
+		});
+
+	if (Array.isArray(raw.content)) {
+		const content = raw.content.map((part: unknown) => {
+			if (isValidModelMessage({ ...raw, content: [part] })) return part;
+			if (role === "tool") return repairToolPart(part, raw, warn);
+			if (
+				role === "assistant" &&
+				part &&
+				typeof part === "object" &&
+				(part as { type?: unknown }).type === "tool-call" &&
+				typeof (part as { toolCallId?: unknown }).toolCallId === "string"
+			) {
+				// Keep the call so its paired tool-result still has a partner.
+				const p = part as { toolCallId: string; toolName?: unknown };
+				warn("tool-call");
+				return {
+					type: "tool-call",
+					toolCallId: p.toolCallId,
+					toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
+					input: {},
+				};
+			}
+			const type = describeItemType(part);
+			warn(type);
+			return { type: "text", text: invalidPromptItemPlaceholder(type) };
+		});
+		const candidate = { ...raw, content } as unknown as ModelMessage;
+		if (isValidModelMessage(candidate)) return candidate;
+	}
+
+	// Message-level failure the per-part pass can't fix (bad role, bad
+	// providerOptions, non-array garbage content). Rebuild from scratch.
+	warn("message");
+	if (role === "tool" && Array.isArray(raw.content)) {
+		const content = raw.content.map((part: unknown) => {
+			const p = (part ?? {}) as { toolCallId?: unknown; toolName?: unknown };
+			return {
+				type: "tool-result" as const,
+				toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : "unknown",
+				toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
+				output: { type: "text" as const, value: invalidPromptItemPlaceholder("tool-result") },
+			};
+		});
+		return { role: "tool", content } as ModelMessage;
+	}
+	const text = invalidPromptItemPlaceholder("message");
+	return (
+		role === "assistant"
+			? { role: "assistant", content: text }
+			: role === "system"
+				? { role: "system", content: text }
+				: { role: "user", content: text }
+	) as ModelMessage;
+}
+
+function repairToolPart(
+	part: unknown,
+	message: { role?: unknown; content?: unknown },
+	warn: (itemType: string) => void,
+): unknown {
+	const p = (part ?? {}) as {
+		type?: unknown;
+		toolCallId?: unknown;
+		toolName?: unknown;
+		output?: { type?: unknown; value?: unknown };
+	};
+	if (p.type === "tool-result" && typeof p.toolCallId === "string") {
+		const output = p.output;
+		if (output && output.type === "content" && Array.isArray(output.value)) {
+			const value = output.value.map((item: unknown) => {
+				const probe = { ...p, output: { type: "content", value: [item] } };
+				if (isValidModelMessage({ ...message, content: [probe] })) return item;
+				const type = describeItemType(item);
+				warn(type);
+				return { type: "text", text: invalidPromptItemPlaceholder(type) };
+			});
+			const fixed = { ...p, output: { type: "content", value } };
+			if (isValidModelMessage({ ...message, content: [fixed] })) return fixed;
+		}
+		// Output itself is malformed: keep id and name, replace the payload.
+		const type = describeItemType(output);
+		warn(type === "unknown" ? "tool-result-output" : type);
+		return {
+			type: "tool-result",
+			toolCallId: p.toolCallId,
+			toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
+			output: { type: "text", value: invalidPromptItemPlaceholder(type) },
+		};
+	}
+	// Not a recognizable tool-result: there is no id to keep. Rebuild as a
+	// tool-result with a placeholder so the tool message stays well-formed.
+	const type = describeItemType(part);
+	warn(type);
+	return {
+		type: "tool-result",
+		toolCallId: typeof p.toolCallId === "string" ? p.toolCallId : "unknown",
+		toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
+		output: { type: "text", value: invalidPromptItemPlaceholder(type) },
+	};
 }
 
 /**
