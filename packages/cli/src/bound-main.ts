@@ -15,13 +15,13 @@ import {
 	type CliContext,
 	type CliIO,
 	booleanFlag,
+	cliText,
 	defaultCliIO,
 	defaultedStringFlag,
 	errorMessage,
 	exitWith,
 	runCliApp,
 	stringFlag,
-	unknownCommandText,
 } from "./lib/cli-app.js";
 
 export { type CliIO, defaultCliIO } from "./lib/cli-app.js";
@@ -197,7 +197,7 @@ const APP_CONFIG = {
 	name: "bound",
 	scanner: { caseStyle: "allow-kebab-for-camel" },
 	documentation: { caseStyle: "convert-camel-to-kebab" },
-	localization: unknownCommandText("bound"),
+	localization: cliText("bound"),
 } as const;
 
 const app = buildApplication<CliContext>(

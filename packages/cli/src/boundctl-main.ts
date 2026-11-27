@@ -30,6 +30,7 @@ import {
 	type CliContext,
 	type CliIO,
 	booleanFlag,
+	cliText,
 	defaultCliIO,
 	defaultedStringFlag,
 	errorMessage,
@@ -39,7 +40,6 @@ import {
 	restPositionals,
 	runCliApp,
 	stringFlag,
-	unknownCommandText,
 } from "./lib/cli-app.js";
 import { openBoundDB } from "./lib/db.js";
 
@@ -150,7 +150,8 @@ async function guarded(
 
 /**
  * Opens bound.db under `dataDir`, runs `body`, and always closes the handle. A
- * throw maps to `<label> failed: <message>` and exit 1.
+ * throw from the open or the body maps to `<label> failed: <message>` and
+ * exit 1, so a missing or unopenable data dir reads like any other failure.
  */
 async function withDb(
 	io: CliIO,
@@ -158,14 +159,15 @@ async function withDb(
 	label: string,
 	body: (db: Database) => Promise<number> | number,
 ): Promise<number> {
-	const db = openBoundDB(dataDir);
+	let db: Database | undefined;
 	try {
+		db = openBoundDB(dataDir);
 		return await body(db);
 	} catch (error) {
 		io.error(`${label} failed: ${errorMessage(error)}`);
 		return 1;
 	} finally {
-		db.close();
+		db?.close();
 	}
 }
 
@@ -178,21 +180,52 @@ function parseTimeout(raw: string | undefined): number | undefined | null {
 
 /**
  * Catch-all for a command family: registered as the route map's hidden
- * default command, so an unknown or missing subcommand reaches it (with the
- * unmatched word as a positional) and prints the family's own usage error.
+ * default command, so an unknown subcommand word reaches it as a positional
+ * and prints the family's own usage error. A missing subcommand, or a flag in
+ * the subcommand position, never gets here: {@link main} prints the family
+ * usage first, because Stricli rejects a flag the default command doesn't
+ * declare before any command code runs.
  */
 function unknownSubcommand(
 	flags: Record<string, ReturnType<typeof defaultedStringFlag>>,
-	report: (io: CliIO, input: string | undefined) => void,
+	report: (io: CliIO, input: string) => void,
 ) {
 	return buildCommand({
 		docs: { brief: "Unknown subcommand" },
 		parameters: { flags, positional: restPositionals("input", "Unrecognized subcommand") },
 		func(this: CliContext, _flags: Record<string, string>, ...input: string[]) {
-			report(this.io, input[0]);
+			report(this.io, input[0] ?? "");
 			exitWith(this, 1);
 		},
 	});
+}
+
+/**
+ * One-line usage per command family, printed for an unknown subcommand and,
+ * by {@link main}, for a missing one.
+ */
+const FAMILY_USAGE = {
+	config: "Usage: boundctl config reload <target>",
+	skill: "Usage: boundctl skill {list|view|delete|import}",
+	webhook:
+		"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}",
+	task: "Usage: boundctl task update <id> [--no-history|--history] [--model <id>] [--alert-threshold <n>]",
+	db: "Usage: boundctl db vacuum",
+} as const;
+
+/**
+ * The family usage when `args` names a command family but no subcommand: the
+ * family word alone, or followed by a flag other than `--help`/`-h`. Stricli
+ * would hand the first case to the family's default command with no input and
+ * reject the second as an unregistered flag before any command code runs.
+ */
+function missingSubcommandUsage(args: readonly string[]): string | undefined {
+	const [family, next] = args;
+	if (!family || !Object.hasOwn(FAMILY_USAGE, family)) return undefined;
+	if (next !== undefined && (!next.startsWith("-") || next === "--help" || next === "-h")) {
+		return undefined;
+	}
+	return FAMILY_USAGE[family as keyof typeof FAMILY_USAGE];
 }
 
 const UNKNOWN_ROUTE = "unknown-subcommand";
@@ -449,8 +482,8 @@ const skillRoutes = buildRouteMap({
 			},
 		}),
 		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io, input) => {
-			io.error(`Error: unknown skill subcommand '${input ?? ""}'.`);
-			io.error("Available: list, view, delete, import");
+			io.error(`Error: unknown skill subcommand '${input}'.`);
+			io.error(FAMILY_USAGE.skill);
 		}),
 	},
 });
@@ -458,9 +491,6 @@ const skillRoutes = buildRouteMap({
 // ---------------------------------------------------------------------------
 // webhook
 // ---------------------------------------------------------------------------
-
-const WEBHOOK_USAGE =
-	"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}";
 
 const webhookModelFlag = stringFlag(
 	'Model for the webhook task; --model "" restores the default',
@@ -575,7 +605,7 @@ const webhookRoutes = buildRouteMap({
 			(db, siteId) => webhookSetUnauthenticated(db, siteId, false),
 		),
 		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io) => {
-			io.error(WEBHOOK_USAGE);
+			io.error(FAMILY_USAGE.webhook);
 		}),
 	},
 });
@@ -614,9 +644,7 @@ const taskRoutes = buildRouteMap({
 			},
 		}),
 		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io) => {
-			io.error(
-				"Usage: boundctl task update <id> [--no-history|--history] [--model <id>] [--alert-threshold <n>]",
-			);
+			io.error(FAMILY_USAGE.task);
 		}),
 	},
 });
@@ -665,7 +693,7 @@ const dbRoutes = buildRouteMap({
 		}),
 		[UNKNOWN_ROUTE]: unknownSubcommand({ dataDir: dataDirFlag }, (io, input) => {
 			io.error(`Unknown db subcommand: ${input}`);
-			io.error("Available: vacuum");
+			io.error(FAMILY_USAGE.db);
 		}),
 	},
 });
@@ -693,7 +721,7 @@ const app = buildApplication<CliContext>(
 		name: "boundctl",
 		scanner: { caseStyle: "allow-kebab-for-camel" },
 		documentation: { caseStyle: "convert-camel-to-kebab" },
-		localization: unknownCommandText("boundctl"),
+		localization: cliText("boundctl"),
 	},
 );
 
@@ -710,6 +738,11 @@ export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<
 	if (!command || command === "--help" || command === "-h") {
 		io.log(ROOT_HELP);
 		return 0;
+	}
+	const familyUsage = missingSubcommandUsage(args);
+	if (familyUsage) {
+		io.error(familyUsage);
+		return 1;
 	}
 	return runCliApp(app, args, io);
 }

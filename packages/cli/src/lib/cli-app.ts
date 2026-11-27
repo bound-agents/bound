@@ -4,6 +4,7 @@
 // maps its outcome to a process exit code without ever calling process.exit.
 
 import {
+	AliasNotFoundError,
 	type Application,
 	type CommandContext,
 	type PartialApplicationConfiguration,
@@ -103,15 +104,30 @@ function toExitCode(raw: number | string | null | undefined): number {
 	return Number.isInteger(n) && n > 0 ? n : 1;
 }
 
-/** Localization config that names the binary in the unknown-command error. */
-export function unknownCommandText(
-	binary: string,
-): PartialApplicationConfiguration["localization"] {
+/**
+ * Hint appended to Stricli's `No alias registered for -x` error. The scanner
+ * reads any `-letters` token as an alias batch, even in a flag's value
+ * position, and has no option to force a value there; only the attached
+ * `--flag=value` form carries a dash-leading value.
+ */
+export const DASH_VALUE_HINT =
+	'To pass a flag value that starts with "-", attach it with "=": --prompt=-terse';
+
+/**
+ * Localization for the `bound`/`boundctl` apps: names the binary in the
+ * unknown-command error and points an unknown-alias error at the
+ * `--flag=-value` form.
+ */
+export function cliText(binary: string): PartialApplicationConfiguration["localization"] {
 	return {
 		loadText: () => ({
 			...text_en,
 			noCommandRegisteredForInput: ({ input }: { input: string }) =>
 				`Unknown command: ${input}\nRun "${binary} --help" for usage information`,
+			exceptionWhileParsingArguments: (exc: unknown, ansiColor: boolean) => {
+				const base = text_en.exceptionWhileParsingArguments(exc, ansiColor);
+				return exc instanceof AliasNotFoundError ? `${base}\n${DASH_VALUE_HINT}` : base;
+			},
 		}),
 	};
 }

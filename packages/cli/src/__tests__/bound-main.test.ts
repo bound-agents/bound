@@ -154,6 +154,12 @@ describe("parseLoginArgs", () => {
 		});
 	});
 
+	it("points a dash-leading login value at the --flag=-value form", async () => {
+		await expect(parseLoginArgs(["login", "--mcp", "-srv"])).rejects.toThrow("--prompt=-terse");
+		const parsed = await parseLoginArgs(["login", "--mcp=-srv"]);
+		expect(parsed.mcp).toBe("-srv");
+	});
+
 	it("rejects an unregistered login flag with Stricli's diagnostic", async () => {
 		await expect(parseLoginArgs(["login", "--bogus"])).rejects.toThrow("--bogus");
 	});

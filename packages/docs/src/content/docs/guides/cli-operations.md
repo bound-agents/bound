@@ -137,6 +137,24 @@ is the host that coordinates replication, and other synchronized hosts are **spo
 Cluster-wide commands take effect through synchronized state as noted; consult
 [System model](/bound/concepts/system-model/) for the underlying host and state boundaries.
 
+A command family run without a subcommand, such as `boundctl skill` or
+`boundctl skill --verbose`, prints that family's usage line and exits 1.
+`boundctl <family> --help` prints the generated help for every subcommand in the family.
+
+A flag value that starts with `-` must be attached with `=`. In the separate form, the parser
+reads a token such as `-terse` as a short flag and fails with `No alias registered for -t`:
+
+```bash
+boundctl webhook update --name deploys --prompt=-terse    # accepted
+boundctl webhook update --name deploys --prompt -terse    # rejected
+```
+
+Values that start with `-` but contain anything other than letters, such as `-5` or
+`"-be terse"`, parse in either form.
+
+A command that opens `bound.db` and can't open it, for example because `--data-dir` names a
+missing directory, prints one line in the form `skill command failed: <message>` and exits 1.
+
 ### `boundctl set-hub`
 
 ```text

@@ -80,6 +80,24 @@ describe("boundless startup", () => {
 			const args = ["--url"];
 			await expect(parseArgs(args)).rejects.toThrow("Flag --url requires a value");
 		});
+
+		it("should parse the attached --url=<url> form", async () => {
+			const result = await parseArgs(["--url=http://example.com:3002"]);
+			expect(result?.urlArg).toBe("http://example.com:3002");
+		});
+
+		it("should reject a single-dash token as an unknown flag", async () => {
+			await expect(parseArgs(["-x"])).rejects.toThrow("Unknown flag: -x");
+		});
+
+		it("should print help and resolve to null for --help", async () => {
+			let out = "";
+			const result = await parseArgs(["--help"], (text) => {
+				out += text;
+			});
+			expect(result).toBeNull();
+			expect(out).toContain("boundless [--attach thread-id] [--url url] [--acp]");
+		});
 	});
 
 	describe("thread resolution", () => {

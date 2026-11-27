@@ -111,6 +111,7 @@ const parseArgsApp = buildApplication<ParseArgsContext>(parseArgsCommand, {
 				exc instanceof ArgumentScannerError
 					? formatMessageForArgumentScannerError(exc, {
 							FlagNotFoundError: (e) => `Unknown flag: --${e.input}`,
+							AliasNotFoundError: (e) => `Unknown flag: -${e.input}`,
 							UnsatisfiedFlagError: (e) => `Flag --${e.externalFlagName} requires a value`,
 						})
 					: String(exc),

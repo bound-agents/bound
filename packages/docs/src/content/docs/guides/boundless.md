@@ -101,6 +101,21 @@ boundless --url http://my-server:3001
 
 The override isn't persisted. The default URL is `http://localhost:3001`.
 
+## Command-line arguments
+
+```text
+boundless [--url URL] [--attach THREAD_ID] [--acp]
+```
+
+Each flag takes its value either as the next argument or attached with `=`, so
+`boundless --url=http://my-server:3001` matches the example above. A value that starts with
+`-` needs the attached form.
+
+`boundless --help` prints the flag list and exits 0 without connecting to a server.
+
+`boundless` has no single-dash short flags. A token such as `-x` fails with
+`Error: Unknown flag: -x` and exits 1, as does an unknown long flag such as `--bogus`.
+
 ## Resume an existing thread
 
 Pass the full thread ID shown in the status area:

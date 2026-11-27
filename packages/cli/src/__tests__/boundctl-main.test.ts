@@ -55,6 +55,40 @@ describe("boundctl main() — parsing and routing", () => {
 		expect(errors.join("\n")).toContain("--before <timestamp> is required");
 	});
 
+	it("prints the family usage for a missing subcommand (exit 1)", async () => {
+		for (const [family, usage] of [
+			["config", "Usage: boundctl config reload <target>"],
+			["skill", "Usage: boundctl skill {list|view|delete|import}"],
+			["webhook", "Usage: boundctl webhook {create|list|delete|update|rotate-secret|"],
+			["task", "Usage: boundctl task update <id>"],
+			["db", "Usage: boundctl db vacuum"],
+		] as const) {
+			const { io, errors } = captureIO();
+			expect(await main([family], io)).toBe(1);
+			expect(errors.join("\n")).toContain(usage);
+			expect(errors.join("\n")).not.toContain("unknown");
+		}
+	});
+
+	it("prints the family usage when a flag stands in for the subcommand (exit 1)", async () => {
+		for (const argv of [
+			["skill", "--verbose"],
+			["db", "--data-dir", "x"],
+			["task", "--id=t1"],
+		]) {
+			const { io, errors } = captureIO();
+			expect(await main(argv, io)).toBe(1);
+			expect(errors.join("\n")).toContain(`Usage: boundctl ${argv[0]}`);
+			expect(errors.join("\n")).not.toContain("No flag registered");
+		}
+	});
+
+	it("still prints generated family help for `<family> --help` (exit 0)", async () => {
+		const { io, logs } = captureIO();
+		expect(await main(["skill", "--help"], io)).toBe(0);
+		expect(logs.join("\n")).toContain("boundctl skill list");
+	});
+
 	it("config rejects an unknown subcommand and a missing target (exit 1)", async () => {
 		const a = captureIO();
 		expect(await main(["config", "bogus"], a.io)).toBe(1);
@@ -145,6 +179,50 @@ describe("boundctl main() — DB-backed command dispatch", () => {
 		const code = await main(["db", "vacuum", "--data-dir", dataDir], io);
 		expect(code).toBe(0);
 		expect(logs.join("\n")).toContain("VACUUM complete.");
+	});
+
+	it("points a dash-leading flag value at the --flag=-value form (exit 1)", async () => {
+		const { io, errors } = captureIO();
+		const argv = [
+			"webhook",
+			"update",
+			"--name",
+			"hook",
+			"--prompt",
+			"-terse",
+			"--data-dir",
+			dataDir,
+		];
+		expect(await main(argv, io)).toBe(1);
+		expect(errors.join("\n")).toContain("No alias registered for -t");
+		expect(errors.join("\n")).toContain("--prompt=-terse");
+	});
+
+	it("accepts a dash-leading flag value in the --flag=-value form", async () => {
+		const { io, errors } = captureIO();
+		// The value parses and reaches webhookUpdate, which fails on the missing
+		// webhook rather than on argument scanning.
+		const argv = ["webhook", "update", "--name=hook", "--prompt=-terse", "--data-dir", dataDir];
+		expect(await main(argv, io)).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("webhook command failed:");
+		expect(text).not.toContain("No alias registered");
+	});
+
+	it("maps an unopenable data dir to the one-line family error (exit 1)", async () => {
+		const missing = join(tmp, "no-such-dir", "nested");
+		for (const [argv, label] of [
+			[["skill", "list", "--data-dir", missing], "skill command failed: "],
+			[["webhook", "list", "--data-dir", missing], "webhook command failed: "],
+			[["db", "vacuum", "--data-dir", missing], "VACUUM failed: "],
+		] as const) {
+			const { io, errors } = captureIO();
+			expect(await main([...argv], io)).toBe(1);
+			expect(errors).toHaveLength(1);
+			expect(errors[0]).toStartWith(label);
+			expect(errors[0]).not.toContain("Command failed");
+			expect(errors[0]).not.toContain("\n");
+		}
 	});
 
 	it("rejects an unknown db subcommand (exit 1)", async () => {
