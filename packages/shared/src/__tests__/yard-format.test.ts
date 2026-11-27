@@ -30,7 +30,7 @@ describe("sanitizeYardResult", () => {
 	});
 });
 
-describe("formatYardValue", () => {
+describe("formatYardValue on persisted result envelopes", () => {
 	it("unwraps a Yard result envelope before sanitizing, displaying, and classifying its return value", () => {
 		const formatted = formatYardValue('{"result":{"nested":[1,2],"redacted_data":"secret"}}');
 
@@ -102,7 +102,7 @@ describe("formatYardValue", () => {
 	});
 });
 
-describe("formatYardValue", () => {
+describe("formatYardValue and formatYardInspectorValue on arguments, prompts, and programs", () => {
 	it("normalizes static extractor object-literal arguments into highlighted JSON metadata", () => {
 		expect(formatYardValue('{command: "pwd", cwd: "/workspace"}')).toEqual({
 			display: '{\n  "command": "pwd",\n  "cwd": "/workspace"\n}',
@@ -159,11 +159,6 @@ describe("formatYardValue", () => {
 			hint: "string · 37 B",
 			isJson: false,
 		});
-	});
-
-	it("preserves the result formatting path as an alias", () => {
-		const raw = '{"answer":"kept"}';
-		expect(formatYardValue(raw)).toEqual(formatYardValue(raw));
 	});
 
 	it("keeps run programs as JavaScript source while retaining the shared value hint", () => {

@@ -27,7 +27,7 @@
  *    loop-host router owns the fallback.
  */
 
-import { handleWhen, retry } from "cockatiel";
+import { ConstantBackoff, handleWhen, retry } from "cockatiel";
 import {
 	type CreditRedemptionPlan,
 	type CreditStep,
@@ -82,7 +82,8 @@ const MAX_TRANSIENT_RETRIES = 3;
 
 const transientRedemptionRetry = retry(
 	handleWhen((err) => isTransientRedemptionError(err instanceof Error ? err.message : String(err))),
-	{ maxAttempts: MAX_TRANSIENT_RETRIES },
+	// Each retry passes through a 0ms timer before re-running the step.
+	{ maxAttempts: MAX_TRANSIENT_RETRIES, backoff: new ConstantBackoff(0) },
 );
 
 /** The classified refusal on a done chunk, or null when the stream finished clean. */
@@ -165,30 +166,27 @@ async function* walkStepDown(
 	config: CreditRedemptionDriverConfig,
 ): AsyncIterable<StreamChunk> {
 	for (const step of plan.steps) {
-		for (;;) {
-			// A transient redemption error retries the SAME step with the same token
-			// inside the 5-minute window (§7.3); any other error propagates.
-			const stepChunks = await transientRedemptionRetry.execute(async () => {
-				const chunks: StreamChunk[] = [];
-				for await (const chunk of config.runStep(step, target, refusedChunks)) {
-					chunks.push(chunk);
-				}
-				return chunks;
-			});
+		// A transient redemption error retries the SAME step with the same token
+		// inside the 5-minute window (§7.3); any other error propagates.
+		const stepChunks = await transientRedemptionRetry.execute(async () => {
+			const chunks: StreamChunk[] = [];
+			for await (const chunk of config.runStep(step, target, refusedChunks)) {
+				chunks.push(chunk);
+			}
+			return chunks;
+		});
 
-			// Step completed. If it did not refuse, it served the turn: emit its
-			// chunks and stop the walk.
-			if (!refusalOf(stepChunks)) {
-				yield* stepChunks;
-				return;
-			}
-			// Still a refusal: step down to the next planned step. Hold this step's
-			// chunks as the terminal output in case the step-down exhausts.
-			if (step === plan.steps[plan.steps.length - 1]) {
-				yield* stepChunks;
-				return;
-			}
-			break;
+		// Step completed. If it did not refuse, it served the turn: emit its
+		// chunks and stop the walk.
+		if (!refusalOf(stepChunks)) {
+			yield* stepChunks;
+			return;
+		}
+		// Still a refusal: step down to the next planned step. Hold this step's
+		// chunks as the terminal output in case the step-down exhausts.
+		if (step === plan.steps[plan.steps.length - 1]) {
+			yield* stepChunks;
+			return;
 		}
 	}
 }

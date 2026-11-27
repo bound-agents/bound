@@ -274,7 +274,7 @@ const modelBackendSchema = z
 		// (2026-11-21-model-catalog.md §3); a `.default(0)` would make a deliberate
 		// operator-pinned 0 (free local model) indistinguishable from "unset", so the
 		// catalog precedence could never tell an override from a gap. See
-		// hasExplicitOperatorPricing / resolveTurnCost.
+		// resolveTurnCost (packages/agent/src/turn-pricing.ts).
 		price_per_m_input: z.number().min(0).optional(),
 		price_per_m_output: z.number().min(0).optional(),
 		price_per_m_cache_write: z.number().min(0).optional(),

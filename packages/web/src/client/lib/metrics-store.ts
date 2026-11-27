@@ -12,7 +12,7 @@ export interface MetricsState {
 	error: string | null;
 }
 
-export type FetchFn = (url: string) => Promise<Response>;
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * Manages metrics data fetching with two-phase loading:
@@ -38,7 +38,7 @@ export class MetricsStore {
 	 */
 	private loadSeq = 0;
 
-	constructor(fetchFn: FetchFn = (url) => fetch(url)) {
+	constructor(fetchFn: FetchFn = (url, init) => fetch(url, init)) {
 		this.fetchFn = fetchFn;
 	}
 
@@ -63,7 +63,7 @@ export class MetricsStore {
 		}
 
 		try {
-			const api = createApi((input) => this.fetchFn(String(input)));
+			const api = createApi((input, init) => this.fetchFn(String(input), init));
 			const response = await api.api.metrics.$get({ query: { from, to } });
 			if (seq !== this.loadSeq) return; // superseded by a newer load
 			if (!response.ok) {

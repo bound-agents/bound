@@ -318,6 +318,22 @@ describe("MetricsStore", () => {
 			expect(capturedUrl).toContain("from=2026-05-18T00%3A00%3A00.000Z");
 			expect(capturedUrl).toContain("to=2026-05-19T00%3A00%3A00.000Z");
 		});
+
+		it("forwards the request init so the method and headers reach the fetch function", async () => {
+			let capturedInit: RequestInit | undefined;
+			const store = new MetricsStore(async (_url: string, init?: RequestInit) => {
+				capturedInit = init;
+				return new Response(JSON.stringify(makeMetricsResponse()), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			});
+
+			await store.load(from, to);
+
+			expect(capturedInit?.method).toBe("GET");
+			expect(capturedInit?.headers).toBeDefined();
+		});
 	});
 });
 

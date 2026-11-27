@@ -325,5 +325,3 @@ export class McpChallengeResolver {
 		}
 	}
 }
-
-/** Re-export the challenge type for callers that build a resolver over a row. */
