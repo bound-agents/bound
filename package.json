@@ -14,7 +14,7 @@
 		"typecheck": "bun scripts/typecheck-all.ts",
 		"knip": "knip",
 		"build": "bun run scripts/build.ts",
-		"prepare": "git config core.hooksPath .githooks",
+		"prepare": "bun run scripts/install-git-hooks.ts",
 		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts && bun run scripts/build-lowbox-helper.ts --optional && bun run scripts/build-tree-sitter-kotlin.ts"
 	},
 	"devDependencies": {

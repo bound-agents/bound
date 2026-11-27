@@ -218,11 +218,12 @@ export async function spawnSandboxed(
 		workingDirectory: cwd,
 		filesystem: policy.filesystem,
 		network: policy.network,
-		// `confineBunCache` points bun's install cache at a tmpdir-local path so
-		// `bun add`/`bun install` work under write confinement (the global ~/.bun
-		// cache is outside the writable roots and fails with a misleading tempdir
-		// error). See the non-interactive pager/prompt rationale on `nonInteractiveEnv`.
-		environment: nonInteractiveEnv({ confineBunCache: true }),
+		// `confineInstallCaches` points bun's install cache and node-gyp's header
+		// devdir at tmpdir-local paths so `bun add`/`bun install` (including
+		// lifecycle scripts that compile native addons) work under write
+		// confinement; both default to home-directory caches outside the writable
+		// roots. See `nonInteractiveEnv` for the full rationale.
+		environment: nonInteractiveEnv({ confineInstallCaches: true }),
 		// Seatbelt gets the identity Mach-lookup escape hatch; elsewhere the
 		// abstract "process" intent resolves to the host's native backend
 		// (bubblewrap on Linux).

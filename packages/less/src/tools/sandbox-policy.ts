@@ -137,21 +137,28 @@ export const DISABLED_SANDBOX: ResolvedSandboxConfig = {
  * These override inherited values (e.g. a host `PAGER=less`) on purpose: an
  * interactive pager cannot function in this context regardless of preference.
  *
- * `confineBunCache` (set by the SANDBOXED spawn paths only): bun stages
- * package installs in its global cache (`~/.bun/install/cache`) before
- * linking into node_modules, and that path sits outside the sandbox's
- * writable roots (cwd + tmpdir) — so every `bun add` / `bun install` under
- * confinement dies with the misleading "unable to write files to tempdir:
- * PermissionDenied" (TMPDIR is irrelevant; the write that fails is the cache
- * dir's). Pointing `BUN_INSTALL_CACHE_DIR` at a tmpdir-local cache keeps
- * installs working with zero caller ceremony. Installed packages are ordinary
- * files (hardlink count 1), so a cleared tmp cache never breaks an existing
- * node_modules. An operator-set `BUN_INSTALL_CACHE_DIR` is honored — they may
- * have deliberately pointed it somewhere writable. Unsandboxed spawns keep
- * the warm global cache.
+ * `confineInstallCaches` (set by the SANDBOXED spawn paths only) points the
+ * two package-install caches that default to the home directory at
+ * tmpdir-local paths, because the home directory sits outside the sandbox's
+ * writable roots (cwd + tmpdir + /tmp):
+ *
+ * - `BUN_INSTALL_CACHE_DIR` → `<tmpdir>/bound-bun-install-cache`. bun stages
+ *   every download in its global cache (`~/.bun/install/cache`) before
+ *   linking into node_modules; without the override `bun add` / `bun install`
+ *   die with the misleading "unable to write files to tempdir:
+ *   PermissionDenied" (the write that fails is the cache dir's, not TMPDIR's).
+ * - `npm_config_devdir` → `<tmpdir>/bound-node-gyp`. node-gyp downloads Node
+ *   headers into its devdir (`~/Library/Caches/node-gyp` on macOS,
+ *   `~/.cache/node-gyp` on Linux) before compiling a native addon, so a
+ *   lifecycle script that runs `node-gyp rebuild` fails with EPERM.
+ *
+ * Installed packages are ordinary files (hardlink count 1), so a cleared tmp
+ * cache never breaks an existing node_modules. An operator-set value for
+ * either variable is honored — they may have deliberately pointed it
+ * somewhere writable. Unsandboxed spawns keep the warm home-directory caches.
  */
 export function nonInteractiveEnv(
-	opts: { confineBunCache?: boolean } = {},
+	opts: { confineInstallCaches?: boolean } = {},
 ): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = {
 		...process.env,
@@ -159,8 +166,15 @@ export function nonInteractiveEnv(
 		PAGER: "cat",
 		GIT_TERMINAL_PROMPT: "0",
 	};
-	if (opts.confineBunCache && !process.env.BUN_INSTALL_CACHE_DIR) {
-		env.BUN_INSTALL_CACHE_DIR = join(tmpdir(), "bound-bun-install-cache");
+	if (opts.confineInstallCaches) {
+		if (!process.env.BUN_INSTALL_CACHE_DIR) {
+			env.BUN_INSTALL_CACHE_DIR = join(tmpdir(), "bound-bun-install-cache");
+		}
+		// npm-style config env is case-insensitive; either spelling means the
+		// operator already chose a devdir.
+		if (!process.env.npm_config_devdir && !process.env.NPM_CONFIG_DEVDIR) {
+			env.npm_config_devdir = join(tmpdir(), "bound-node-gyp");
+		}
 	}
 	return env;
 }

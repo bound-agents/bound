@@ -32,7 +32,9 @@ There is no composite mode at the root, so `bun check -b` from the root fails wi
 
 ### Mixed positional and flag arg parsing
 
-In `commands.ts`: only affects MCP bridge commands (the only commands still dispatched through bash). Native agent tools use structured JSON parameters, eliminating this class of bugs.
+`packages/sandbox/src/commands.ts` still hand-parses argv for MCP bridge commands, the only commands still dispatched through the bash sandbox. It assigns bare tokens to the next unfilled positional in declaration order, treats a `--flag` followed by another `--flag` (or by nothing) as boolean `"true"`, and accumulates repeated flags only when the command opts in. A flag value that begins with `--` therefore gets read as a second flag. Native agent tools take structured JSON parameters and avoid this class of bug.
+
+The Stricli migration (`2cbf3082`) does not cover this parser. It replaced argv scanning in `bound`, `boundctl`, and `boundless`, where flags may now follow positionals and unknown flags exit 1.
 
 ### loopContextStorage scope (AsyncLocalStorage)
 
@@ -150,13 +152,21 @@ Rule: never call `createLogger()` at module scope in a module reachable by just 
 
 **Fix (`normalizeYardInput` in `packages/agent/src/tools/yard.ts`, applied at the `runYardProgram` hand-off):** a string `input` whose trimmed form starts with `{` or `[` and parses to an object/array is decoded before being handed to the driver. Scalar strings are passed through untouched — `"hello"`, `"42"`, and `"true"` are legitimate input values, so the recovery cannot swallow a deliberate string payload. The narrow object/array gate is what makes the coercion safe; widening it to all parseable JSON would turn `input: "42"` into a number.
 
-### `bun add` / `bun install` fail against the global cache under the boundless sandbox
+### `bun install` under the boundless sandbox writes its caches to tmpdir
 
-`boundless_bash` confines writes to the working directory and `/tmp`, but bun stages package downloads in its **global install cache** (`~/.bun/install/cache`, per `bun pm cache`) before linking them into `node_modules` — outside both writable roots. Every `bun add` / `bun install` under the sandbox therefore fails with `error: bun is unable to write files to tempdir: PermissionDenied`. The error text misdirects: `TMPDIR` is irrelevant — reproduced fail-with-`TMPDIR=$PWD/.tmp` and pass-with-cache-override in both directions, and a warm global cache doesn't help because bun still opens the cache dir for writing.
+`boundless_bash` confines writes to the working directory, the temp directory, and `/tmp`. Three parts of a plain `bun install` in this repo write outside those roots, and each one is handled where it happens, so a sandboxed `bun install` / `bun add` works with a cold cache and no caller env:
 
-**Fixed at the tool level:** both sandboxed spawn paths (`spawnSandboxed` in `packages/less/src/tools/sandbox.ts` and `spawnLowbox` in `packages/less/src/tools/lowbox-runtime.ts`) pass `nonInteractiveEnv({ confineBunCache: true })`, which sets `BUN_INSTALL_CACHE_DIR` to a tmpdir-local path (`<tmpdir>/bound-bun-install-cache`) whenever the operator hasn't set it themselves. `bun add` / `bun install` work under confinement with no caller ceremony. Unsandboxed spawns keep the warm global cache, and an operator-set `BUN_INSTALL_CACHE_DIR` always wins.
+- **bun's global install cache.** bun stages every download in `~/.bun/install/cache` before linking into `node_modules`. Unconfined, the install dies with `error: bun is unable to write files to tempdir: PermissionDenied` — the message misdirects, since the failing write is the cache dir's and `TMPDIR` is irrelevant.
+- **node-gyp's header devdir.** The root `postinstall` builds `tree-sitter-kotlin` with node-gyp, which downloads Node headers into `~/Library/Caches/node-gyp` (macOS) or `~/.cache/node-gyp` (Linux) and fails with `EPERM: operation not permitted, mkdir`.
+- **The root `prepare` hook.** It sets `core.hooksPath`, and the sandbox keeps `.git/config` read-only on purpose; `git config` exits 4 (`could not write config file`).
 
-Installed packages are ordinary files (hardlink count 1), so a cleared tmp cache never breaks an existing `node_modules`. One follow-up is still on the caller: commit the `bun.lock` change alongside the `package.json` change — an aux arm that manually worked around this trap for the tree-sitter grammars installed without updating the lock, which broke `bun install --frozen-lockfile` (CI's install step) on pristine checkouts until `0a8fc7a8`. Observed live in run `a583197b`: one arm found the manual cache-override workaround, later arms rediscovered only the failure and escalated "installs are impossible" as a fundamental blocker an hour after three grammar packages had installed cleanly.
+`spawnSandboxed` (`packages/less/src/tools/sandbox.ts`, seatbelt and bubblewrap) passes `nonInteractiveEnv({ confineInstallCaches: true })`, which sets `BUN_INSTALL_CACHE_DIR=<tmpdir>/bound-bun-install-cache` and `npm_config_devdir=<tmpdir>/bound-node-gyp` unless the operator already set them (either spelling of the devdir variable counts). Unsandboxed spawns keep the warm home-directory caches. The Windows lowbox path (`spawnLowbox`) inherits the host environment and does not apply this confinement.
+
+`prepare` runs `scripts/install-git-hooks.ts`: it skips the write when `git config --get core.hooksPath` already reads `.githooks`, writes it otherwise, and prints a warning instead of failing the install when git refuses the write. A normal clone gets its hooks on the first `bun install`; a clone first installed inside the sandbox prints the warning and needs one `git config core.hooksPath .githooks` outside it. The `.git/config` protection stays as it is.
+
+The bun cache confinement had been in place since `ef67060f`, and a sandboxed shell sees `BUN_INSTALL_CACHE_DIR` set and writable. Installs that still failed were dying in the node-gyp build (exit 1) and the `prepare` hook (exit 4), so a manual `BUN_INSTALL_CACHE_DIR` override did nothing for them.
+
+Installed packages are ordinary files (hardlink count 1), so a cleared tmp cache never breaks an existing `node_modules`. One follow-up is still on the caller: commit the `bun.lock` change alongside the `package.json` change. An aux arm that installed the tree-sitter grammars without updating the lock broke `bun install --frozen-lockfile` (CI's install step) on pristine checkouts until `0a8fc7a8`.
 
 ### Dependency lifecycle scripts that call node-gyp race the isolated linker
 

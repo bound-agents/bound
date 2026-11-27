@@ -680,46 +680,69 @@ describe("formatWriteDenied", () => {
 	});
 });
 
-describe("nonInteractiveEnv (bun install cache confinement)", () => {
+describe("nonInteractiveEnv (install cache confinement)", () => {
 	// This suite may itself run inside a sandboxed boundless shell, where the
-	// deployed confinement has ALREADY set BUN_INSTALL_CACHE_DIR in the ambient
-	// environment — which nonInteractiveEnv() faithfully spreads. Clear it
-	// around each test and restore the ambient value after, so the assertions
+	// deployed confinement has ALREADY set these variables in the ambient
+	// environment — which nonInteractiveEnv() faithfully spreads. Clear them
+	// around each test and restore the ambient values after, so the assertions
 	// exercise the function's own behavior, not the host it happens to run on.
-	let ambientCacheDir: string | undefined;
+	const CONFINED_KEYS = ["BUN_INSTALL_CACHE_DIR", "npm_config_devdir", "NPM_CONFIG_DEVDIR"];
+	let ambient: Record<string, string | undefined> = {};
 
 	beforeEach(() => {
-		ambientCacheDir = process.env.BUN_INSTALL_CACHE_DIR;
-		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+		ambient = {};
+		for (const key of CONFINED_KEYS) {
+			ambient[key] = process.env[key];
+			Reflect.deleteProperty(process.env, key);
+		}
 	});
 
 	afterEach(() => {
 		// NOT `= undefined`: assigning undefined to a process.env key coerces
 		// to the string "undefined". Reflect.deleteProperty removes the key
 		// without the delete operator biome's noDelete rejects.
-		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
-		if (ambientCacheDir !== undefined) {
-			process.env.BUN_INSTALL_CACHE_DIR = ambientCacheDir;
+		for (const key of CONFINED_KEYS) {
+			Reflect.deleteProperty(process.env, key);
+			const value = ambient[key];
+			if (value !== undefined) process.env[key] = value;
 		}
 	});
 
-	it("does not touch BUN_INSTALL_CACHE_DIR by default (unsandboxed spawns keep the warm global cache)", () => {
+	it("does not touch the install caches by default (unsandboxed spawns keep the warm home caches)", () => {
 		const env = nonInteractiveEnv();
 		expect(env.BUN_INSTALL_CACHE_DIR).toBeUndefined();
+		expect(env.npm_config_devdir).toBeUndefined();
 		// The non-interactive pager/prompt contract is unchanged.
 		expect(env.GIT_PAGER).toBe("cat");
 		expect(env.PAGER).toBe("cat");
 		expect(env.GIT_TERMINAL_PROMPT).toBe("0");
 	});
 
-	it("confineBunCache points bun's install cache at a tmpdir-local path", () => {
-		const env = nonInteractiveEnv({ confineBunCache: true });
+	it("confineInstallCaches points bun's install cache at a tmpdir-local path", () => {
+		const env = nonInteractiveEnv({ confineInstallCaches: true });
 		expect(env.BUN_INSTALL_CACHE_DIR).toBe(join(tmpdir(), "bound-bun-install-cache"));
+	});
+
+	it("confineInstallCaches points node-gyp's header devdir at a tmpdir-local path", () => {
+		const env = nonInteractiveEnv({ confineInstallCaches: true });
+		expect(env.npm_config_devdir).toBe(join(tmpdir(), "bound-node-gyp"));
 	});
 
 	it("honors an operator-set BUN_INSTALL_CACHE_DIR over the confinement default", () => {
 		process.env.BUN_INSTALL_CACHE_DIR = "/opt/custom-bun-cache";
-		const env = nonInteractiveEnv({ confineBunCache: true });
+		const env = nonInteractiveEnv({ confineInstallCaches: true });
 		expect(env.BUN_INSTALL_CACHE_DIR).toBe("/opt/custom-bun-cache");
+	});
+
+	it("honors an operator-set node-gyp devdir in either case spelling", () => {
+		process.env.npm_config_devdir = "/opt/gyp-lower";
+		expect(nonInteractiveEnv({ confineInstallCaches: true }).npm_config_devdir).toBe(
+			"/opt/gyp-lower",
+		);
+		Reflect.deleteProperty(process.env, "npm_config_devdir");
+		process.env.NPM_CONFIG_DEVDIR = "/opt/gyp-upper";
+		const env = nonInteractiveEnv({ confineInstallCaches: true });
+		expect(env.NPM_CONFIG_DEVDIR).toBe("/opt/gyp-upper");
+		expect(env.npm_config_devdir).toBeUndefined();
 	});
 });
