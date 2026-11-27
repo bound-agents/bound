@@ -110,7 +110,7 @@ function toExitCode(raw: number | string | null | undefined): number {
  * position, and has no option to force a value there; only the attached
  * `--flag=value` form carries a dash-leading value.
  */
-export const DASH_VALUE_HINT =
+const DASH_VALUE_HINT =
 	'To pass a flag value that starts with "-", attach it with "=": --prompt=-terse';
 
 /**
