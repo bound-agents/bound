@@ -155,7 +155,7 @@ describe("parseLoginArgs", () => {
 	});
 
 	it("points a dash-leading login value at the --flag=-value form", async () => {
-		await expect(parseLoginArgs(["login", "--mcp", "-srv"])).rejects.toThrow("--prompt=-terse");
+		await expect(parseLoginArgs(["login", "--mcp", "-srv"])).rejects.toThrow("--mcp=-srv");
 		const parsed = await parseLoginArgs(["login", "--mcp=-srv"]);
 		expect(parsed.mcp).toBe("-srv");
 	});

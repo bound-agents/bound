@@ -156,6 +156,42 @@ describe.skipIf(!sandboxLive || nestedRunner)("spawnSandboxed (real enforcement)
 		expect(out).toContain("dns-ok");
 	});
 
+	// `bun install` and node-gyp write to home-directory caches by default, which
+	// write confinement denies. spawnSandboxed points both at tmpdir-local paths;
+	// this proves the env reaches the contained shell and that the backend
+	// (seatbelt on macOS, bubblewrap on Linux) lets the command write there.
+	it("points the install caches under tmpdir and lets the sandbox write them", async () => {
+		const keys = ["BUN_INSTALL_CACHE_DIR", "npm_config_devdir", "NPM_CONFIG_DEVDIR"] as const;
+		const saved = keys.map((k) => [k, process.env[k]] as const);
+		for (const k of keys) Reflect.deleteProperty(process.env, k);
+		try {
+			const script = [
+				'for d in "$npm_config_devdir" "$BUN_INSTALL_CACHE_DIR"; do',
+				'  echo "dir=$d"',
+				'  mkdir -p "$d" && f="$d/.sandbox-probe-$$" && : > "$f" && rm "$f" && echo "wrote=$d" || exit 3',
+				"done",
+			].join("\n");
+			const proc = await spawnSandboxed(script, process.cwd(), enabled);
+			const [out, err, code] = await Promise.all([
+				proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+				proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
+				proc.exited,
+			]);
+			expect(code, `sandboxed cache write failed: ${err}`).toBe(0);
+			const dirs = [...out.matchAll(/^dir=(.*)$/gm)].map((m) => m[1]);
+			expect(dirs).toEqual([
+				join(tmpdir(), "bound-node-gyp"),
+				join(tmpdir(), "bound-bun-install-cache"),
+			]);
+			for (const d of dirs) expect(out).toContain(`wrote=${d}`);
+		} finally {
+			for (const [k, v] of saved) {
+				if (v === undefined) Reflect.deleteProperty(process.env, k);
+				else process.env[k] = v;
+			}
+		}
+	});
+
 	it("resolves the current user via getpwuid (whoami is not a bare uid)", async () => {
 		const proc = await spawnSandboxed("whoami", process.cwd(), enabled);
 		const [out, code] = await Promise.all([

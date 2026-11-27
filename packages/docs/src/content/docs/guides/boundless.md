@@ -104,7 +104,7 @@ The override isn't persisted. The default URL is `http://localhost:3001`.
 ## Command-line arguments
 
 ```text
-boundless [--url URL] [--attach THREAD_ID] [--acp]
+boundless [--attach thread-id] [--url url] [--acp]
 ```
 
 Each flag takes its value either as the next argument or attached with `=`, so

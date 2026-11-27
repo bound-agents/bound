@@ -198,6 +198,35 @@ describe("boundctl main() — DB-backed command dispatch", () => {
 		expect(errors.join("\n")).toContain("--prompt=-terse");
 	});
 
+	it("names the flag that took the dash-leading value in the hint (exit 1)", async () => {
+		const { io, errors } = captureIO();
+		const argv = ["webhook", "create", "--name", "-dash", "--data-dir", dataDir];
+		expect(await main(argv, io)).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("No alias registered for -d");
+		expect(text).toContain("--name=-dash");
+		expect(text).not.toContain("--prompt=-terse");
+	});
+
+	it("uses the generic hint when the preceding long flag is boolean", async () => {
+		const { io, errors } = captureIO();
+		const argv = ["consistency-check", "--verbose", "-x"];
+		expect(await main(argv, io)).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("No alias registered for -x");
+		expect(text).toContain("--flag=-value");
+		expect(text).not.toContain("--verbose=-x");
+	});
+
+	it("falls back to a generic --flag=-value hint when no flag precedes the dash token", async () => {
+		const { io, errors } = captureIO();
+		const argv = ["webhook", "update", "-x", "--data-dir", dataDir];
+		expect(await main(argv, io)).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("No alias registered for -x");
+		expect(text).toContain("--flag=-value");
+	});
+
 	it("accepts a dash-leading flag value in the --flag=-value form", async () => {
 		const { io, errors } = captureIO();
 		// The value parses and reaches webhookUpdate, which fails on the missing

@@ -153,7 +153,8 @@ Values that start with `-` but contain anything other than letters, such as `-5`
 `"-be terse"`, parse in either form.
 
 A command that opens `bound.db` and can't open it, for example because `--data-dir` names a
-missing directory, prints one line in the form `skill command failed: <message>` and exits 1.
+missing directory, prints one line and exits 1. The line names the failing command, for example
+`skill command failed: <message>`, or `VACUUM failed: <message>` for `boundctl db vacuum`.
 
 ### `boundctl set-hub`
 
@@ -305,13 +306,13 @@ This runs a full SQLite `VACUUM` against `data/` in the current directory, the d
 ## `boundless`
 
 ```text
-boundless [--url URL] [--attach THREAD_ID] [--acp]
+boundless [--attach thread-id] [--url url] [--acp]
 ```
 
 | Option | Purpose |
 | --- | --- |
-| `--url URL` | Override the configured web API and UI server URL for this run |
-| `--attach THREAD_ID` | Attach to an existing thread |
+| `--attach thread-id` | Attach to an existing thread |
+| `--url url` | Override the configured web API and UI server URL for this run |
 | `--acp` | Run as an ACP server over standard input and output |
 
 See [Use the `boundless` terminal client](/bound/guides/boundless/) for filesystem access,

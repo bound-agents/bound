@@ -331,8 +331,12 @@ describe("MetricsStore", () => {
 
 			await store.load(from, to);
 
+			// hc sends an upper-cased method and a Headers instance; a GET carries no
+			// body and no Content-Type.
 			expect(capturedInit?.method).toBe("GET");
-			expect(capturedInit?.headers).toBeDefined();
+			expect(capturedInit?.body).toBeUndefined();
+			expect(capturedInit?.headers).toBeInstanceOf(Headers);
+			expect(new Headers(capturedInit?.headers).get("content-type")).toBeNull();
 		});
 	});
 });
