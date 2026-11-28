@@ -97,6 +97,7 @@ import {
 	getResolvedRouteId,
 	insertThreadMessage,
 	parseContentBlocks,
+	serializeAssistantText,
 } from "./agent-loop-utils";
 import { applyActualUsageToContextDebug } from "./context-assembly";
 import { resolveClientSessionHost } from "./delegation";
@@ -2009,7 +2010,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				),
 			);
 		} else {
-			assistantContent = parsed.textContent || "";
+			assistantContent = serializeAssistantText(parsed.textContent || "");
 		}
 		// A `content-filter` finish is a model refusal: the request reached the
 		// model and a safety classifier declined it. Per R-RT16 the refused

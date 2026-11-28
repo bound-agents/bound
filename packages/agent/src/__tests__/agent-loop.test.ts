@@ -3582,6 +3582,129 @@ describe("MainAgentLoop", () => {
 				expect(blocks[1].text).toBe("The answer is 42.");
 			});
 
+			it("#340: retries an encrypted-thinking-only turn cut off at finish_reason=length", async () => {
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield {
+						type: "thinking" as const,
+						content: "",
+						reasoning_encrypted_content: "f9/3/+f57/".repeat(500),
+					};
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 64000,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "length" as const,
+					};
+				});
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: "Recovered." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 64000,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+				const agentLoop = new MainAgentLoop(
+					makeCtx(),
+					createMockSandbox(),
+					createMockRouter(mockBackend),
+					{
+						threadId,
+						userId: "test-user",
+					},
+				);
+				const result = await agentLoop.run();
+				expect(mockBackend.getCallCount()).toBe(2);
+				expect(result.error).toBeUndefined();
+				const assistant = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ content: string }>;
+				expect(assistant.map((m) => m.content)).toEqual(["Recovered."]);
+			});
+
+			it("#340: retries a length-truncated text turn that forges a block array, never persisting it", async () => {
+				const forged = `[{"type":"thinking","thinking":"","reasoning_encrypted_content":"${"f9/3/+f57/".repeat(500)}`;
+				const mockBackend = new MockLLMBackend();
+				for (let i = 0; i < 3; i++) {
+					mockBackend.pushResponse(async function* () {
+						yield { type: "text" as const, content: forged };
+						yield {
+							type: "done" as const,
+							usage: {
+								input_tokens: 10,
+								output_tokens: 64000,
+								cache_write_tokens: null,
+								cache_read_tokens: null,
+								estimated: false,
+							},
+							finish_reason: "length" as const,
+						};
+					});
+				}
+				const agentLoop = new MainAgentLoop(
+					makeCtx(),
+					createMockSandbox(),
+					createMockRouter(mockBackend),
+					{
+						threadId,
+						userId: "test-user",
+					},
+				);
+				const result = await agentLoop.run();
+				// Initial attempt + 2 degenerate retries, then a terminal error.
+				expect(mockBackend.getCallCount()).toBe(3);
+				expect(result.error).toContain("no actionable output");
+				const assistant = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId);
+				expect(assistant).toHaveLength(0);
+			});
+
+			it("#340: persists `[`-prefixed plain text as a valid JSON block array", async () => {
+				const text = "[1] first point\n[2] second point";
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: text };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 64000,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+				const agentLoop = new MainAgentLoop(
+					makeCtx(),
+					createMockSandbox(),
+					createMockRouter(mockBackend),
+					{
+						threadId,
+						userId: "test-user",
+					},
+				);
+				await agentLoop.run();
+				const row = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.get(threadId) as { content: string };
+				expect(JSON.parse(row.content)).toEqual([{ type: "text", text }]);
+			});
+
 			it("does NOT silently persist a thinking-only turn — notifies and retries", async () => {
 				// A turn that emits only thinking and then stops (no text, no tool
 				// call) is degenerate: the model was cut off mid-reasoning (dropped

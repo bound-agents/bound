@@ -129,6 +129,18 @@ interface ThreadMessageOpts {
 	metadata?: Record<string, unknown>;
 }
 
+/**
+ * Serialize a plain-text assistant reply for the `messages.content` column.
+ * Renderers and context replay treat a `[`-prefixed string as a JSON
+ * `ContentBlock[]`, so text that itself begins with `[` (including a model's
+ * cut-off imitation of the block format, #340) is wrapped in a single text block.
+ * The stored value is then always plain text or a complete JSON block array.
+ */
+export function serializeAssistantText(text: string): string {
+	if (!text.startsWith("[")) return text;
+	return JSON.stringify([{ type: "text", text }]);
+}
+
 /** Insert a message into a thread via the change-log outbox. Returns the message ID. */
 export function insertThreadMessage(db: Database, opts: ThreadMessageOpts, siteId: string): string {
 	const id = randomUUID();

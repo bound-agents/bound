@@ -191,4 +191,10 @@ describe("MessageBubble sender identity (#258)", () => {
 			await label({ metadata: JSON.stringify({ sender_role: "main" }), userDisplayName: "Kara" }),
 		).toBe("agent");
 	});
+	it("#340: renders a truncated block-array assistant message as a placeholder", async () => {
+		const content = `[{"type":"thinking","thinking":"","reasoning_encrypted_content":"${"f9/3/+f57/".repeat(200)}`;
+		const { target } = await mountBubble({ role: "assistant", content });
+		expect(target.textContent).toContain("[unreadable message content]");
+		expect(target.textContent).not.toContain("reasoning_encrypted_content");
+	});
 });

@@ -2,6 +2,7 @@
 	import { resolveUserMessageSender } from "@bound/shared/message-sender";
 	import { renderMarkdown } from "../lib/markdown";
 	import { mermaid } from "../lib/mermaid";
+	import { UNREADABLE_CONTENT_PLACEHOLDER, isUnreadableBlockArray } from "../lib/message-grouping";
 	import { getLineColor } from "../lib/metro-lines";
 	import ReasoningBlock from "./ReasoningBlock.svelte";
 
@@ -115,7 +116,11 @@
 				})
 				.filter((b): b is DisplayBlock => b !== null);
 		} catch {
-			// Not JSON — plain text
+			// A `[{"type":...` prefix that fails to parse is a cut-off block array
+			// (#340); rendering it raw dumps kilobytes of JSON into the bubble.
+			if (isUnreadableBlockArray(content)) {
+				return [{ kind: "text", text: UNREADABLE_CONTENT_PLACEHOLDER }];
+			}
 		}
 		return [{ kind: "text", text: content }];
 	});

@@ -181,6 +181,24 @@ interface LoopDecisionSpans {
 	turnSpan?: Span;
 }
 
+const BLOCK_ARRAY_PREFIX = /^\s*\[\s*\{\s*"type"\s*:/;
+
+/**
+ * True when `text` opens like a serialized `ContentBlock[]` (`[{"type":...`)
+ * but does not parse as JSON. A model that imitates the persisted transcript
+ * format and runs into its output cap produces exactly this shape (#340); it is
+ * never a usable answer.
+ */
+export function isTruncatedBlockArrayText(text: string): boolean {
+	if (!BLOCK_ARRAY_PREFIX.test(text)) return false;
+	try {
+		JSON.parse(text);
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 /** Assembles one assistant turn's `ContentBlock[]` — leading text (if any), thinking/redacted-thinking blocks, then a `tool_use` block per call — in the fixed order every supported provider expects. */
 export function buildAssistantToolCallBlocks(
 	textContent: string,
@@ -1071,10 +1089,20 @@ export abstract class ModularAgentLoop {
 		if (parsed.finishReason === "content-filter") {
 			return false;
 		}
+		if (parsed.toolCalls.length > 0) {
+			return false;
+		}
+		// A length-truncated turn whose only text is a cut-off imitation of the
+		// persisted content-block format (`[{"type":...` that no longer parses) is a
+		// runaway, not an answer: the model spent its whole output budget forging a
+		// transcript row. Treat it like a thinking-only truncation.
+		if (parsed.finishReason === "length" && isTruncatedBlockArrayText(parsed.textContent)) {
+			return true;
+		}
 		const hadThinking = Boolean(
 			parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent,
 		);
-		return hadThinking && parsed.toolCalls.length === 0 && !parsed.textContent;
+		return hadThinking && !parsed.textContent;
 	}
 
 	/**

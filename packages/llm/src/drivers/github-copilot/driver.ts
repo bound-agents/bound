@@ -195,7 +195,17 @@ function isSessionError(err: unknown): boolean {
 interface ReasoningOpaqueCapture {
 	reasoningOpaque: string;
 	scan: Promise<void> | null;
+	/** Chars seen after the blob passed {@link MAX_REASONING_OPAQUE_CHARS}; 0 when within budget. */
+	droppedChars?: number;
 }
+
+/**
+ * Cap on one turn's accumulated chat-route `reasoning_opaque`. Observed Copilot
+ * Gemini blobs average ~5.5K chars and top out near 111K; a blob past this cap is
+ * a model looping inside its reasoning until the output budget runs out (#340),
+ * not state worth persisting. Past the cap the whole blob is dropped.
+ */
+export const MAX_REASONING_OPAQUE_CHARS = 256 * 1024;
 
 /** Origin stamped on chat-route opaque reasoning. It matches no Responses deployment's
  * origin, so the bridge drops the blob instead of replaying it to a provider that can't
@@ -220,6 +230,24 @@ function captureReasoningOpaque(
 			headers: res.headers,
 		});
 	}) as typeof fetch;
+}
+
+/**
+ * Append one `reasoning_opaque` delta, enforcing {@link MAX_REASONING_OPAQUE_CHARS}.
+ * A blob that crosses the cap is discarded whole (a truncated opaque blob cannot be
+ * replayed) and later deltas are only counted.
+ */
+export function appendReasoningOpaque(collected: ReasoningOpaqueCapture, opaque: string): void {
+	if (collected.droppedChars !== undefined && collected.droppedChars > 0) {
+		collected.droppedChars += opaque.length;
+		return;
+	}
+	if (collected.reasoningOpaque.length + opaque.length > MAX_REASONING_OPAQUE_CHARS) {
+		collected.droppedChars = collected.reasoningOpaque.length + opaque.length;
+		collected.reasoningOpaque = "";
+		return;
+	}
+	collected.reasoningOpaque += opaque;
 }
 
 /** Scan an SSE byte stream for `delta.reasoning_opaque` and accumulate it. */
@@ -249,7 +277,7 @@ async function scanReasoningOpaque(
 					};
 					const opaque = parsed.choices?.[0]?.delta?.reasoning_opaque;
 					if (typeof opaque === "string" && opaque.length > 0) {
-						collected.reasoningOpaque += opaque;
+						appendReasoningOpaque(collected, opaque);
 					}
 				} catch {
 					// A non-JSON data line is not ours to interpret; skip it.
@@ -272,16 +300,31 @@ async function scanReasoningOpaque(
  * no `reasoningProviderOptions`) drops it on the next turn rather than replaying
  * an un-decryptable blob. Emits nothing when no reasoning_opaque was seen.
  */
-async function* injectReasoningOpaque(
+export async function* injectReasoningOpaque(
 	stream: AsyncIterable<StreamChunk>,
 	collected: ReasoningOpaqueCapture,
 	reasoningOrigin: string,
+	logger?: Pick<Logger, "warn">,
 ): AsyncIterable<StreamChunk> {
 	let injected = false;
 	for await (const chunk of stream) {
 		if (chunk.type === "done" && !injected) {
 			if (collected.scan) await collected.scan;
-			if (collected.reasoningOpaque.length > 0) {
+			const dropped = collected.droppedChars ?? 0;
+			if (dropped > 0) {
+				injected = true;
+				logger?.warn("[copilot] Dropped oversized chat-route reasoning_opaque blob", {
+					chars: dropped,
+					maxChars: MAX_REASONING_OPAQUE_CHARS,
+					finishReason: chunk.finish_reason ?? null,
+				});
+				// Keep a visible thinking marker so the loop's degenerate guard still
+				// sees that this turn's output went to reasoning.
+				yield {
+					type: "thinking",
+					content: `[reasoning dropped: ${dropped} chars exceeded the ${MAX_REASONING_OPAQUE_CHARS}-char cap]`,
+				};
+			} else if (collected.reasoningOpaque.length > 0) {
 				injected = true;
 				yield {
 					type: "thinking",
@@ -657,6 +700,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 					// request whose reasoning must not inherit the prior attempt's blob.
 					collectedReasoningOpaque.reasoningOpaque = "";
 					collectedReasoningOpaque.scan = null;
+					collectedReasoningOpaque.droppedChars = 0;
 					return this.streamForRoute(
 						route,
 						modelId,
@@ -698,6 +742,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 						mapped,
 						collectedReasoningOpaque,
 						`${this.reasoningOrigin ?? PROVIDER_NAME}:${CHAT_OPAQUE_ORIGIN_SUFFIX}`,
+						this.logger,
 					)
 				: mapped;
 		};

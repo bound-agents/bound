@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type GroupableMessage,
+	UNREADABLE_CONTENT_PLACEHOLDER,
 	contentPreviewText,
 	groupMessages,
+	isUnreadableBlockArray,
 	messageHasUserFacingText,
 	toolUseIdsInContent,
 	toolUseIdsInItem,
@@ -258,5 +260,20 @@ describe("contentPreviewText", () => {
 			{ type: "text", text: "real" },
 		]);
 		expect(contentPreviewText(content)).toBe("[document] real");
+	});
+});
+
+describe("#340 unreadable block-array content", () => {
+	const truncated = `[{"type":"thinking","thinking":"","reasoning_encrypted_content":"${"f9/3/+f57/".repeat(200)}`;
+
+	it("previews a truncated block array as a placeholder", () => {
+		expect(isUnreadableBlockArray(truncated)).toBe(true);
+		expect(contentPreviewText(truncated)).toBe(UNREADABLE_CONTENT_PLACEHOLDER);
+	});
+
+	it("leaves bracketed plain text and valid arrays alone", () => {
+		expect(isUnreadableBlockArray("[1] first point")).toBe(false);
+		expect(isUnreadableBlockArray('[{"type":"text","text":"hi"}]')).toBe(false);
+		expect(contentPreviewText("[1] first point")).toBe("[1] first point");
 	});
 });

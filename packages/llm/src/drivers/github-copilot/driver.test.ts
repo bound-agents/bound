@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import type { StreamChunk } from "../../types";
 import type { CopilotAccountInfo } from "./auth-core";
-import { GitHubCopilotDriver, messagesHaveImages, resolveReasoningEffort } from "./driver";
+import {
+	GitHubCopilotDriver,
+	MAX_REASONING_OPAQUE_CHARS,
+	appendReasoningOpaque,
+	injectReasoningOpaque,
+	messagesHaveImages,
+	resolveReasoningEffort,
+} from "./driver";
 import type { CopilotTokenManager } from "./token-store";
 
 const account: CopilotAccountInfo = {
@@ -1541,5 +1549,65 @@ describe("GitHubCopilotDriver discoverModels (requirement 6)", () => {
 		});
 		const models = await driver.discoverModels();
 		expect(models).toEqual([]);
+	});
+});
+
+describe("#340 chat-route reasoning_opaque cap", () => {
+	const done: StreamChunk = {
+		type: "done",
+		usage: {
+			input_tokens: 1,
+			output_tokens: 64000,
+			cache_write_tokens: null,
+			cache_read_tokens: null,
+			estimated: false,
+		},
+		finish_reason: "length",
+	};
+	async function* source(): AsyncIterable<StreamChunk> {
+		yield done;
+	}
+	async function collect(it: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+		const out: StreamChunk[] = [];
+		for await (const c of it) out.push(c);
+		return out;
+	}
+
+	it("accumulates deltas within the cap", () => {
+		const collected = { reasoningOpaque: "", scan: null };
+		appendReasoningOpaque(collected, "abc");
+		appendReasoningOpaque(collected, "def");
+		expect(collected.reasoningOpaque).toBe("abcdef");
+	});
+
+	it("drops the whole blob past the cap, logs the drop, and keeps a thinking marker", async () => {
+		const collected = { reasoningOpaque: "", scan: null } as {
+			reasoningOpaque: string;
+			scan: Promise<void> | null;
+			droppedChars?: number;
+		};
+		const delta = "f9/3/+f57/".repeat(1024);
+		while ((collected.droppedChars ?? 0) === 0) appendReasoningOpaque(collected, delta);
+		appendReasoningOpaque(collected, delta);
+		expect(collected.reasoningOpaque).toBe("");
+		expect(collected.droppedChars).toBeGreaterThan(MAX_REASONING_OPAQUE_CHARS);
+
+		const warnings: Array<{ msg: string; ctx: unknown }> = [];
+		const logger = { warn: (msg: string, ctx?: unknown) => warnings.push({ msg, ctx }) };
+		const chunks = await collect(injectReasoningOpaque(source(), collected, "origin", logger));
+		expect(chunks).toHaveLength(2);
+		const thinking = chunks[0];
+		expect(thinking.type).toBe("thinking");
+		if (thinking.type === "thinking") {
+			expect(thinking.reasoning_encrypted_content).toBeUndefined();
+			expect(thinking.content).toContain("reasoning dropped");
+		}
+		expect(chunks[1]).toEqual(done);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].msg).toContain("Dropped oversized chat-route reasoning_opaque");
+		expect(warnings[0].ctx).toMatchObject({
+			chars: collected.droppedChars,
+			finishReason: "length",
+		});
 	});
 });

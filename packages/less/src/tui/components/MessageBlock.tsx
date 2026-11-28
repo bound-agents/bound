@@ -9,7 +9,7 @@ import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tokens } from "../theme";
 import { parseAuthChallengeNotice } from "../util/auth-challenge";
 import { getImageGraphics, getImagePreview, parseImageDescription } from "../util/image-preview";
-import { parseMessageContent } from "../util/message-text";
+import { parseConversationContent, parseMessageContent } from "../util/message-text";
 import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
@@ -602,7 +602,10 @@ export function MessageBlock({
 		return <Box flexDirection="column">{parts}</Box>;
 	};
 
-	const parsedContent = parseMessageContent<ContentBlock>(message.content);
+	const parsedContent =
+		message.role === "assistant" || message.role === "user"
+			? parseConversationContent<ContentBlock>(message.content)
+			: parseMessageContent<ContentBlock>(message.content);
 
 	// Render based on role
 	if (message.role === "user") {

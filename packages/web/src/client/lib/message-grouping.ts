@@ -70,6 +70,22 @@ export function messageHasUserFacingText(content: string | null | undefined): bo
 	return false;
 }
 
+/** Shown in place of stored content that opens like a block array but does not parse (#340). */
+export const UNREADABLE_CONTENT_PLACEHOLDER = "[unreadable message content]";
+
+const BLOCK_ARRAY_PREFIX = /^\s*\[\s*\{\s*"type"\s*:/;
+
+/** True when `content` opens like a serialized `ContentBlock[]` but fails to parse. */
+export function isUnreadableBlockArray(content: string): boolean {
+	if (!BLOCK_ARRAY_PREFIX.test(content)) return false;
+	try {
+		JSON.parse(content);
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 /**
  * Plain-text projection of a persisted message's content for one-line
  * previews. User messages with attachments (and any future block-bearing
@@ -85,7 +101,7 @@ export function contentPreviewText(content: string | null | undefined): string {
 	try {
 		blocks = JSON.parse(content);
 	} catch {
-		return content;
+		return isUnreadableBlockArray(content) ? UNREADABLE_CONTENT_PLACEHOLDER : content;
 	}
 	if (!Array.isArray(blocks) || blocks.length === 0) return content;
 	const parts: string[] = [];
