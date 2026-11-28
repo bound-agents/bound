@@ -776,7 +776,28 @@ function resolveRoleAliasModelId(hint: string, modelRouter: ModelRouter, db: Dat
 }
 
 /**
- * Resolve a hard route pin (§5.4) to a single route. Considers ONLY the pinned
+ * A remote resolution pinned to one already-selected host, or null when the
+ * host advertises no `max_context` (no usable resolution can be built).
+ */
+function buildSingleRemoteResolution(
+	host: EligibleHost,
+	modelId: string,
+): Extract<ModelResolution, { kind: "remote" }> | null {
+	const max_context = host.capabilities?.max_context;
+	if (max_context === undefined) return null;
+	return {
+		kind: "remote",
+		hosts: [host],
+		modelId,
+		thinkingTool: host.thinkingMode === "tool",
+		thinkingConfig: host.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+		maxOutputTokens: host.maxOutputTokens,
+		max_context,
+	};
+}
+
+/**
+ * Resolve a hard `<name>@<RouteId>` route pin (§5.4) to a single route. Considers ONLY the pinned
  * `RouteId`: a local backend whose recorded RouteId matches, else the remote
  * host advertising it. Failover and substitution are disabled — if the pinned
  * route is not currently available the result is a typed error the caller
@@ -803,21 +824,15 @@ function resolvePinnedRoute(
 	}
 
 	// Remote match: a non-stale host advertising exactly this RouteId for the model.
-	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId);
+	// Matches through the logical model like every other remote lookup, so a pin
+	// naming a logical model finds the expanded backend id its host advertises.
+	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId, undefined, {
+		normalizeKey: normalizeModelKey,
+	});
 	if (remote.ok) {
 		const host = remote.hosts.find((h) => h.routeId === routeId);
-		const max_context = host?.capabilities?.max_context;
-		if (host && max_context !== undefined) {
-			return {
-				kind: "remote",
-				hosts: [host],
-				modelId: effectiveModelId,
-				thinkingTool: host.thinkingMode === "tool",
-				thinkingConfig: host.thinkingMode === "tool" ? { type: "disabled" } : undefined,
-				maxOutputTokens: host.maxOutputTokens,
-				max_context,
-			};
-		}
+		const resolution = host ? buildSingleRemoteResolution(host, effectiveModelId) : null;
+		if (resolution) return resolution;
 	}
 
 	// Pinned route is not currently available. A pin disables failover, so this is
@@ -909,8 +924,13 @@ function resolveStickyForThread(
 	// Build the eligible-route pool for the requested model and a RouteId -> TTL
 	// lookup, spanning local backends and non-stale remote hosts (drain-filtered).
 	// `drained` and `routeOrder` are the caller's single load (§5.2/§6.2).
+	// Every pool entry carries the exact candidate it was admitted from, so the
+	// sticky decision resolves the SAME candidate the eligibility check saw —
+	// there is no second, differently-scoped lookup that can disagree with it.
 	const eligible = new Set<string>();
 	const ttlMsByRoute = new Map<string, number | null>();
+	let localStickyRouteId: string | null = null;
+	const remoteHostByRoute = new Map<string, EligibleHost>();
 
 	// Local: the requested backend id, when registered, ready, HEALTHY (not in
 	// backoff OR half_open), not drained, and meeting the turn's capability
@@ -926,6 +946,7 @@ function resolveStickyForThread(
 			!requirements || (caps ? getUnmetCapabilities(caps, requirements).length === 0 : false);
 		if (localRouteId && !drained.has(localRouteId) && meets) {
 			eligible.add(localRouteId);
+			localStickyRouteId = localRouteId;
 			ttlMsByRoute.set(localRouteId, cacheTtlToMs(modelRouter.getCacheTtl(poolModelId)));
 		}
 	}
@@ -938,8 +959,11 @@ function resolveStickyForThread(
 	});
 	if (remote.ok) {
 		for (const host of remote.hosts) {
-			if (host.routeId) {
+			// A host advertising no max_context cannot be resolved to, so it is
+			// not a sticky candidate either.
+			if (host.routeId && host.capabilities?.max_context !== undefined) {
 				eligible.add(host.routeId);
+				if (!remoteHostByRoute.has(host.routeId)) remoteHostByRoute.set(host.routeId, host);
 				// Remote hosts advertise cache_ttl via the HostModelEntry; the finder
 				// does not surface it here, so fall back to the 5m floor (null).
 				if (!ttlMsByRoute.has(host.routeId)) ttlMsByRoute.set(host.routeId, null);
@@ -969,9 +993,34 @@ function resolveStickyForThread(
 	});
 	if (decision.kind !== "sticky") return null;
 
-	// The sticky route is eligible — resolve it directly (pin-style, but WITHOUT
-	// disabling failover: a later route failure re-resolves normally).
-	const resolved = resolvePinnedRoute(decision.routeId, poolModelId, modelRouter, db, localSiteId);
-	if (!inheritsSubstitution || resolved.kind === "error") return resolved;
+	// The sticky route is eligible — resolve it from the candidate the pool
+	// admitted. Stickiness never disables failover: if the route cannot be turned
+	// into a resolution, return null so ranked resolution runs for the REQUESTED
+	// model. A sticky route is never an error and never a wait.
+	const resolved = resolveStickyCandidate(
+		decision.routeId,
+		poolModelId,
+		modelRouter,
+		localStickyRouteId,
+		remoteHostByRoute,
+	);
+	if (!resolved) return null;
+	if (!inheritsSubstitution) return resolved;
 	return { ...resolved, substitutedFrom: stickyRequestedModel };
+}
+
+/** Build the resolution for a sticky route from the pool's admitted candidate, or null. */
+function resolveStickyCandidate(
+	routeId: string,
+	poolModelId: string,
+	modelRouter: ModelRouter,
+	localStickyRouteId: string | null,
+	remoteHostByRoute: ReadonlyMap<string, EligibleHost>,
+): Extract<ModelResolution, { kind: "local" | "remote" }> | null {
+	if (routeId === localStickyRouteId) {
+		const backend = modelRouter.tryGetBackend(poolModelId);
+		return backend ? buildLocalResolution(modelRouter, backend, poolModelId, false) : null;
+	}
+	const host = remoteHostByRoute.get(routeId);
+	return host ? buildSingleRemoteResolution(host, poolModelId) : null;
 }

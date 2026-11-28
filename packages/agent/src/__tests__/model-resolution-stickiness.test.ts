@@ -733,3 +733,118 @@ describe("resolveModel — post-fallback stickiness (§7.3 step 4, R-RT20)", () 
 		}
 	});
 });
+
+describe("resolveModel — sticky substitute route never hard-pins (§5.3/§7.3, R-RT20)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	const SUB_ROUTE = "site-msi:zai:zai-glm-5.4";
+
+	function recordGlmSubstitution(): void {
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-1",
+				model_id: "glm-5-4",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+				route_id: SUB_ROUTE,
+				substituted_from: "opus",
+			},
+			SITE,
+		);
+	}
+
+	it("sticks to a remote substitute route advertised under its logical model", () => {
+		const router = routerWithOpus();
+		// Live shape: the turn records the LOGICAL model; the host advertises the
+		// expanded backend id under that logical_model.
+		addRemoteHost(db, "site-msi", [
+			{
+				id: "zai-glm-5.4",
+				logical_model: "glm-5-4",
+				route_id: SUB_ROUTE,
+				capabilities: { max_context: 1000000 },
+			},
+		]);
+		recordGlmSubstitution();
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") {
+			expect(res.hosts[0].routeId).toBe(SUB_ROUTE);
+			expect(res.substitutedFrom).toBe("opus");
+		}
+	});
+
+	it("falls back to the requested model locally, with no error, when the sticky substitute route cannot be resolved", () => {
+		const router = routerWithOpus();
+		// Eligible for the sticky pool (fresh host, matching route) but carries no
+		// max_context, so it cannot be turned into a resolution.
+		addRemoteHost(db, "site-msi", [{ id: "glm-5-4", route_id: SUB_ROUTE, capabilities: {} }]);
+		recordGlmSubstitution();
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") {
+			expect(res.modelId).toBe("opus");
+			expect(res.substitutedFrom).toBeUndefined();
+		}
+	});
+
+	it("a real hard pin on a momentarily unavailable route still errors without failing over", () => {
+		const router = routerWithOpus();
+		const stale = "2020-01-01T00:00:00.000Z";
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, sync_url, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, ?, 0, ?, ?)`,
+			[
+				"site-msi",
+				"site-msi",
+				"https://site-msi.example",
+				JSON.stringify([
+					{ id: "opus", route_id: "site-msi:bedrock:opus", capabilities: { max_context: 200000 } },
+				]),
+				stale,
+				stale,
+			],
+		);
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			pin: { routeId: "site-msi:bedrock:opus" },
+		});
+		expect(res.kind).toBe("error");
+		if (res.kind === "error") {
+			expect(res.reason).toBe("transient-unavailable");
+			expect(res.error).toContain(
+				'Pinned route "site-msi:bedrock:opus" is momentarily unavailable',
+			);
+		}
+	});
+
+	it("a hard pin resolves a remote route advertised under the pinned logical model", () => {
+		const router = routerWithOpus();
+		addRemoteHost(db, "site-msi", [
+			{
+				id: "zai-glm-5.4",
+				logical_model: "glm-5-4",
+				route_id: SUB_ROUTE,
+				capabilities: { max_context: 1000000 },
+			},
+		]);
+		const res = resolveModel("glm-5-4", router, db, SITE, undefined, {
+			pin: { routeId: SUB_ROUTE },
+		});
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") expect(res.hosts[0].routeId).toBe(SUB_ROUTE);
+	});
+});
