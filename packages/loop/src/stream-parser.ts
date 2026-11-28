@@ -76,6 +76,13 @@ export interface ParsedAttempt {
 		cacheRead: number;
 		cacheWrite: number;
 	} | null;
+	/**
+	 * The model an inline driver fallback (credited-retry redemption) served
+	 * this attempt on, when it differs from the requested model; null otherwise.
+	 */
+	servedModel: string | null;
+	/** True when an endpoint-bound fallback credit token was redeemed on this attempt. */
+	creditRedeemed: boolean;
 }
 
 export interface ParsedResponse {
@@ -289,6 +296,8 @@ export function parseResponseChunks(
 					},
 					costUsdFromHub: chunk.cost_usd ?? null,
 					costBreakdownFromHub: chunk.cost_breakdown ?? null,
+					servedModel: chunk.served_model ?? null,
+					creditRedeemed: Boolean(chunk.credit_redeemed),
 				});
 				break;
 			case "error":

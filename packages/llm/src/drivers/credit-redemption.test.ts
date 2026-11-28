@@ -263,4 +263,72 @@ describe("redeemFallbackCredit (driver-level inline credited retry, §7.3 step 2
 		// Same continuation step ran twice (transient retry), never stepping down.
 		expect(kinds).toEqual(["continuation-body", "continuation-body"]);
 	});
+
+	describe("served-attempt provenance", () => {
+		function configFor(
+			stepOutcome: (step: { kind: string; includeToken: boolean }) => StreamChunk,
+		): CreditRedemptionDriverConfig {
+			return {
+				driver: BEDROCK,
+				executingEndpoint: "ep-A",
+				resolveTarget: () => ({ targetModel: "claude-fallback", targetEndpoint: "ep-A" }),
+				serverToolsRan: () => false,
+				runStep: (step) =>
+					(async function* () {
+						yield stepOutcome(step);
+					})(),
+			};
+		}
+		async function* creditedPrimary(): AsyncIterable<StreamChunk> {
+			yield refusalChunk({
+				credit: { token: "tok-1", endpoint: "ep-A", has_prefill_claim: true },
+			});
+		}
+
+		it("stamps served_model and credit_redeemed: true on a credited served step", async () => {
+			const chunks = await collect(
+				redeemFallbackCredit(
+					creditedPrimary(),
+					configFor(() => okChunk()),
+				),
+			);
+			const done = chunks.filter((c) => c.type === "done");
+			expect(done).toHaveLength(2);
+			// The refused primary attempt is untouched.
+			expect(done[0]).not.toHaveProperty("served_model");
+			expect(lastDone(chunks)).toMatchObject({
+				finish_reason: "stop",
+				served_model: "claude-fallback",
+				credit_redeemed: true,
+			});
+		});
+
+		it("stamps credit_redeemed: false on a drop-token step that serves uncredited", async () => {
+			const chunks = await collect(
+				redeemFallbackCredit(
+					creditedPrimary(),
+					configFor((step) =>
+						step.kind === "drop-token" ? okChunk() : refusalChunk({ category: "cyber" }),
+					),
+				),
+			);
+			expect(lastDone(chunks)).toMatchObject({
+				finish_reason: "stop",
+				served_model: "claude-fallback",
+				credit_redeemed: false,
+			});
+		});
+
+		it("stamps credit_redeemed: false on the terminal refusal when the step-down exhausts", async () => {
+			const chunks = await collect(
+				redeemFallbackCredit(
+					creditedPrimary(),
+					configFor(() => refusalChunk({ category: "cyber" })),
+				),
+			);
+			const done = lastDone(chunks);
+			expect(done.declined?.kind).toBe("model-declined");
+			expect(done).toMatchObject({ served_model: "claude-fallback", credit_redeemed: false });
+		});
+	});
 });

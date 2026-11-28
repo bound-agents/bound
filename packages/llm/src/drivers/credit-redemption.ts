@@ -177,18 +177,33 @@ async function* walkStepDown(
 		});
 
 		// Step completed. If it did not refuse, it served the turn: emit its
-		// chunks and stop the walk.
+		// chunks (stamped with the serving model and whether the credit was
+		// redeemed) and stop the walk.
 		if (!refusalOf(stepChunks)) {
-			yield* stepChunks;
+			yield* stampProvenance(stepChunks, target.targetModel, step.includeToken);
 			return;
 		}
 		// Still a refusal: step down to the next planned step. Hold this step's
-		// chunks as the terminal output in case the step-down exhausts.
+		// chunks as the terminal output in case the step-down exhausts. A refused
+		// attempt redeemed nothing, whether or not it carried the token.
 		if (step === plan.steps[plan.steps.length - 1]) {
-			yield* stepChunks;
+			yield* stampProvenance(stepChunks, target.targetModel, false);
 			return;
 		}
 	}
+}
+
+/** Stamp served-model provenance onto a step's `done` chunk(s). */
+function stampProvenance(
+	chunks: StreamChunk[],
+	servedModel: string,
+	creditRedeemed: boolean,
+): StreamChunk[] {
+	return chunks.map((chunk) =>
+		chunk.type === "done"
+			? { ...chunk, served_model: servedModel, credit_redeemed: creditRedeemed }
+			: chunk,
+	);
 }
 
 /**

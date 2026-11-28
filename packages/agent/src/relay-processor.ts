@@ -2232,9 +2232,15 @@ export class RelayProcessor {
 					// The hub serves this turn; price it from its own catalog-resolved
 					// pricing when the operator set no explicit override. The requesting
 					// spoke is often hub-only and holds no pricing config of its own.
-					const catalogPricing = this.modelRouter?.getResolvedPricing(resolvedModelId);
+					// An inline credited retry served this attempt on another model: price
+					// it against that model's local backend when this host has one.
+					const servedBackendId = chunk.served_model
+						? this.modelRouter?.resolveLocalBackendIdForHint(chunk.served_model)
+						: null;
+					const pricedModelId = servedBackendId ?? resolvedModelId;
+					const catalogPricing = this.modelRouter?.getResolvedPricing(pricedModelId);
 					const resolved = resolveTurnCost({
-						modelId: resolvedModelId,
+						modelId: pricedModelId,
 						usage: {
 							inputTokens: chunk.usage.input_tokens,
 							outputTokens: chunk.usage.output_tokens,

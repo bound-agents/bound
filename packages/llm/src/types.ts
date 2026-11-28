@@ -455,6 +455,19 @@ export type StreamChunk =
 			 */
 			pricing_source?: string;
 			/**
+			 * The model that served this attempt when an inline driver fallback (e.g.
+			 * credited-retry redemption) ran it on a different model than the request
+			 * named. Absent when the attempt ran on the requested model. Optional on
+			 * the wire: older peers in both directions stay valid.
+			 */
+			served_model?: string;
+			/**
+			 * `true` when an endpoint-bound fallback credit token was redeemed on this
+			 * attempt. Absent (or `false`) for an uncredited attempt. Optional on the
+			 * wire: older peers in both directions stay valid.
+			 */
+			credit_redeemed?: boolean;
+			/**
 			 * Terminal finish reason mapped from the provider stopReason by the
 			 * AI SDK. `"content-filter"` means the model's safety system stopped
 			 * generation (Bedrock `content_filtered`, Anthropic refusal): the

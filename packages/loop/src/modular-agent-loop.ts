@@ -414,11 +414,15 @@ export abstract class ModularAgentLoop {
 						// in-memory message array. beforeFrameRebuild lets a subclass
 						// reset per-turn assembly caches first so the rebuild takes a
 						// clean path instead of reusing warm-cache state captured for
-						// the pre-retry message set.
+						// the pre-retry message set. The rebuild budgets against the
+						// frame's CURRENT resolution: a turn that switched models (a
+						// refusal substitute, a route failover) keeps the new model's
+						// context window and caps instead of snapping back to run start.
 						await this.beforeFrameRebuild();
+						const rebuildResolution = frame.resolution;
 						frame = {
-							resolution: frameResolution,
-							...(await this.prepareFrame({ resolution: frameResolution })),
+							resolution: rebuildResolution,
+							...(await this.prepareFrame({ resolution: rebuildResolution })),
 						};
 						currentDebug = frame.assembled.debug;
 					}

@@ -415,6 +415,10 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		// keep the frame on the same resolution even across a frame rebuild.
 		if (this.lastModelResolution && this.lastModelResolution.kind !== "error") {
 			frame.resolution = this.lastModelResolution;
+			frame.resolvedModelForDebug = getResolvedModelId(
+				this.lastModelResolution,
+				this.config.modelId,
+			);
 		}
 		this.config.onActivity?.();
 		await this.prepareTurn(turn, frame);
@@ -1115,15 +1119,24 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	private buildAttemptRecords(
 		attempts: ParsedResponse["attempts"],
 		resolution: ModelResolution | null,
+		inlineServedRouteId?: string | null,
 	): AttemptRecord[] {
 		const backends = this.ctx.config?.modelBackends?.backends ?? [];
 		const resolvedModelId = getResolvedModelId(resolution, this.config.modelId || "unknown");
 		const logical = this.logicalModelOf(resolution) ?? resolvedModelId;
 		const routeId = getResolvedRouteId(resolution, (id) => this.modelRouter.getRouteId(id));
-		const catalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
+		const requestedPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
 		return attempts.map((a) => {
+			// An inline credited retry served this attempt on another model: label
+			// and price it as that model, not the one the request named.
+			const served = a.servedModel ? this.servedModelIdentity(a.servedModel) : null;
+			const isDifferentServed = served !== null && served.logical !== logical;
+			const pricedModelId = served?.pricingId ?? resolvedModelId;
+			const catalogPricing = served
+				? this.modelRouter.getResolvedPricing(served.pricingId)
+				: requestedPricing;
 			const attemptCost = resolveTurnCost({
-				modelId: resolvedModelId,
+				modelId: pricedModelId,
 				usage: {
 					inputTokens: a.usage.inputTokens,
 					outputTokens: a.usage.outputTokens,
@@ -1144,11 +1157,11 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				catalogPricingSource: catalogPricing?.source,
 			});
 			return {
-				model_id: logical,
-				route_id: routeId,
+				model_id: served?.logical ?? logical,
+				route_id: isDifferentServed ? (inlineServedRouteId ?? null) : routeId,
 				outcome: a.declined || a.finishReason === "content-filter" ? "refusal" : "ok",
 				refusal_category: a.declined?.category ?? null,
-				credit_redeemed: false,
+				credit_redeemed: a.creditRedeemed,
 				tokens: {
 					input: a.usage.inputTokens,
 					output: a.usage.outputTokens,
@@ -1160,6 +1173,20 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				cost_usd: attemptCost.cost,
 			};
 		});
+	}
+
+	/**
+	 * The logical model and pricing id for a model an inline driver fallback
+	 * served: the local backend serving it when this host has one, else the
+	 * served model id as reported.
+	 */
+	private servedModelIdentity(servedModel: string): { logical: string; pricingId: string } {
+		const backendId = this.modelRouter.tryGetBackend(servedModel)
+			? servedModel
+			: this.modelRouter.resolveLocalBackendIdForHint(servedModel);
+		return backendId
+			? { logical: this.modelRouter.getLogicalModel(backendId), pricingId: backendId }
+			: { logical: servedModel, pricingId: servedModel };
 	}
 
 	/** Emit `llm:refusal` for one refused attempt, tagged with the model/route that ran it. */
@@ -1445,6 +1472,8 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 						usage: partial.usage,
 						costUsdFromHub: null,
 						costBreakdownFromHub: null,
+						servedModel: null,
+						creditRedeemed: false,
 					},
 				],
 				refusedResolution,
@@ -1452,7 +1481,8 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			this.emitRefusalEvent(error.outcome, record);
 			const switched = frame ? this.selectRefusalSubstitute(error.outcome, frame) : false;
 			this.refusalWalk?.attempts.push(record);
-			if (switched) return { action: "retry" };
+			// The substitute has its own context window and caps: rebuild the frame.
+			if (switched) return { action: "retry", rebuildFrame: true };
 			this.setPhase("ERROR_PERSIST");
 			const message = this.describeRefusal(error.outcome, error.message);
 			this.emitAlert(`Error: ${message}`);
@@ -1631,10 +1661,24 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		// that finally serves (or exhausts) it — one `turns` row per turn (R-RT21).
 		if (this.pendingRefusalRetry) return null;
 		try {
-			const resolvedModelId = getResolvedModelId(
+			const requestedModelId = getResolvedModelId(
 				this.lastModelResolution,
 				this.config.modelId || metrics.modelId || "unknown",
 			);
+			// A driver-level inline credited retry can serve the turn on another
+			// model than the one dispatched. The turn then records, prices, and
+			// stamps provenance for the model that actually served it (R-RT20).
+			const dispatchedLogical = this.logicalModelOf(this.lastModelResolution) ?? requestedModelId;
+			const lastParsedAttempt = metrics.response.attempts[metrics.response.attempts.length - 1];
+			const inlineServed =
+				lastParsedAttempt?.servedModel &&
+				!lastParsedAttempt.declined &&
+				lastParsedAttempt.finishReason !== "content-filter"
+					? this.servedModelIdentity(lastParsedAttempt.servedModel)
+					: null;
+			const inlineSubstitute =
+				inlineServed && inlineServed.logical !== dispatchedLogical ? inlineServed : null;
+			const resolvedModelId = inlineSubstitute?.pricingId ?? requestedModelId;
 			const backends = this.ctx.config?.modelBackends?.backends ?? [];
 			// Cost precedence (CONTRIBUTING.md invariant #17). A done-chunk cost can
 			// come from two places: a relay hub (remote resolution) that already
@@ -1705,14 +1749,36 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// summing tokens across models) and emit the dedicated observability
 			// events. A single clean attempt keeps the bare four-component breakdown,
 			// byte-identical to a pre-slice-5 turn.
-			const routeId = getResolvedRouteId(this.lastModelResolution, (id) =>
+			const dispatchedResolution = this.lastModelResolution;
+			const dispatchedRouteId = getResolvedRouteId(dispatchedResolution, (id) =>
 				this.modelRouter.getRouteId(id),
 			);
+			// When an inline credited retry served the turn on another model, resolve
+			// that substitute so `turns.route_id` names the substitute's route (never
+			// the original's) and later turns stay on the substitute (R-RT20).
+			const inlineResolution = inlineSubstitute
+				? resolveModel(
+						inlineSubstitute.logical,
+						this.modelRouter,
+						this.ctx.db,
+						this.ctx.siteId,
+						this.requirements,
+					)
+				: null;
+			const resolvedInlineRouteId =
+				inlineResolution && inlineResolution.kind !== "error"
+					? getResolvedRouteId(inlineResolution, (id) => this.modelRouter.getRouteId(id))
+					: null;
+			const routeId = inlineSubstitute ? resolvedInlineRouteId : dispatchedRouteId;
 			const parsedAttempts = metrics.response.attempts;
 			const walk = this.refusalWalk;
 			this.refusalWalk = null;
 			this.closedRefusalWalk = walk;
-			const currentRecords = this.buildAttemptRecords(parsedAttempts, this.lastModelResolution);
+			const currentRecords = this.buildAttemptRecords(
+				parsedAttempts,
+				dispatchedResolution,
+				resolvedInlineRouteId,
+			);
 			const allRecords = [...(walk?.attempts ?? []), ...currentRecords];
 			let finalCostBreakdown:
 				typeof cost_breakdown | ReturnType<typeof buildTurnCostBreakdownWithAttempts> =
@@ -1724,17 +1790,31 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				});
 			}
 			// R-RT20: a different logical model served what the thread asked for.
-			const servedLogical = this.logicalModelOf(this.lastModelResolution) ?? resolvedModelId;
+			const servedLogical = inlineSubstitute?.logical ?? dispatchedLogical;
 			const lastRecord = allRecords[allRecords.length - 1];
 			const served =
 				metrics.status === "success" && lastRecord !== undefined && lastRecord.outcome === "ok";
 			// The requested model is the walk's origin on the substituting turn, else
 			// the run-level substitution (later turns, sticky runs).
-			const requestedLogical = walk?.originalLogical ?? this.activeSubstitutedFrom;
+			// An inline credited retry on a non-substituted run substitutes for the
+			// model this turn dispatched.
+			const requestedLogical =
+				walk?.originalLogical ??
+				this.activeSubstitutedFrom ??
+				(inlineSubstitute ? dispatchedLogical : null);
 			const substitutedFrom: string | null =
 				requestedLogical !== null && served && servedLogical !== requestedLogical
 					? requestedLogical
 					: null;
+			// Post-fallback stickiness (R-RT20): switch the run's active resolution
+			// onto the substitute so later turns in this run stay on it (never paying
+			// repeated refusals on the original), and keep stamping `substituted_from`.
+			if (inlineSubstitute && substitutedFrom !== null) {
+				this.activeSubstitutedFrom = substitutedFrom;
+				if (inlineResolution && inlineResolution.kind !== "error") {
+					this.lastModelResolution = inlineResolution;
+				}
+			}
 
 			// Observability events for every refusal + each fallback walk (R-RT21),
 			// independent of HTTP error metrics.
@@ -1777,8 +1857,8 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// recorded success, so no route could leave backoff/half_open. Remote turns
 			// ran on the executing host and recorded success in ITS own loop; this host
 			// only tracks health for its local routes.
-			if (metrics.status === "success" && this.lastModelResolution?.kind === "local") {
-				this.modelRouter.recordRouteSuccess(this.lastModelResolution.modelId);
+			if (metrics.status === "success" && dispatchedResolution?.kind === "local") {
+				this.modelRouter.recordRouteSuccess(dispatchedResolution.modelId);
 			}
 			if (metrics.status === "success") {
 				this.resetRouteFailureChain();
@@ -1800,7 +1880,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	): LoopTurnDecision {
 		if (this.pendingRefusalRetry) {
 			this.pendingRefusalRetry = false;
-			return { action: "retry" };
+			// Re-derive the frame against the substitute's resolution so its
+			// context window, truncation target, and caps budget the retry.
+			return { action: "retry", rebuildFrame: true };
 		}
 		if (
 			turnId !== null &&
@@ -2654,18 +2736,25 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			this.emitRefusalEvent(declined, currentRecords[i]);
 		});
 		if (!walk && currentRefusals === 0) return;
-		const refusedModel = walk?.originalLogical ?? servedLogical;
-		// A served attempt after the refusal(s) carried the turn. Without a loop
-		// walk that was the driver's inline credited retry on the same request.
-		const substitute = served ? servedLogical : null;
+		// Without a loop walk, the refused model is the one this stream's first
+		// refused attempt ran on (an inline credited retry may have served on
+		// another model).
+		const firstRefused = currentRecords.find((r) => r.outcome === "refusal");
+		const refusedModel = walk?.originalLogical ?? firstRefused?.model_id ?? servedLogical;
+		// A served attempt after the refusal(s) carried the turn: a loop-host
+		// substitute, or the driver's inline credited retry, whose attempt record
+		// names the model that actually served it.
+		const lastRecord = currentRecords[currentRecords.length - 1];
+		const servedRecord = served && lastRecord?.outcome === "ok" ? lastRecord : undefined;
+		const substitute = served ? (servedRecord?.model_id ?? servedLogical) : null;
 		this.ctx.eventBus.emit("llm:fallback", {
 			thread_id: this.config.threadId,
 			...(this.config.taskId ? { task_id: this.config.taskId } : {}),
 			refused_model: refusedModel,
 			substitute_model: substitute,
-			// Credit redemption is a driver-internal step the loop cannot observe from
-			// the stream alone; a loop-host walk never redeems an endpoint credit.
-			credit_redeemed: false,
+			// The driver stamps credit redemption on the served attempt's done chunk;
+			// a loop-host walk never redeems an endpoint credit.
+			credit_redeemed: Boolean(servedRecord?.credit_redeemed),
 			policy_mode:
 				walk?.policyMode ?? resolveRequestFallback(this.ctx.db, refusedModel).fallback_policy.mode,
 		});

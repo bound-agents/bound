@@ -93,6 +93,79 @@ class TextBackend implements LLMBackend {
 	}
 }
 
+/** Scripted refuse / empty (degenerate) / text responses with its own context window. */
+class WindowedBackend implements LLMBackend {
+	calls = 0;
+	constructor(
+		private readonly steps: Array<"refuse" | "empty" | "text">,
+		private readonly maxContext: number,
+		private readonly label: string,
+	) {}
+	async *chat(): AsyncGenerator<StreamChunk> {
+		const step = this.steps[Math.min(this.calls, this.steps.length - 1)];
+		this.calls++;
+		if (step === "refuse") {
+			yield {
+				type: "done" as const,
+				usage: USAGE(100, 3),
+				finish_reason: "content-filter" as const,
+				declined: declined(),
+			};
+			return;
+		}
+		if (step === "empty") {
+			// Thinking with no text or tool call: a degenerate turn.
+			yield { type: "thinking" as const, content: "pondering" };
+			yield { type: "done" as const, usage: USAGE(20, 0) };
+			return;
+		}
+		yield { type: "text" as const, content: `served by ${this.label}` };
+		yield { type: "done" as const, usage: USAGE(40, 7) };
+	}
+	capabilities() {
+		return { ...CAPS, max_context: this.maxContext };
+	}
+}
+
+/**
+ * A driver-level inline credited retry on one stream: the refused primary
+ * attempt, then the step the driver served on `servedModel` with the credit.
+ */
+class InlineCreditedBackend implements LLMBackend {
+	calls = 0;
+	constructor(
+		private readonly servedModel: string,
+		private readonly emitToolCall = false,
+	) {}
+	async *chat(): AsyncGenerator<StreamChunk> {
+		this.calls++;
+		yield {
+			type: "done" as const,
+			usage: USAGE(100, 3),
+			finish_reason: "content-filter" as const,
+			declined: declined({ credit: { token: "tok-1", endpoint: "ep-A" } }),
+		};
+		if (this.emitToolCall) {
+			const id = `call-inline-${this.calls}`;
+			yield { type: "tool_use_start" as const, id, name: "bash" };
+			yield { type: "tool_use_args" as const, id, partial_json: '{"command":"echo hi"}' };
+			yield { type: "tool_use_end" as const, id };
+		} else {
+			yield { type: "text" as const, content: "served inline" };
+		}
+		yield {
+			type: "done" as const,
+			usage: USAGE(40, 7),
+			finish_reason: "stop" as const,
+			served_model: this.servedModel,
+			credit_redeemed: true,
+		};
+	}
+	capabilities() {
+		return CAPS;
+	}
+}
+
 type Step = "refuse" | "tool" | "text";
 
 /** Plays a scripted sequence of responses, repeating the last step once exhausted. */
@@ -593,5 +666,131 @@ describe("MainAgentLoop refusal-fallback walk (§7.3)", () => {
 		expect(messages().find((m) => m.role === "assistant")?.content).toBe(
 			"served by m2 second route",
 		);
+	});
+
+	it("re-derives the frame for a smaller-window substitute and keeps it across a later rebuild", async () => {
+		seedDefaults(["m2"]);
+		const refusing = new WindowedBackend(["refuse"], 16000, "m1");
+		// The substitute's first reply is degenerate, forcing a rebuildFrame retry.
+		const substitute = new WindowedBackend(["empty", "text"], 8000, "m2");
+		const router = makeRouter({ "route-a": refusing, "route-b": substitute });
+
+		const result = await makeLoop(router).run();
+
+		expect(result.error).toBeUndefined();
+		expect(refusing.calls).toBe(1);
+		expect(substitute.calls).toBe(2);
+		const rows = db
+			.query(
+				"SELECT model_id, substituted_from, context_debug FROM turns WHERE thread_id = ? ORDER BY created_at, rowid",
+			)
+			.all(threadId) as Array<{
+			model_id: string;
+			substituted_from: string | null;
+			context_debug: string | null;
+		}>;
+		// The degenerate reply and the served retry, both on the substitute.
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			expect(row).toMatchObject({ model_id: "route-b", substituted_from: "m1" });
+			const debug = JSON.parse(row.context_debug ?? "{}") as {
+				contextWindow: number;
+				model: string;
+				truncationTargetTokens?: number;
+			};
+			// Budgeted against the substitute's window, never the run-start model's.
+			expect(debug.contextWindow).toBe(8000);
+			expect(debug.model).toBe("route-b");
+			expect(debug.truncationTargetTokens).toBeLessThanOrEqual(8000);
+		}
+		expect(messages().find((m) => m.role === "assistant")?.content).toBe("served by m2");
+	});
+
+	it("records an inline credited retry's served model and credit on the turn and events", async () => {
+		const inline = new InlineCreditedBackend("m2");
+		const unused = new TextBackend("never dispatched");
+		const router = makeRouter({ "route-a": inline, "route-b": unused });
+
+		const result = await makeLoop(router).run();
+
+		expect(result.error).toBeUndefined();
+		expect(inline.calls).toBe(1);
+		expect(unused.calls).toBe(0);
+		const rows = turns();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			model_id: "route-b",
+			route_id: makeRouteId(SITE, "openai-compatible", "route-b"),
+			substituted_from: "m1",
+			tokens_in: 40,
+			tokens_out: 7,
+		});
+		const breakdown = JSON.parse(rows[0].cost_breakdown ?? "{}") as {
+			attempts: Array<{
+				model_id: string;
+				route_id: string | null;
+				outcome: string;
+				credit_redeemed: boolean;
+			}>;
+		};
+		expect(breakdown.attempts).toEqual([
+			expect.objectContaining({
+				model_id: "m1",
+				route_id: makeRouteId(SITE, "openai-compatible", "route-a"),
+				outcome: "refusal",
+				credit_redeemed: false,
+			}),
+			expect.objectContaining({
+				model_id: "m2",
+				route_id: makeRouteId(SITE, "openai-compatible", "route-b"),
+				outcome: "ok",
+				credit_redeemed: true,
+			}),
+		]);
+		expect(byEvent("llm:refusal")).toEqual([expect.objectContaining({ model: "m1" })]);
+		expect(byEvent("llm:fallback")).toEqual([
+			expect.objectContaining({
+				refused_model: "m1",
+				substitute_model: "m2",
+				credit_redeemed: true,
+			}),
+		]);
+		expect(messages().find((m) => m.role === "assistant")?.content).toBe("served inline");
+	});
+
+	it("stays on the substitute for turn 2 and the next run after an inline credited retry", async () => {
+		const inline = new InlineCreditedBackend("m2", true);
+		const substitute = new TextBackend("served by m2 after tool");
+		const router = makeRouter({ "route-a": inline, "route-b": substitute });
+
+		const first = await makeLoop(router).run();
+
+		expect(first.error).toBeUndefined();
+		// Turn 1 ran on route-a (inline credited retry -> tool call); turn 2 stayed on route-b.
+		expect(inline.calls).toBe(1);
+		expect(substitute.calls).toBe(1);
+		const firstRows = turns();
+		expect(firstRows).toHaveLength(2);
+		expect(firstRows[0]).toMatchObject({
+			model_id: "route-b",
+			route_id: makeRouteId(SITE, "openai-compatible", "route-b"),
+			substituted_from: "m1",
+		});
+		expect(firstRows[1]).toMatchObject({
+			model_id: "route-b",
+			route_id: makeRouteId(SITE, "openai-compatible", "route-b"),
+			substituted_from: "m1",
+		});
+
+		// Next run inherits stickiness to route-b without re-hitting route-a.
+		const second = await makeLoop(router).run();
+		expect(second.error).toBeUndefined();
+		expect(inline.calls).toBe(1);
+		expect(substitute.calls).toBe(2);
+		expect(turns()[2]).toMatchObject({
+			model_id: "route-b",
+			route_id: makeRouteId(SITE, "openai-compatible", "route-b"),
+			substituted_from: "m1",
+		});
 	});
 });
