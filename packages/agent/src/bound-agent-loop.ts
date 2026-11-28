@@ -17,6 +17,7 @@ import type {
 	ChatParams,
 	ContentBlock,
 	LLMBackend,
+	ModelDeclinedOutcome,
 	ModelRouter,
 	StreamChunk,
 	ToolDefinition,
@@ -343,10 +344,36 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		fallback_policy?: { mode: "auto" | "never" | "custom" };
 		fallback_models?: string[];
 	} {
-		const logicalModel =
-			resolution.kind === "local" || resolution.kind === "remote" ? resolution.modelId : undefined;
-		if (!logicalModel) return {};
-		return resolveRequestFallback(this.ctx.db, logicalModel);
+		const currentLogical = this.logicalModelOf(resolution);
+		if (!currentLogical) return {};
+		// On a substituted turn the chain belongs to the originally requested
+		// model (R-RT17), and never re-offers a model already refused or tried.
+		const requested =
+			this.refusalWalk?.originalLogical ?? this.activeSubstitutedFrom ?? currentLogical;
+		const fields = resolveRequestFallback(this.ctx.db, requested);
+		const exclude = new Set([requested, currentLogical, ...(this.refusalWalk?.tried ?? [])]);
+		return {
+			...fields,
+			fallback_models: fields.fallback_models.filter((m) => !exclude.has(m)),
+		};
+	}
+
+	/**
+	 * The logical model a resolution serves (§3.1). A local resolution carries the
+	 * raw backend id (`bedrock-main-anthropic.claude-opus-5-5`); fallback policy,
+	 * the candidate filter, and `turns.substituted_from` key on the logical model
+	 * (`claude-opus-5-5`) instead. A remote resolution already carries the logical
+	 * hint it was resolved through.
+	 */
+	protected logicalModelOf(resolution: ModelResolution | null): string | undefined {
+		if (!resolution) return undefined;
+		if (resolution.kind === "local") {
+			return this.modelRouter.tryGetBackend(resolution.modelId)
+				? this.modelRouter.getLogicalModel(resolution.modelId)
+				: resolution.modelId;
+		}
+		if (resolution.kind === "remote") return resolution.modelId;
+		return undefined;
 	}
 
 	/** Shared, policy-free model-derived inputs for Main and Aux frame assembly. */
@@ -380,6 +407,15 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	protected override async beforeTurn(turn: number, frame: BoundPreparedFrame): Promise<void> {
 		this.currentTurnId = null;
 		this.relayMetadataRef = {};
+		this.closedRefusalWalk = null;
+		// A retry is armed and consumed within one turn (afterParse → afterRecord);
+		// never let a flag stranded by an earlier error skip this turn's row.
+		this.pendingRefusalRetry = false;
+		// A refusal substitution (or route failover) switches lastModelResolution;
+		// keep the frame on the same resolution even across a frame rebuild.
+		if (this.lastModelResolution && this.lastModelResolution.kind !== "error") {
+			frame.resolution = this.lastModelResolution;
+		}
 		this.config.onActivity?.();
 		await this.prepareTurn(turn, frame);
 		this.setPhase("LLM_CALL");
@@ -394,6 +430,10 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		this.currentTurnId = null;
 		this.relayMetadataRef = {};
 		this.latestResult = null;
+		this.refusalWalk = null;
+		this.closedRefusalWalk = null;
+		this.pendingRefusalRetry = false;
+		this.activeSubstitutedFrom = null;
 
 		this.ctx.logger.info("[agent-loop] Starting", {
 			threadId: this.config.threadId,
@@ -607,7 +647,18 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		if (this.lastModelResolution.kind === "error") {
 			return { kind: "error", error: this.lastModelResolution.error };
 		}
+		// Thread stickiness onto a refusal substitute (R-RT20) keeps the run on the
+		// substitute and keeps stamping the originally requested model.
+		this.activeSubstitutedFrom = this.lastModelResolution.substitutedFrom ?? null;
 		return this.lastModelResolution;
+	}
+
+	/**
+	 * The operator changed the thread's model hint at a turn boundary: the
+	 * request no longer asks for the model a substitute was standing in for.
+	 */
+	protected clearActiveSubstitution(): void {
+		this.activeSubstitutedFrom = null;
 	}
 
 	protected override persistAlert(content: string): void {
@@ -746,6 +797,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				...(resolution.thinkingConfig && { thinking: resolution.thinkingConfig }),
 				...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
 				timeout_ms: this.inferenceTimeoutMs,
+				// R-RT18: the executing host's driver needs the resolved chain to decide
+				// whether an inline credited retry is co-located.
+				...this.resolveFallbackFields(resolution),
 			};
 
 			const previousState = this.enterPhaseOverlay("RELAY_STREAM");
@@ -985,10 +1039,15 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		}
 		// Re-resolve the SAME logical model: the unified candidate pool (§5.1) now
 		// excludes the cooled route and returns the next ranked route for this
-		// model (another local route or a remote host). Cross-route failover strips
-		// route-bound state at the boundary via the driver's reasoning_origin check.
+		// model (another local route or a remote host). When a refusal walk or
+		// active substitution is serving a substitute model, fail over among that
+		// substitute's routes — never bounce back to the refused original.
+		const failoverHint =
+			this.refusalWalk !== null || this.activeSubstitutedFrom !== null
+				? (this.logicalModelOf(resolution) ?? this.config.modelId)
+				: this.config.modelId;
 		const newResolution = resolveModel(
-			this.config.modelId,
+			failoverHint,
 			this.modelRouter,
 			this.ctx.db,
 			this.ctx.siteId,
@@ -1009,8 +1068,207 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		});
 		this.lastModelResolution = newResolution;
 		frame.resolution = newResolution;
+		frame.resolvedModelForDebug = getResolvedModelId(newResolution, this.config.modelId);
 		this.transportRetries = 0;
 		return { action: "retry" };
+	}
+
+	/**
+	 * Loop-host refusal-fallback walk for the current turn (§7.3, R-RT17). Holds
+	 * the originally requested logical model, the resolved policy and ordered
+	 * candidates, the logical models already tried, and every DISCARDED refused
+	 * attempt so the turn records them all in one `turns` row (R-RT21). Null
+	 * when no refusal has occurred this turn.
+	 */
+	private refusalWalk: {
+		originalLogical: string;
+		policyMode: "auto" | "never" | "custom";
+		candidates: string[];
+		/** Candidates consumed by the walk, including ones skipped as ineligible. */
+		tried: Set<string>;
+		/** Logical models actually dispatched (and refused) during the walk. */
+		attempted: Set<string>;
+		attempts: AttemptRecord[];
+		lastDeclined: ModelDeclinedOutcome | null;
+	} | null = null;
+
+	/** The walk recordTurn just closed, kept so handleFinalResponse can describe it. */
+	private closedRefusalWalk: BoundAgentLoop["refusalWalk"] = null;
+
+	/** Set by afterParse when a refused 200 response is being retried on a substitute. */
+	private pendingRefusalRetry = false;
+
+	/**
+	 * Run-level R-RT20 state: the originally requested logical model while the
+	 * run is served by a refusal substitute — set when a walk lands on one or
+	 * when thread stickiness resolves onto one, cleared when the operator
+	 * changes the model hint. Every turn served by a different logical model
+	 * stamps it into `turns.substituted_from`, and a later refusal walks its
+	 * fallback chain rather than the substitute's (R-RT17).
+	 */
+	private activeSubstitutedFrom: string | null = null;
+
+	/**
+	 * Price and label parsed attempts against `resolution` — the resolution that
+	 * EXECUTED them, which is no longer current once the walk switches models.
+	 */
+	private buildAttemptRecords(
+		attempts: ParsedResponse["attempts"],
+		resolution: ModelResolution | null,
+	): AttemptRecord[] {
+		const backends = this.ctx.config?.modelBackends?.backends ?? [];
+		const resolvedModelId = getResolvedModelId(resolution, this.config.modelId || "unknown");
+		const logical = this.logicalModelOf(resolution) ?? resolvedModelId;
+		const routeId = getResolvedRouteId(resolution, (id) => this.modelRouter.getRouteId(id));
+		const catalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
+		return attempts.map((a) => {
+			const attemptCost = resolveTurnCost({
+				modelId: resolvedModelId,
+				usage: {
+					inputTokens: a.usage.inputTokens,
+					outputTokens: a.usage.outputTokens,
+					cacheReadTokens: a.usage.cacheReadTokens,
+					cacheWriteTokens: a.usage.cacheWriteTokens,
+					cacheWrite1hTokens: a.usage.cacheWrite1hTokens,
+					...(a.usage.cacheWriteSplit !== undefined && {
+						cacheWriteSplit: a.usage.cacheWriteSplit,
+					}),
+				},
+				backends,
+				providerCostUsd: a.costUsdFromHub ?? undefined,
+				providerBreakdown: a.costBreakdownFromHub ?? undefined,
+				// Price the attempt from the same catalog layer the served turn uses,
+				// so an attempt whose model carries no explicit config override is
+				// still priced instead of coalescing to a misleading $0.
+				catalogPricing: catalogPricing?.pricing,
+				catalogPricingSource: catalogPricing?.source,
+			});
+			return {
+				model_id: logical,
+				route_id: routeId,
+				outcome: a.declined || a.finishReason === "content-filter" ? "refusal" : "ok",
+				refusal_category: a.declined?.category ?? null,
+				credit_redeemed: false,
+				tokens: {
+					input: a.usage.inputTokens,
+					output: a.usage.outputTokens,
+					cache_read: a.usage.cacheReadTokens ?? 0,
+					cache_write: a.usage.cacheWriteTokens ?? 0,
+				},
+				// Unknown (null) stays null, not $0: an unpriced attempt renders as an
+				// em dash in the provenance footer rather than a free turn.
+				cost_usd: attemptCost.cost,
+			};
+		});
+	}
+
+	/** Emit `llm:refusal` for one refused attempt, tagged with the model/route that ran it. */
+	private emitRefusalEvent(declined: ModelDeclinedOutcome, record: AttemptRecord): void {
+		this.ctx.eventBus.emit("llm:refusal", {
+			thread_id: this.config.threadId,
+			...(this.config.taskId ? { task_id: this.config.taskId } : {}),
+			model: record.model_id,
+			route_id: record.route_id,
+			vendor: declined.vendor,
+			category: declined.category,
+			substitutable: declined.substitutable,
+		});
+	}
+
+	/**
+	 * A refusal reached the loop host (no co-located credited retry carried the
+	 * turn). Walk the requested logical model's fallback chain (§7.3, R-RT17):
+	 * switch `lastModelResolution` and `frame.resolution` to the next candidate
+	 * that meets the turn's capability requirements and has an eligible route.
+	 * Returns true when a substitute was selected and the call should retry.
+	 *
+	 * Never touches route health and never fails over to another route of the
+	 * refused model (R-RT15). A hard pin (R-RT10), `substitutable: false`, or a
+	 * `never` policy halts the walk immediately.
+	 */
+	private selectRefusalSubstitute(
+		declined: ModelDeclinedOutcome,
+		frame: BoundPreparedFrame,
+	): boolean {
+		const current = this.lastModelResolution;
+		if (!current || current.kind === "error") return false;
+		const currentLogical = this.logicalModelOf(current) ?? current.modelId;
+		if (!this.refusalWalk) {
+			// On a substitute (a later turn of a substituted run, or a sticky run)
+			// the walk continues the REQUESTED model's chain, never the substitute's,
+			// and never re-dispatches the original that already refused (R-RT17).
+			const originalLogical = this.activeSubstitutedFrom ?? currentLogical;
+			const fields = resolveRequestFallback(this.ctx.db, originalLogical);
+			this.refusalWalk = {
+				originalLogical,
+				policyMode: fields.fallback_policy.mode,
+				candidates: [...fields.fallback_models],
+				tried: new Set([originalLogical, currentLogical]),
+				attempted: new Set([originalLogical]),
+				attempts: [],
+				lastDeclined: null,
+			};
+		}
+		const walk = this.refusalWalk;
+		walk.lastDeclined = declined;
+		walk.tried.add(currentLogical);
+		walk.attempted.add(currentLogical);
+		if (parseModelHint(this.config.modelId).pin !== null) return false;
+		if (!declined.substitutable) return false;
+		if (walk.policyMode === "never") return false;
+		while (walk.candidates.length > 0) {
+			const candidate = walk.candidates.shift() as string;
+			if (walk.tried.has(candidate)) continue;
+			walk.tried.add(candidate);
+			// No thread stickiness here: the sticky route belongs to the refused model.
+			const next = resolveModel(
+				candidate,
+				this.modelRouter,
+				this.ctx.db,
+				this.ctx.siteId,
+				this.requirements,
+			);
+			if (next.kind === "error") continue;
+			const nextLogical = this.logicalModelOf(next) ?? next.modelId;
+			if (walk.tried.has(nextLogical) && nextLogical !== candidate) continue;
+			walk.tried.add(nextLogical);
+			this.ctx.logger.warn("[agent-loop] Model refused; substituting fallback model", {
+				refused: currentLogical,
+				substitute: nextLogical,
+				category: declined.category,
+				policy: walk.policyMode,
+			});
+			this.lastModelResolution = next;
+			frame.resolution = next;
+			frame.resolvedModelForDebug = getResolvedModelId(next, this.config.modelId);
+			this.activeSubstitutedFrom = walk.originalLogical;
+			this.transportRetries = 0;
+			return true;
+		}
+		return false;
+	}
+
+	/** Operator-facing refusal text, carrying category and explanation when present. */
+	private describeRefusal(declined: ModelDeclinedOutcome | null, fallbackReason: string): string {
+		const parts = [`reason=${declined?.raw_reason ?? fallbackReason}`];
+		if (declined?.category) parts.push(`category=${declined.category}`);
+		const base = `Model refused the request (${parts.join(", ")})`;
+		const explanation = declined?.explanation ? `: ${declined.explanation}` : "";
+		const stop = explanation.endsWith(".") ? "" : ".";
+		const walk = this.refusalWalk ?? this.closedRefusalWalk;
+		let tail: string;
+		if (declined && !declined.substitutable) {
+			tail = " The refusal is not substitutable; fix the prompt or tool schema and retry.";
+		} else if (parseModelHint(this.config.modelId).pin !== null) {
+			tail = " The request is hard-pinned to a route, so no fallback model was tried.";
+		} else if (walk?.policyMode === "never") {
+			tail = ` The fallback policy for ${walk.originalLogical} is "never".`;
+		} else if (walk && walk.attempted.size > 1) {
+			tail = ` No fallback model served the turn (tried: ${[...walk.attempted].join(", ")}).`;
+		} else {
+			tail = " No eligible fallback model was available.";
+		}
+		return `${base}${explanation}${stop}${tail}`;
 	}
 
 	/**
@@ -1167,7 +1425,39 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	protected override async onModelErrorTerminal(
 		error: unknown,
 		chunks: StreamChunk[],
+		loopFrame?: PreparedLoopFrame,
 	): Promise<LoopTurnDecision> {
+		const frame = loopFrame as BoundPreparedFrame | undefined;
+		// A thrown error ends this attempt before afterRecord could consume an
+		// armed 200-refusal retry; the error path owns the retry decision now.
+		this.pendingRefusalRetry = false;
+		// An error-shaped refusal (e.g. a Gemini Interactions 400 safety block) is
+		// not a route failure (R-RT15): no health record, no partial salvage
+		// (R-RT16). Walk the fallback chain, or surface the refusal.
+		if (error instanceof LLMRefusalError && !this.aborted) {
+			const refusedResolution = this.lastModelResolution;
+			const partial = this.parseResponseChunks(chunks);
+			const [record] = this.buildAttemptRecords(
+				[
+					{
+						finishReason: "content-filter",
+						declined: error.outcome,
+						usage: partial.usage,
+						costUsdFromHub: null,
+						costBreakdownFromHub: null,
+					},
+				],
+				refusedResolution,
+			);
+			this.emitRefusalEvent(error.outcome, record);
+			const switched = frame ? this.selectRefusalSubstitute(error.outcome, frame) : false;
+			this.refusalWalk?.attempts.push(record);
+			if (switched) return { action: "retry" };
+			this.setPhase("ERROR_PERSIST");
+			const message = this.describeRefusal(error.outcome, error.message);
+			this.emitAlert(`Error: ${message}`);
+			return { action: "error", error: message };
+		}
 		// Record the route failure against health before surfacing the error (#285,
 		// R-RT11/R-RT13). onRouteFailure already recorded every route failure it saw
 		// (and fell through here only when no further route existed), so record only
@@ -1304,6 +1594,28 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			}
 			return { action: this.yielded ? "yield" : "stop" };
 		}
+		// A 200-shaped refusal that reached the loop host (§7.3): discard the
+		// refused attempt (never an assistant row, R-RT16) and retry on the next
+		// fallback model. recordTurn skips the row and afterRecord retries.
+		if (!this.aborted && (parsed.declined !== null || parsed.finishReason === "content-filter")) {
+			const declined: ModelDeclinedOutcome = parsed.declined ?? {
+				kind: "model-declined",
+				vendor: "other",
+				category: null,
+				raw_reason: "content-filter",
+				substitutable: true,
+			};
+			const refusedResolution = this.lastModelResolution;
+			if (this.selectRefusalSubstitute(declined, _frame)) {
+				const records = this.buildAttemptRecords(parsed.attempts, refusedResolution);
+				parsed.attempts.forEach((a, i) => {
+					if (a.declined) this.emitRefusalEvent(a.declined, records[i]);
+					else if (a.finishReason === "content-filter") this.emitRefusalEvent(declined, records[i]);
+				});
+				this.refusalWalk?.attempts.push(...records);
+				this.pendingRefusalRetry = true;
+			}
+		}
 		return { action: "continue" };
 	}
 
@@ -1315,6 +1627,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		status?: "success" | "error" | "aborted";
 		contextDebug?: ContextDebugInfo;
 	}): string | null {
+		// The refused attempt is folded into the walk and recorded with the turn
+		// that finally serves (or exhausts) it — one `turns` row per turn (R-RT21).
+		if (this.pendingRefusalRetry) return null;
 		try {
 			const resolvedModelId = getResolvedModelId(
 				this.lastModelResolution,
@@ -1394,62 +1709,42 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				this.modelRouter.getRouteId(id),
 			);
 			const parsedAttempts = metrics.response.attempts;
+			const walk = this.refusalWalk;
+			this.refusalWalk = null;
+			this.closedRefusalWalk = walk;
+			const currentRecords = this.buildAttemptRecords(parsedAttempts, this.lastModelResolution);
+			const allRecords = [...(walk?.attempts ?? []), ...currentRecords];
 			let finalCostBreakdown:
 				typeof cost_breakdown | ReturnType<typeof buildTurnCostBreakdownWithAttempts> =
 				cost_breakdown;
-			const substitutedFrom: string | null = null;
-			if (parsedAttempts.length > 1) {
-				const attemptRecords: AttemptRecord[] = parsedAttempts.map((a) => {
-					const attemptCatalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
-					const attemptCost = resolveTurnCost({
-						modelId: resolvedModelId,
-						usage: {
-							inputTokens: a.usage.inputTokens,
-							outputTokens: a.usage.outputTokens,
-							cacheReadTokens: a.usage.cacheReadTokens,
-							cacheWriteTokens: a.usage.cacheWriteTokens,
-							cacheWrite1hTokens: a.usage.cacheWrite1hTokens,
-							...(a.usage.cacheWriteSplit !== undefined && {
-								cacheWriteSplit: a.usage.cacheWriteSplit,
-							}),
-						},
-						backends,
-						providerCostUsd: a.costUsdFromHub ?? undefined,
-						providerBreakdown: a.costBreakdownFromHub ?? undefined,
-						// Price the attempt from the same catalog layer the served turn uses,
-						// so an attempt whose model carries no explicit config override is
-						// still priced instead of coalescing to a misleading $0 (requirement 2).
-						catalogPricing: attemptCatalogPricing?.pricing,
-						catalogPricingSource: attemptCatalogPricing?.source,
-					});
-					return {
-						model_id: resolvedModelId,
-						route_id: routeId,
-						outcome: a.declined ? "refusal" : "ok",
-						refusal_category: a.declined?.category ?? null,
-						credit_redeemed: false,
-						tokens: {
-							input: a.usage.inputTokens,
-							output: a.usage.outputTokens,
-							cache_read: a.usage.cacheReadTokens ?? 0,
-							cache_write: a.usage.cacheWriteTokens ?? 0,
-						},
-						// Unknown (null) stays null, not $0: an unpriced attempt renders as an
-						// em dash in the provenance footer rather than a free turn.
-						cost_usd: attemptCost.cost,
-					};
-				});
+			if (allRecords.length > 1) {
 				finalCostBreakdown = buildTurnCostBreakdownWithAttempts({
 					served: cost_breakdown,
-					attempts: attemptRecords,
+					attempts: allRecords,
 				});
 			}
+			// R-RT20: a different logical model served what the thread asked for.
+			const servedLogical = this.logicalModelOf(this.lastModelResolution) ?? resolvedModelId;
+			const lastRecord = allRecords[allRecords.length - 1];
+			const served =
+				metrics.status === "success" && lastRecord !== undefined && lastRecord.outcome === "ok";
+			// The requested model is the walk's origin on the substituting turn, else
+			// the run-level substitution (later turns, sticky runs).
+			const requestedLogical = walk?.originalLogical ?? this.activeSubstitutedFrom;
+			const substitutedFrom: string | null =
+				requestedLogical !== null && served && servedLogical !== requestedLogical
+					? requestedLogical
+					: null;
 
 			// Observability events for every refusal + each fallback walk (R-RT21),
-			// independent of HTTP error metrics. A refused attempt followed by a served
-			// one is a substitution; the served attempt's absence (every attempt
-			// refused) is a surfaced refusal with no substitute.
-			this.emitRefusalAndFallbackEvents(parsedAttempts, resolvedModelId, routeId);
+			// independent of HTTP error metrics.
+			this.emitRefusalAndFallbackEvents({
+				parsedAttempts,
+				currentRecords,
+				walk,
+				served,
+				servedLogical,
+			});
 			const turnId = recordTurn(
 				this.ctx.db,
 				{
@@ -1503,6 +1798,10 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		_frame: BoundPreparedFrame,
 		turnId: string | null,
 	): LoopTurnDecision {
+		if (this.pendingRefusalRetry) {
+			this.pendingRefusalRetry = false;
+			return { action: "retry" };
+		}
 		if (
 			turnId !== null &&
 			this.relayMetadataRef.hostName !== undefined &&
@@ -1636,10 +1935,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		// `messages` row — on the next turn the model would otherwise read that
 		// partial as a complete reply it wrote. Surface an operator alert instead
 		// and end the turn without retrying.
-		if (parsed.finishReason === "content-filter") {
+		if (parsed.finishReason === "content-filter" || parsed.declined !== null) {
 			this.emitAlert(
-				"Model safety filter stopped generation (finishReason=content-filter). " +
-					"The refused partial output was not persisted; the turn was not retried.",
+				`Model safety filter stopped generation (finishReason=${parsed.finishReason ?? "refusal"}). ${this.describeRefusal(parsed.declined, "content-filter")} The refused partial output was not persisted.`,
 			);
 			return;
 		}
@@ -2328,45 +2626,48 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	 * refused attempt was followed by further attempts (the substitution outcome).
 	 * A clean single-attempt turn emits nothing.
 	 */
-	private emitRefusalAndFallbackEvents(
-		attempts: ParsedResponse["attempts"],
-		modelId: string,
-		routeId: string | null,
-	): void {
-		const refusedAttempts = attempts.filter((a) => a.declined !== null);
-		if (refusedAttempts.length === 0) return;
-		for (const attempt of refusedAttempts) {
-			const declined = attempt.declined;
-			if (!declined) continue;
-			this.ctx.eventBus.emit("llm:refusal", {
-				thread_id: this.config.threadId,
-				...(this.config.taskId ? { task_id: this.config.taskId } : {}),
-				model: modelId,
-				route_id: routeId,
-				vendor: declined.vendor,
-				category: declined.category,
-				substitutable: declined.substitutable,
-			});
-		}
-		// A served attempt following the refusal(s) means a substitution carried the
-		// turn; its absence means every attempt refused and the refusal surfaced.
-		const served = attempts.find((a) => a.declined === null);
-		const substituted = attempts.length > refusedAttempts.length ? served : undefined;
+	private emitRefusalAndFallbackEvents(input: {
+		parsedAttempts: ParsedResponse["attempts"];
+		currentRecords: AttemptRecord[];
+		walk: BoundAgentLoop["refusalWalk"];
+		served: boolean;
+		servedLogical: string;
+	}): void {
+		const { parsedAttempts, currentRecords, walk, served, servedLogical } = input;
+		// Refusals on attempts discarded by the walk were emitted when observed;
+		// emit the ones on the recorded (final) stream here.
+		let currentRefusals = 0;
+		parsedAttempts.forEach((a, i) => {
+			const declined =
+				a.declined ??
+				(a.finishReason === "content-filter"
+					? ({
+							kind: "model-declined",
+							vendor: "other",
+							category: null,
+							raw_reason: "content-filter",
+							substitutable: true,
+						} satisfies ModelDeclinedOutcome)
+					: null);
+			if (!declined) return;
+			currentRefusals++;
+			this.emitRefusalEvent(declined, currentRecords[i]);
+		});
+		if (!walk && currentRefusals === 0) return;
+		const refusedModel = walk?.originalLogical ?? servedLogical;
+		// A served attempt after the refusal(s) carried the turn. Without a loop
+		// walk that was the driver's inline credited retry on the same request.
+		const substitute = served ? servedLogical : null;
 		this.ctx.eventBus.emit("llm:fallback", {
 			thread_id: this.config.threadId,
 			...(this.config.taskId ? { task_id: this.config.taskId } : {}),
-			refused_model: modelId,
-			// The driver-level credited retry stays on the same request's endpoint, so
-			// the substitute logical model is the same requested model when a served
-			// attempt followed; null when every attempt refused.
-			substitute_model: substituted ? modelId : null,
+			refused_model: refusedModel,
+			substitute_model: substitute,
 			// Credit redemption is a driver-internal step the loop cannot observe from
-			// the stream alone; recorded false here (the driver owns the redemption).
+			// the stream alone; a loop-host walk never redeems an endpoint credit.
 			credit_redeemed: false,
 			policy_mode:
-				(this.lastModelResolution?.kind === "local" || this.lastModelResolution?.kind === "remote"
-					? this.resolveFallbackFields(this.lastModelResolution).fallback_policy?.mode
-					: undefined) ?? "auto",
+				walk?.policyMode ?? resolveRequestFallback(this.ctx.db, refusedModel).fallback_policy.mode,
 		});
 	}
 

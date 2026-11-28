@@ -159,7 +159,8 @@ change it. Bound therefore treats a refusal differently from a route failure:
   unhealthy.
 - Bound keeps any partial text the model produced before the refusal out of the
   conversation history, so a later turn does not read it as a complete answer.
-- An operator alert reports the refusal.
+- When no fallback model serves the turn, an operator alert reports the refusal with the
+  provider's refusal category and explanation when the provider supplies them.
 
 An HTTP 400 that carries a recognized safety signal is a refusal. An HTTP 400 without one is
 a route failure and counts toward route health like any other bad request.
@@ -185,10 +186,10 @@ model that would decline for the same reason. A [hard-pinned](#hard-route-pins) 
 substitutes.
 
 After a substitution succeeds, the thread stays on the substitute model while its
-prompt-cache window is warm, so a run of similar turns does not pay repeated refusals. An
-operator action returns the thread to the original model. Auxiliary agents and Yard
-`infer()` calls resolve their own fallback chain per request and do not inherit a thread's
-substitution.
+prompt-cache window is warm, so a run of similar turns does not pay repeated refusals. Once
+the window goes cold — or when an operator resets the thread's model — the thread returns to
+the original model. Auxiliary agents and Yard `infer()` calls resolve their own fallback chain
+per request and do not inherit a thread's substitution.
 
 The loop host resolves the policy and the ordered candidate list and sends them with the
 inference request, so a remote inference host knows the resolved chain. An older inference
@@ -315,6 +316,10 @@ provider-bound state instead of flapping back to a just-recovered route. Once th
 window goes cold, or the sticky route becomes ineligible, the thread resolves from the
 ranked list again. Only a successful prior turn pins a thread; a failed or aborted turn
 never holds a thread to a dead route.
+
+When the prior turn was a [refusal substitution](#refusal-fallback), stickiness applies to
+the substitute: a request for the original model reuses the substitute's route while that
+route's cache window is warm, then returns to the original model's ranked routes.
 
 ### Hard route pins
 

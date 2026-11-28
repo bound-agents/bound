@@ -641,3 +641,95 @@ describe("resolveModel — route_order consulted in normal (non-sticky) resoluti
 		if (ordered.kind === "remote") expect(ordered.hosts[0].routeId).toBe(routeBbb);
 	});
 });
+
+describe("resolveModel — post-fallback stickiness (§7.3 step 4, R-RT20)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	function routerWithOpusAndSonnet(): ModelRouter {
+		const backends = new Map<string, LLMBackend>([
+			["opus", stubBackend()],
+			["sonnet", stubBackend()],
+		]);
+		const effectiveCaps = new Map([
+			["opus", caps()],
+			["sonnet", caps()],
+		]);
+		const routeIdentities = new Map(
+			["opus", "sonnet"].map((id) => [
+				id,
+				{ routeId: makeRouteId(SITE, "bedrock", id), reasoningOrigin: `${SITE}:bedrock` },
+			]),
+		);
+		return new ModelRouter(
+			backends,
+			"opus",
+			effectiveCaps,
+			new Map(),
+			undefined,
+			Date.now,
+			routeIdentities,
+		);
+	}
+
+	function recordSubstitutedTurn(createdAt: string) {
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-1",
+				model_id: "sonnet",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: createdAt,
+				route_id: makeRouteId(SITE, "bedrock", "sonnet"),
+				substituted_from: "opus",
+			},
+			SITE,
+		);
+	}
+
+	it("sticks to the substitute's route when the prior turn substituted for the requested model", () => {
+		const router = routerWithOpusAndSonnet();
+		recordSubstitutedTurn(new Date().toISOString());
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") {
+			expect(res.modelId).toBe("sonnet");
+			// The loop keeps stamping turns.substituted_from from this (R-RT20).
+			expect(res.substitutedFrom).toBe("opus");
+		}
+	});
+
+	it("returns to the requested model once the substitute's cache window is cold", () => {
+		const router = routerWithOpusAndSonnet();
+		recordSubstitutedTurn(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("does not inherit a substitution recorded for a different requested model", () => {
+		const router = routerWithOpusAndSonnet();
+		recordSubstitutedTurn(new Date().toISOString());
+		const res = resolveModel("sonnet", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") {
+			expect(res.modelId).toBe("sonnet");
+			expect(res.substitutedFrom).toBeUndefined();
+		}
+	});
+});

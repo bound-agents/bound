@@ -61,6 +61,13 @@ export type ModelResolution =
 			// a resolution that can't determine the window is a `kind: "error"`,
 			// never a live resolution carrying a guessed default.
 			max_context: number;
+			/**
+			 * Set when thread stickiness resolved onto a refusal SUBSTITUTE (§7.3
+			 * step 4, R-RT20): the originally requested logical model, so the loop
+			 * keeps stamping `turns.substituted_from` and walks this model's
+			 * fallback chain on a later refusal.
+			 */
+			substitutedFrom?: string;
 	  }
 	| {
 			kind: "remote";
@@ -72,6 +79,8 @@ export type ModelResolution =
 			thinkingConfig?: ChatParams["thinking"];
 			maxOutputTokens?: number;
 			max_context: number;
+			/** See the local variant: the requested logical model a sticky substitute serves. */
+			substitutedFrom?: string;
 	  }
 	| {
 			kind: "error";
@@ -873,6 +882,30 @@ function resolveStickyForThread(
 	const prior = findLatestOkTurnRouteByThread(db, threadId);
 	if (!prior || !prior.route_id) return null;
 
+	// §7.3 step 4 / R-RT20: after a refusal substitution the prior turn's route
+	// belongs to the SUBSTITUTE (`prior.model_id`), not the requested model, so
+	// the eligible pool must be built from the substitute's routes. A request can
+	// name the original as its logical model or as a literal backend id.
+	const requestedLogical = modelRouter.tryGetBackend(effectiveModelId)
+		? modelRouter.getLogicalModel(effectiveModelId)
+		: effectiveModelId;
+	const inheritsSubstitution =
+		prior.substituted_from !== null &&
+		(prior.substituted_from === effectiveModelId || prior.substituted_from === requestedLogical) &&
+		prior.model_id !== effectiveModelId;
+	const poolModelId = inheritsSubstitution ? prior.model_id : effectiveModelId;
+	const stickyRequestedModel = inheritsSubstitution
+		? (prior.substituted_from as string)
+		: effectiveModelId;
+	// A substitute's operator route_order is its own, not the requested model's.
+	// `route_order` keys on the logical model, while `prior.model_id` may be the
+	// substitute's raw local backend id, so resolve its logical model first.
+	const poolLogical =
+		inheritsSubstitution && modelRouter.tryGetBackend(poolModelId)
+			? modelRouter.getLogicalModel(poolModelId)
+			: poolModelId;
+	const poolRouteOrder = inheritsSubstitution ? loadRouteOrder(db, poolLogical) : routeOrder;
+
 	// Build the eligible-route pool for the requested model and a RouteId -> TTL
 	// lookup, spanning local backends and non-stale remote hosts (drain-filtered).
 	// `drained` and `routeOrder` are the caller's single load (§5.2/§6.2).
@@ -885,21 +918,21 @@ function resolveStickyForThread(
 	// pool (#285, R-RT12): a warm sticky thread must never be used as the trial —
 	// only a new/cold-cache thread may trial it, which it does via the ranked
 	// first-resolution path below where isRateLimited (backoff-only) gates.
-	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
-	if (localBackend && modelRouter.isHealthyForSticky(effectiveModelId)) {
-		const localRouteId = modelRouter.getRouteId(effectiveModelId);
-		const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
+	const localBackend = modelRouter.tryGetBackend(poolModelId);
+	if (localBackend && modelRouter.isHealthyForSticky(poolModelId)) {
+		const localRouteId = modelRouter.getRouteId(poolModelId);
+		const caps = modelRouter.getEffectiveCapabilities(poolModelId);
 		const meets =
 			!requirements || (caps ? getUnmetCapabilities(caps, requirements).length === 0 : false);
 		if (localRouteId && !drained.has(localRouteId) && meets) {
 			eligible.add(localRouteId);
-			ttlMsByRoute.set(localRouteId, cacheTtlToMs(modelRouter.getCacheTtl(effectiveModelId)));
+			ttlMsByRoute.set(localRouteId, cacheTtlToMs(modelRouter.getCacheTtl(poolModelId)));
 		}
 	}
 
 	// Remote: non-stale hosts advertising the model, drain-filtered by the finder.
-	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements, {
-		routeOrder,
+	const remote = findEligibleHostsByModel(db, poolModelId, localSiteId, requirements, {
+		routeOrder: poolRouteOrder,
 		drainedRouteIds: drained,
 		normalizeKey: normalizeModelKey,
 	});
@@ -921,7 +954,7 @@ function resolveStickyForThread(
 			substitutedFrom: prior.substituted_from,
 			createdAt: prior.created_at,
 		},
-		requestedModel: effectiveModelId,
+		requestedModel: stickyRequestedModel,
 		eligibleRouteIds: eligible,
 		// Effective cache window (R-MC16): prefer the window measured from this
 		// route's turn history on the serving host; fall back to the lifetime the
@@ -938,5 +971,7 @@ function resolveStickyForThread(
 
 	// The sticky route is eligible — resolve it directly (pin-style, but WITHOUT
 	// disabling failover: a later route failure re-resolves normally).
-	return resolvePinnedRoute(decision.routeId, effectiveModelId, modelRouter, db, localSiteId);
+	const resolved = resolvePinnedRoute(decision.routeId, poolModelId, modelRouter, db, localSiteId);
+	if (!inheritsSubstitution || resolved.kind === "error") return resolved;
+	return { ...resolved, substitutedFrom: stickyRequestedModel };
 }

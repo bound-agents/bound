@@ -666,6 +666,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 				() => this.clearCachedTurnState(),
 			);
 			if (changed) {
+				this.clearActiveSubstitution();
 				const resolution = await this.resolveModel();
 				if (resolution.kind !== "error") {
 					frame.resolution = resolution;

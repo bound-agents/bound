@@ -395,6 +395,16 @@ export class ModelRouter {
 		return matches.sort();
 	}
 
+	/**
+	 * The logical model a registered backend serves: its config `logical_model`
+	 * pin, else the normalized key of its provider model id. Refusal fallback
+	 * policy and `turns.substituted_from` key on this identity, never the raw
+	 * backend id (2026-11-21-model-routing.md §3.1, §7.3).
+	 */
+	getLogicalModel(id: string): string {
+		return this.logicalModelOf(id);
+	}
+
 	private logicalModelOf(id: string): string {
 		const config = this.backendConfigs.get(id);
 		return (
