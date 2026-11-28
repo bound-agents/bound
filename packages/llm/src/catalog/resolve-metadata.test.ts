@@ -108,26 +108,36 @@ describe("resolveModelMetadata", () => {
 			expect(r.metadata.field_sources.allowed_fallback_models).toBe("provider");
 		});
 
-		it("resolves display_name provider > models.dev > provider_model_id fallback", () => {
-			// Provider-published display name wins.
+		it("resolves display_name config > models.dev > provider > provider_model_id fallback", () => {
+			// Config override wins over models.dev and provider.
+			const cfg = resolveModelMetadata({
+				providerModelId: "claude-opus-4",
+				config: { display_name: "Custom Opus", capabilities: { max_context: 200 } },
+				provider: { display_name: "Provider Opus" },
+				modelsDev: { display_name: "models.dev Opus" },
+			});
+			expect(cfg.metadata.display_name).toBe("Custom Opus");
+			expect(cfg.metadata.field_sources.display_name).toBe("config");
+
+			// models.dev wins over provider so naming stays uniform across providers.
 			const a = resolveModelMetadata({
 				providerModelId: "claude-opus-4",
 				config: {},
-				provider: { display_name: "Claude Opus 4", capabilities: { max_context: 200 } },
+				provider: { display_name: "Provider Opus", capabilities: { max_context: 200 } },
 				modelsDev: { display_name: "models.dev Opus" },
 			});
-			expect(a.metadata.display_name).toBe("Claude Opus 4");
-			expect(a.metadata.field_sources.display_name).toBe("provider");
+			expect(a.metadata.display_name).toBe("models.dev Opus");
+			expect(a.metadata.field_sources.display_name).toBe("models_dev");
 
-			// models.dev name fills when the provider has none.
+			// Provider-published display name fills in when models.dev has none.
 			const b = resolveModelMetadata({
-				providerModelId: "gpt-6.1-sol",
+				providerModelId: "mistral.mistral-large-2402-v1:0",
 				config: {},
-				provider: { capabilities: { max_context: 200 } },
-				modelsDev: { display_name: "GPT 6.1 Sol" },
+				provider: { display_name: "Mistral Large (24.02)", capabilities: { max_context: 200 } },
+				modelsDev: {},
 			});
-			expect(b.metadata.display_name).toBe("GPT 6.1 Sol");
-			expect(b.metadata.field_sources.display_name).toBe("models_dev");
+			expect(b.metadata.display_name).toBe("Mistral Large (24.02)");
+			expect(b.metadata.field_sources.display_name).toBe("provider");
 
 			// Neither layer supplies one → the provider model id verbatim (dots intact),
 			// tagged driver_default so the UI never shows an invented string.

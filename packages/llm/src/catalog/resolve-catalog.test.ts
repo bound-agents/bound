@@ -203,7 +203,10 @@ describe("resolveCatalog", () => {
 		expect(r?.metadata.field_sources.max_context).toBe("models_dev");
 	});
 
-	it("folds a provider-published display name into the middle layer (spec §2.1)", () => {
+	it("uses models.dev display name over provider, falling back to provider when models.dev has none (spec §2.1)", () => {
+		const modelsDev = new Map<string, MetadataLayer>([
+			["claude-opus-4", { display_name: "Claude Opus 4 (Registry)" }],
+		]);
 		const result = resolveCatalog({
 			backends: [
 				{
@@ -211,15 +214,33 @@ describe("resolveCatalog", () => {
 					provider: "anthropic",
 					providerModelId: "claude-opus-4-20250101",
 					config: { capabilities: { max_context: 200000 } },
-					discovery: [{ providerModelId: "claude-opus-4-20250101", displayName: "Claude Opus 4" }],
+					discovery: [
+						{ providerModelId: "claude-opus-4-20250101", displayName: "Claude Opus 4 (Provider)" },
+					],
+				},
+				{
+					backendId: "mistral",
+					provider: "bedrock",
+					providerModelId: "mistral.mistral-large-2402-v1:0",
+					config: { capabilities: { max_context: 32000 } },
+					discovery: [
+						{
+							providerModelId: "mistral.mistral-large-2402-v1:0",
+							displayName: "Mistral Large (24.02)",
+						},
+					],
 				},
 			],
-			modelsDev: new Map(),
+			modelsDev,
 			aliases: new Map(),
 		});
-		const r = result.get("opus");
-		expect(r?.metadata.display_name).toBe("Claude Opus 4");
-		expect(r?.metadata.field_sources.display_name).toBe("provider");
+		const opus = result.get("opus");
+		expect(opus?.metadata.display_name).toBe("Claude Opus 4 (Registry)");
+		expect(opus?.metadata.field_sources.display_name).toBe("models_dev");
+
+		const mistral = result.get("mistral");
+		expect(mistral?.metadata.display_name).toBe("Mistral Large (24.02)");
+		expect(mistral?.metadata.field_sources.display_name).toBe("provider");
 	});
 	it("ignores discovery rows that do not match the backend's providerModelId", () => {
 		// A backend's discovery list is the whole provider lineup; only the row

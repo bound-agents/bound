@@ -499,6 +499,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				const seen = new Set<string>();
 				const models: Array<{ id: string; provider: string }> = [];
 				for (const b of live.backends) {
+					if (modelRouter.isNotReady?.(b.id)) continue;
 					if (!seen.has(b.id)) {
 						seen.add(b.id);
 						models.push({ id: b.id, provider: b.provider });

@@ -119,7 +119,7 @@ function parseReasoningOptions(
  *     reasoning?: boolean,
  *     reasoning_options?: ({type:"toggle"} | {type:"effort", values:string[]} | {type:"budget_tokens", …})[] }
  */
-function parseModelEntry(entry: unknown): MetadataLayer | undefined {
+function parseModelEntry(entry: unknown, modelId?: string): MetadataLayer | undefined {
 	if (!isRecord(entry)) return undefined;
 
 	const layer: MetadataLayer = {};
@@ -184,8 +184,16 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 	if (Object.keys(capabilities).length > 0) layer.capabilities = capabilities;
 	if (Object.keys(pricing).length > 0) layer.pricing = pricing;
 	// `name` is the registry's user-facing display name (catalog §2.1 display-name
-	// precedence: provider > models.dev name > provider model id).
-	if (typeof entry.name === "string" && entry.name.length > 0) layer.display_name = entry.name;
+	// precedence: config > models.dev name > provider > provider model id).
+	// Ignore placeholder entries that merely echo the raw model id verbatim
+	// (no spaces) so a provider-published friendly name can fill in instead.
+	if (
+		typeof entry.name === "string" &&
+		entry.name.length > 0 &&
+		!(modelId !== undefined && entry.name === modelId && !entry.name.includes(" "))
+	) {
+		layer.display_name = entry.name;
+	}
 
 	// A row with zero usable fields contributes nothing — drop it.
 	return Object.keys(layer).length > 0 ? layer : undefined;
@@ -231,7 +239,7 @@ export function indexModelsDevSnapshot(raw: unknown): Map<string, MetadataLayer>
 		const models = isRecord(providerEntry.models) ? providerEntry.models : undefined;
 		if (!models) continue;
 		for (const [modelId, modelEntry] of Object.entries(models)) {
-			const layer = parseModelEntry(modelEntry);
+			const layer = parseModelEntry(modelEntry, modelId);
 			if (!layer) continue;
 			const { key } = normalizeModelKey(providerNamespace, modelId);
 			// First writer wins per canonical key: the registry is upstream-dedup'd

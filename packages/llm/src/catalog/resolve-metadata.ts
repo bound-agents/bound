@@ -249,13 +249,20 @@ export function resolveModelMetadata(args: ResolveMetadataArgs): ResolveMetadata
 		}
 	}
 
-	// display_name: user-facing name (spec §2.1). Provider-published > models.dev
-	// name > the provider model id verbatim (version dots intact). The final
-	// fallback is tagged `driver_default` so the UI never shows an invented
-	// string and provenance stays honest about where the name came from.
+	// display_name: user-facing name (spec §2.1). Config override > models.dev
+	// name > provider-published name > the provider model id verbatim (version
+	// dots intact). Provider names only fill in gaps missing from models.dev so
+	// naming stays uniform across providers. The final fallback is tagged
+	// `driver_default` so the UI never shows an invented string and provenance
+	// stays honest about where the name came from.
+	const displayNameLayers: Array<[MetadataLayer, FieldSource]> = [
+		[args.config, "config"],
+		[args.modelsDev, "models_dev"],
+		[args.provider, "provider"],
+	];
 	let display_name = args.providerModelId;
 	field_sources.display_name = "driver_default";
-	for (const [layer, source] of layers) {
+	for (const [layer, source] of displayNameLayers) {
 		if (layer.display_name !== undefined && layer.display_name.length > 0) {
 			display_name = layer.display_name;
 			field_sources.display_name = source;

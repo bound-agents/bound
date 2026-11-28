@@ -144,6 +144,33 @@ describe("indexModelsDevSnapshot / lookupModelsDev", () => {
 		expect(layer?.capabilities?.max_context).toBe(200000);
 	});
 
+	it("skips placeholder models.dev names that echo the raw model id verbatim", () => {
+		const index = indexModelsDevSnapshot({
+			cortecs: {
+				models: {
+					"mistral-large-2402": {
+						name: "mistral-large-2402",
+						limit: { context: 32000 },
+					},
+				},
+			},
+			anthropic: {
+				models: {
+					"claude-opus-4": {
+						name: "Claude Opus 4",
+						limit: { context: 200000 },
+					},
+				},
+			},
+		});
+		const placeholder = lookupModelsDev(index, "bedrock", "mistral.mistral-large-2402-v1:0");
+		expect(placeholder?.capabilities?.max_context).toBe(32000);
+		expect(placeholder?.display_name).toBeUndefined();
+
+		const real = lookupModelsDev(index, "anthropic", "claude-opus-4");
+		expect(real?.display_name).toBe("Claude Opus 4");
+	});
+
 	it("skips a malformed model entry rather than throwing", () => {
 		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
 		// `malformed: null` under anthropic must not appear and must not have thrown.

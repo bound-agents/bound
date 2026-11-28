@@ -140,6 +140,8 @@ export function parseBedrockFoundationModels(body: unknown): DiscoveredModel[] {
 		const id = stringField(row, "modelId");
 		if (!id) continue;
 		const model: DiscoveredModel = { providerModelId: id };
+		const displayName = stringField(row, "modelName");
+		if (displayName) model.displayName = displayName;
 		const vendor = stringField(row, "providerName");
 		if (vendor) model.vendor = vendor;
 		if (isRecord(row) && Array.isArray(row.inputModalities)) {

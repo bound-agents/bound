@@ -54,6 +54,7 @@ const foundationModels = {
 	modelSummaries: [
 		{
 			modelId: "anthropic.claude-haiku-5-5",
+			modelName: "Claude Haiku 5.5",
 			modelArn: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-5-5",
 			providerName: "Anthropic",
 			inputModalities: ["TEXT", "IMAGE"],
@@ -133,11 +134,14 @@ describe("BedrockNamespaceDriver (self-configuring expansion)", () => {
 			"bedrock-use1-openai.gpt-6.1-sol",
 			"bedrock-use1-zai.glm-5",
 		]);
-		// Each descriptor carries its RAW provider model id for grouping/overrides.
+		// Each descriptor carries its RAW provider model id for grouping/overrides
+		// and preserves the parsed foundation-model discovery metadata (modelName, vendor).
 		const haiku = registered.find(
 			(r) => r.descriptor.providerModelId === "anthropic.claude-haiku-5-5",
 		);
 		expect(haiku).toBeDefined();
+		expect(haiku?.descriptor.discovered?.displayName).toBe("Claude Haiku 5.5");
+		expect(haiku?.descriptor.discovered?.vendor).toBe("Anthropic");
 	});
 
 	it("surfaces explicitPromptCaching into each descriptor's prompt_caching capability (R-MC7)", async () => {

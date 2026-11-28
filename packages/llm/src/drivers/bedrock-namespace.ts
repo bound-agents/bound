@@ -111,19 +111,29 @@ class BedrockNamespaceLineup {
 
 	async load(signal: AbortSignal): Promise<BedrockNamespaceEntry[]> {
 		let lineup: BedrockLineupEntry[];
+		let discoveredById: Map<string, DiscoveredModel>;
 		if (this.cfg.mantle) {
 			const result = await this.fetchMantleLineup(signal);
 			this.excludedMantleIds = result.excluded;
 			lineup = result.lineup;
+			discoveredById = result.discoveredById;
 		} else {
-			lineup = selectBedrockLineup(await this.fetchBedrockDiscovery(signal), {
+			const discovery = await this.fetchBedrockDiscovery(signal);
+			discoveredById = new Map(
+				discovery
+					.filter((m) => m.bedrock?.modelArn !== undefined)
+					.map((m) => [m.providerModelId, m]),
+			);
+			lineup = selectBedrockLineup(discovery, {
 				region: this.cfg.region,
 				...(this.cfg.crossRegion !== undefined && { crossRegion: this.cfg.crossRegion }),
 			});
 		}
 		return lineup.map((entry) => ({
 			id: entry.providerModelId,
-			discovered: { providerModelId: entry.providerModelId },
+			discovered: discoveredById.get(entry.providerModelId) ?? {
+				providerModelId: entry.providerModelId,
+			},
 			lineup: entry,
 		}));
 	}
@@ -172,6 +182,7 @@ class BedrockNamespaceLineup {
 	private async fetchMantleLineup(signal: AbortSignal): Promise<{
 		lineup: BedrockLineupEntry[];
 		excluded: string[];
+		discoveredById: Map<string, DiscoveredModel>;
 	}> {
 		const fetchImpl = this.discoveryFetch();
 		const mantleHost = `bedrock-mantle.${this.cfg.region}.api.aws`;
@@ -188,10 +199,17 @@ class BedrockNamespaceLineup {
 			getJson(`https://${mantleHost}/v1/models`),
 			getJson(`https://${fmHost}/foundation-models`),
 		]);
-		return selectMantleLineupWithExclusions(
+		const foundationModels = parseBedrockFoundationModels(foundation);
+		const result = selectMantleLineupWithExclusions(
 			parseOpenAIModelsList(models),
-			parseBedrockFoundationModels(foundation),
+			foundationModels,
 		);
+		const discoveredById = new Map(
+			foundationModels
+				.filter((m) => m.bedrock?.modelArn !== undefined)
+				.map((m) => [m.providerModelId, m]),
+		);
+		return { ...result, discoveredById };
 	}
 
 	/**
@@ -202,7 +220,7 @@ class BedrockNamespaceLineup {
 	 * `prompt_caching` comes from `explicitPromptCaching` unless
 	 * an override pins it.
 	 */
-	buildDescriptor({ lineup: entry }: BedrockNamespaceEntry): ModelDescriptor {
+	buildDescriptor({ lineup: entry, discovered }: BedrockNamespaceEntry): ModelDescriptor {
 		const override =
 			this.cfg.modelOverrides?.[entry.providerModelId] ??
 			this.cfg.modelOverrides?.[entry.callableId];
@@ -223,6 +241,7 @@ class BedrockNamespaceLineup {
 		const descriptor: ModelDescriptor = {
 			id: backendId,
 			providerModelId: entry.providerModelId,
+			discovered,
 			capabilities,
 			...(override?.logicalModel !== undefined && { logicalModel: override.logicalModel }),
 			...(override?.maxOutputTokens !== undefined && {

@@ -75,6 +75,7 @@ describe("parseBedrockFoundationModels", () => {
 			modelSummaries: [
 				{
 					modelId: "anthropic.claude-opus-4-20250101-v1:0",
+					modelName: "Claude Opus 4",
 					providerName: "Anthropic",
 					inputModalities: ["TEXT", "IMAGE"],
 					responseStreamingSupported: true,
@@ -87,6 +88,8 @@ describe("parseBedrockFoundationModels", () => {
 			"anthropic.claude-opus-4-20250101-v1:0",
 			"meta.llama4-70b-v1:0",
 		]);
+		expect(out[0]?.displayName).toBe("Claude Opus 4");
+		expect(out[1]?.displayName).toBeUndefined();
 		expect(out[0]?.vendor).toBe("Anthropic");
 		// IMAGE input modality surfaces as a vision capability.
 		expect(out[0]?.capabilities?.vision).toBe(true);

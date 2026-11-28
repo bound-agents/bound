@@ -2249,4 +2249,30 @@ describe("initServer — platform connector:handle_synced + remote discovery", (
 
 		expect(relayProcessor.calls.setPlatformMcpRegistry).toBeGreaterThan(0);
 	});
+
+	it("omits not-ready local backends from /api/models", async () => {
+		const appContext = makeAppContext(db, siteId);
+		appContext.config.modelBackends.backends.push({
+			id: "unready-model",
+			provider: "bedrock",
+			price_per_m_input: 0,
+			price_per_m_output: 0,
+			price_per_m_cache_read: 0,
+			price_per_m_cache_write: 0,
+		});
+		const deps = makeDeps(
+			appContext,
+			{ createAuxLoopRunner: () => undefined },
+			makeRelayProcessor(),
+		);
+		deps.modelRouter.isNotReady = (id: string) => id === "unready-model";
+		result = await initServer(deps);
+
+		const res = await fetch(`http://localhost:${result.webServer.port()}/api/status/models`);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { models: Array<{ id: string }> };
+		const ids = body.models.map((m) => m.id);
+		expect(ids).toContain("fake");
+		expect(ids).not.toContain("unready-model");
+	});
 });
